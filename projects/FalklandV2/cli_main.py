@@ -8,7 +8,6 @@ Purpose
   * Pause/resume without time drift.
   * Small event scheduler: schedule events in future sim-seconds, trigger on time.
   * Minimal HUD + CLI to observe and test.
-- This is the foundation for navigation, contact spawning, persistence, and later API/audio.
 
 Usage
   Run, then try:
@@ -33,18 +32,17 @@ import threading
 import time
 import heapq
 
-GridPos = Tuple[str, int]  # e.g., ("K", 12)
+GridPos = Tuple[str, int]  # reserved for later
 
 # ---------------- Core Game State ----------------
 
 @dataclass
 class GameState:
-    # Simulation (H-hour) is expressed in whole hours later, but internal sim_time is seconds.
     sim_time_s: float = 0.0           # simulation time in seconds
-    timescale: float = 1.0            # 1.0 = realtime. Can be >1 for accelerated tests.
+    timescale: float = 1.0            # 1.0 = realtime
     running: bool = True              # paused/resumed
+
     # World placeholders (we’ll expand later)
-    grid_pos: GridPos = ("K", 12)
     contacts_count: int = 0
     mode: str = "SIM"
 
@@ -52,19 +50,16 @@ class GameState:
     created_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
 
     def timecode(self) -> str:
-        """Return H+N based on hours elapsed in simulation (floor to int)."""
         hours = int(self.sim_time_s // 3600)
         return f"H+{hours}"
 
     def hud_line(self) -> str:
-        col, row = self.grid_pos
-        return f"{self.timecode()} | Pos {col}{row} | Contacts {self.contacts_count} | Mode {self.mode} | x{self.timescale:.2f}"
+        return f"{self.timecode()} | Contacts {self.contacts_count} | Mode {self.mode} | x{self.timescale:.2f}"
 
     def reset_world(self) -> None:
         self.sim_time_s = 0.0
         self.timescale = 1.0
         self.running = True
-        self.grid_pos = ("K", 12)
         self.contacts_count = 0
         self.mode = "SIM"
 
@@ -99,7 +94,7 @@ class Scheduler:
             self._pq.clear()
 
 
-# ---------------- Clock Loop (runs in background thread) ----------------
+# ---------------- Clock Loop (background thread) ----------------
 
 class GameLoop:
     def __init__(self, state: GameState, scheduler: Scheduler, print_fn=print):
@@ -111,9 +106,7 @@ class GameLoop:
         self._thread = threading.Thread(target=self._run, name="GameLoop", daemon=True)
 
         self._last_wall = time.monotonic()
-        self._hud_next_s = 0.0  # next time (sim) to print HUD heartbeat
-
-        # Tick cadence for the loop; sim updates scale by timescale so cadence can be small.
+        self._hud_next_s = 0.0
         self._cadence_s = 0.1
 
     def start(self):
@@ -127,7 +120,6 @@ class GameLoop:
         self.state.running = False
 
     def resume(self):
-        # reset wall ref so we don't "catch up" a big delta after pause
         self._last_wall = time.monotonic()
         self.state.running = True
 
@@ -135,7 +127,6 @@ class GameLoop:
         self.state.timescale = max(0.0, scale)
 
     def jump(self, delta_sim_s: float):
-        """Manual jump in sim time; triggers due events."""
         self.state.sim_time_s += max(0.0, delta_sim_s)
         self._trigger_due_events()
 
@@ -143,7 +134,6 @@ class GameLoop:
         self.state.reset_world()
         self.scheduler.clear()
         self._hud_next_s = 0.0
-        # Re-anchor wall clock to avoid drift after reset
         self._last_wall = time.monotonic()
 
     # --- internal ---
@@ -163,7 +153,6 @@ class GameLoop:
 
     def _trigger_due_events(self):
         for ev in self.scheduler.pop_due(self.state.sim_time_s):
-            # Minimal behavior: treat any event with label starting "spawn" as a contact spawn.
             if ev.label.lower().startswith("spawn"):
                 self.state.contacts_count += 1
                 self.print(f"[{self.state.timecode()}] EVENT: {ev.label} (contacts={self.state.contacts_count})")
@@ -171,7 +160,6 @@ class GameLoop:
                 self.print(f"[{self.state.timecode()}] EVENT: {ev.label}")
 
     def _heartbeat(self):
-        # Print HUD once per simulated second to show liveness
         if self.state.sim_time_s >= self._hud_next_s:
             self.print(self.state.hud_line())
             self._hud_next_s = int(self.state.sim_time_s) + 1.0
@@ -231,13 +219,10 @@ def main(argv: list[str]) -> int:
             try:
                 if cmd in ("exit", "quit"):
                     break
-
                 elif cmd == "help":
                     print(HELP_TEXT, end="")
-
                 elif cmd == "status":
                     print(state.hud_line())
-
                 elif cmd == "schedule":
                     if len(args) < 2:
                         print("Usage: schedule <sec> <label> [payload]")
@@ -247,15 +232,12 @@ def main(argv: list[str]) -> int:
                     payload = " ".join(args[2:]) if len(args) > 2 else None
                     sched.schedule_in(delay_s, label, payload, now_s=state.sim_time_s)
                     print(f"Scheduled '{label}' in {delay_s:.1f}s (at t={state.sim_time_s + delay_s:.1f})")
-
                 elif cmd == "pause":
                     loop.pause()
                     print("Paused.")
-
                 elif cmd == "resume":
                     loop.resume()
                     print("Resumed.")
-
                 elif cmd == "speed":
                     if len(args) == 0:
                         print(f"Speed x{state.timescale:.2f}")
@@ -263,29 +245,22 @@ def main(argv: list[str]) -> int:
                         scale = parse_float(args[0], default=1.0)
                         loop.set_speed(scale)
                         print(f"Speed set to x{state.timescale:.2f}")
-
                 elif cmd == "tick":
                     delta = parse_float(args[0] if args else None, default=1.0)
                     loop.jump(delta)
                     print(state.hud_line())
-
                 elif cmd == "reset":
                     loop.reset()
                     print("Reset OK.")
                     print(state.hud_line())
-
                 else:
                     print(f"! unknown command: {cmd}. Type 'help'.")
-
             except Exception as e:
                 print(f"! error: {e}")
-
     finally:
         loop.stop()
         print("Goodbye.")
     return 0
 
-
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))
-    
