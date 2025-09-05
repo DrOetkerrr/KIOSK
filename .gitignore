@@ -1,4 +1,23 @@
-.venv/
+# --- Python ---
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Secrets & local state ---
 .env
 *.log
+falklands_state.json
+
+# --- macOS crumbs ---
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# --- VS Code settings (optional, keeps workspace clean) ---
+.vscode/
