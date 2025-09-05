@@ -1,0 +1,11 @@
+{"ts": "2025-09-03T07:55:34.329Z", "kind": "user", "text": "you"}
+{"ts": "2025-09-03T07:55:34.329Z", "kind": "npc", "text": "Aye, Sir."}
+{"ts": "2025-09-03T07:55:47.141Z", "kind": "alert", "text": "Captain, new Coast Guard cutter at 10 o'clock, 26.5 NM, grid 47-56."}
+{"ts": "2025-09-03T07:55:47.579Z", "kind": "user", "text": "you"}
+{"ts": "2025-09-03T07:55:47.579Z", "kind": "npc", "text": "Aye, Sir."}
+{"ts": "2025-09-03T07:56:28.815Z", "kind": "alert", "text": "Captain, new unknown Unknown radar echo at 6 o'clock, 28.5 NM, grid 57-52."}
+{"ts": "2025-09-03T07:56:32.276Z", "kind": "user", "text": "I"}
+{"ts": "2025-09-03T07:56:32.276Z", "kind": "npc", "text": "Aye, Sir."}
+{"ts": "2025-09-03T07:56:48.652Z", "kind": "user", "text": "you"}
+{"ts": "2025-09-03T07:56:48.652Z", "kind": "npc", "text": "Aye, Sir."}
+{"ts": "2025-09-03T07:57:07.786Z", "kind": "alert", "text": "Captain, new Civilian yacht at 10 o'clock, 27.9 NM, grid 47-56."}

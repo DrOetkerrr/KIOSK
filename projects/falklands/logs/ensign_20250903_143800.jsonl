@@ -1,0 +1,10 @@
+{"ts": "2025-09-03T14:38:08.864Z", "kind": "user", "text": "Okay, and sign. Status report, please."}
+{"ts": "2025-09-03T14:38:09.994Z", "kind": "npc", "text": "Ship 49-50, course 270, speed 15 knots. No primary contact detected. Weapons safe, no ammo. Over.", "executed": ["NAV: grid 49-50 hdg 270 spd 15 kn"]}
+{"ts": "2025-09-03T14:38:40.104Z", "kind": "user", "text": "SeaCat missiles."}
+{"ts": "2025-09-03T14:38:42.084Z", "kind": "npc", "text": "Aye, Captain. Weapons currently safe; no SeaCat missiles armed. Over.", "executed": ["[Executed]", "WEAPONS: no inventory"]}
+{"ts": "2025-09-03T14:39:01.620Z", "kind": "user", "text": "http://TheBusinessProfessor.com"}
+{"ts": "2025-09-03T14:39:03.021Z", "kind": "npc", "text": "Captain, no new radar contacts or threats detected. Ship steady at 49-50, heading 270°, speed 15 knots. Over.", "executed": ["NAV: grid 49-50 hdg 270 spd 15 kn"]}
+{"ts": "2025-09-03T14:39:26.886Z", "kind": "user", "text": "Thank you."}
+{"ts": "2025-09-03T14:39:32.940Z", "kind": "npc", "text": "Aye, Captain. Ship steady at 49-50, heading 270°, speed 15 knots. No contacts detected. Over.", "executed": ["NAV: grid 49-50 hdg 270 spd 15 kn"]}
+{"ts": "2025-09-03T14:40:20.987Z", "kind": "user", "text": "engine off"}
+{"ts": "2025-09-03T14:40:21.817Z", "kind": "npc", "text": "Aye, Captain. Engines stopped; speed zero knots. Over.", "executed": ["[Executed]", "NAV: grid 48-50 hdg 270 spd 0 kn"]}

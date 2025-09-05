@@ -1,0 +1,65 @@
+[
+  {
+    "name": "4.5-inch gun",
+    "min_nm": 1,
+    "max_nm": 12,
+    "p_kill_in": 0.6,
+    "p_kill_wrong": 0.1,
+    "p_kill_out": 0.0,
+    "typical_loadout": 475
+  },
+  {
+    "name": "20 mm cannon",
+    "min_nm": 0,
+    "max_nm": 2,
+    "p_kill_in": 0.4,
+    "p_kill_wrong": 0.1,
+    "p_kill_out": 0.0,
+    "typical_loadout": 2000
+  },
+  {
+    "name": "Seacat SAM",
+    "min_nm": 1,
+    "max_nm": 5,
+    "p_kill_in": 0.3,
+    "p_kill_wrong": 0.05,
+    "p_kill_out": 0.0,
+    "typical_loadout": 22
+  },
+  {
+    "name": "Exocet anti-ship missile launcher",
+    "min_nm": 7,
+    "max_nm": 23,
+    "p_kill_in": 0.9,
+    "p_kill_wrong": 0.2,
+    "p_kill_out": 0.0,
+    "typical_loadout": 4
+  },
+  {
+    "name": "STWS system with Mk 46 Torpedoes",
+    "min_nm": 0.5,
+    "max_nm": 8,
+    "p_kill_in": 0.7,
+    "p_kill_wrong": 0.0,
+    "p_kill_out": 0.0,
+    "typical_loadout": 6
+  },
+  {
+    "name": "Monitor only",
+    "min_nm": 0,
+    "max_nm": 0,
+    "p_kill_in": 0.0,
+    "p_kill_wrong": 0.0,
+    "p_kill_out": 0.0,
+    "typical_loadout": 0
+  },
+  {
+    "name": "None",
+    "min_nm": 0,
+    "max_nm": 0,
+    "p_kill_in": 0.0,
+    "p_kill_wrong": 0.0,
+    "p_kill_out": 0.0,
+    "typical_loadout": 0
+  }
+]

@@ -1,0 +1,6 @@
+{"ts": "2025-09-03T14:26:17.017Z", "kind": "user", "text": "you"}
+{"ts": "2025-09-03T14:26:19.463Z", "kind": "npc", "text": "Aye, Captain. Ship 49-50, heading 270°, speed 15 knots. No primary contact detected. Over.", "executed": ["NAV: grid 49-50 hdg 270 spd 15 kn"]}
+{"ts": "2025-09-03T14:26:44.781Z", "kind": "user", "text": "you"}
+{"ts": "2025-09-03T14:26:47.756Z", "kind": "npc", "text": "Aye, Captain. Ship steady at 49-50, course 270, speed 15 knots. No primary contact detected. Over.", "executed": ["NAV: grid 49-50 hdg 270 spd 15 kn"]}
+{"ts": "2025-09-03T14:27:15.810Z", "kind": "user", "text": "you"}
+{"ts": "2025-09-03T14:27:16.732Z", "kind": "npc", "text": "Aye, Captain. Ship at 49-50, course 270, speed 15 knots. No primary contacts detected. Over.", "executed": ["NAV: grid 49-50 hdg 270 spd 15 kn"]}

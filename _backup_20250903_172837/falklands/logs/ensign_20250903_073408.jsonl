@@ -1,0 +1,15 @@
+{"ts": "2025-09-03T07:34:13.542Z", "kind": "alert", "text": "Captain, new hostile Jet fighter at 6 o'clock, 36.7 NM, grid 59-48."}
+{"ts": "2025-09-03T07:34:29.891Z", "kind": "alert", "text": "Captain, new hostile Naval destroyer at 11 o'clock, 25.1 NM, grid 44-52."}
+{"ts": "2025-09-03T07:34:46.470Z", "kind": "alert", "text": "Captain, new Fast jet (friendly) at 3 o'clock, 31.5 NM, grid 50-42."}
+{"ts": "2025-09-03T07:34:50.914Z", "kind": "user", "text": "Captain."}
+{"ts": "2025-09-03T07:34:50.915Z", "kind": "npc", "text": "Aye, Sir."}
+{"ts": "2025-09-03T07:35:02.185Z", "kind": "alert", "text": "Captain, new unknown Drone (surveillance) at 3 o'clock, 31.1 NM, grid 51-42."}
+{"ts": "2025-09-03T07:35:05.210Z", "kind": "user", "text": "you"}
+{"ts": "2025-09-03T07:35:05.210Z", "kind": "npc", "text": "Aye, Sir."}
+{"ts": "2025-09-03T07:35:18.957Z", "kind": "alert", "text": "Captain, new unknown Unknown radar echo at 8 o'clock, 29.0 NM, grid 55-56."}
+{"ts": "2025-09-03T07:35:35.092Z", "kind": "alert", "text": "Captain, new Fishing vessel (cluster) at 1 o'clock, 22.9 NM, grid 46-46."}
+{"ts": "2025-09-03T07:35:36.144Z", "kind": "user", "text": "you"}
+{"ts": "2025-09-03T07:35:36.144Z", "kind": "npc", "text": "Aye, Sir."}
+{"ts": "2025-09-03T07:35:49.923Z", "kind": "alert", "text": "Captain, new unknown Smuggling vessel at 9 o'clock, 26.8 NM, grid 50-57."}
+{"ts": "2025-09-03T07:36:05.797Z", "kind": "alert", "text": "Captain, new Weather balloon at 11 o'clock, 26.6 NM, grid 44-52."}
+{"ts": "2025-09-03T07:36:21.212Z", "kind": "alert", "text": "Captain, new unknown Merchant vessel (suspicious) at 7 o'clock, 26.9 NM, grid 55-55."}

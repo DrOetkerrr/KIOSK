@@ -1,0 +1,13 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtualenv
+.venv/
+
+# macOS crumbs
+.DS_Store
+
+# Local state / secrets
+falklands_state.json
+.env
