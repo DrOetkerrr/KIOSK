@@ -1,17 +1,26 @@
 #!/usr/bin/env python3
 """
-FalklandV2 — Step 4: Ensign API (typed) + streaming
-Keeps: realtime clock, quiet HUD, grid nav, scheduler, contacts (cap 15, priority logic).
-Adds:  ensign <text>  -> streams a natural reply from OpenAI, conditioned on current game state.
+FalklandV2 — Ensign API + realtime sim + contacts + tolerant CLI
 
-Commands to try:
+Highlights
+- Realtime clock (monotonic), pause/resume, timescale, manual tick.
+- Quiet HUD by default; 'hud <sec>' to enable heartbeat.
+- Grid nav (A–Z x 1–26, 2.0 NM per cell). Dead reckoning via course/speed.
+- Contacts (max 15) with side/threat; deterministic spawns via 'seed'.
+- Priority target: highest threat, tie-break by nearest.
+- Ensign command streams OpenAI reply with current world state.
+- Tolerant parsing: 'ensign, …' or 'ensign: …' work.
+- Fallback: any unrecognized input is sent to Ensign.
+
+Try:
   status
   seed 42
   setpos K12
   spawn Bogey ENEMY
   contacts
+  priority
   ensign Launch report
-  ensign Advise on nearest threat
+  what's our nearest threat?
   hud 2
   hud off
   exit
@@ -24,22 +33,21 @@ from typing import Optional, Tuple, List
 import math, sys, shlex, threading, time, heapq, re, random, os, json
 import requests
 from dotenv import load_dotenv
+from pathlib import Path
 
 # ---------- Env & constants ----------
-load_dotenv()
+# Load .env from repo root even if running from elsewhere:
+ROOT = Path(__file__).resolve().parents[2]  # projects/FalklandV2 -> projects -> repo root
+load_dotenv(ROOT / ".env")
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
 OPENAI_BASE    = os.getenv("OPENAI_BASE_URL", "https://api.openai.com").rstrip("/")
 
-if not OPENAI_API_KEY:
-    # We won't crash — we'll print a clear error if the user calls `ensign` without a key.
-    pass
-
-# ---------- Grid constants ----------
-GRID_COLS = 26              # A..Z
-GRID_ROWS = 26              # 1..26
-CELL_NM   = 2.0             # nautical miles per cell
-SPAWN_RING_NM = 10.0        # default ring distance from own ship
+GRID_COLS = 26
+GRID_ROWS = 26
+CELL_NM   = 2.0
+SPAWN_RING_NM = 10.0
 
 def col_to_idx(col: str) -> int:
     c = col.strip().upper()
@@ -66,7 +74,6 @@ def parse_cell(token: str) -> Tuple[int, int]:
 def cell_name(x_idx: int, y_idx: int) -> str:
     return f"{idx_to_col(x_idx)}{y_idx + 1}"
 
-# ---------- Bearing/Range helpers ----------
 def nm_from_cells(dx_cells: float, dy_cells: float) -> float:
     return math.hypot(dx_cells, dy_cells) * CELL_NM
 
@@ -211,7 +218,8 @@ class GameLoop:
     def start(self): self._thread.start()
     def stop(self): self._stop_evt.set(); self._thread.join(timeout=2.0)
     def pause(self): self.state.running = False
-    def resume(self): self._last_wall = time.monotonic(); self._last_sim_s = self.state.sim_time_s; self.state.running = True
+    def resume(self):
+        self._last_wall = time.monotonic(); self._last_sim_s = self.state.sim_time_s; self.state.running = True
     def set_timescale(self, s: float): self.state.timescale = max(0.0, s)
     def set_hud_interval(self, sec: float):
         self._hud_interval_s = max(0.0, sec)
@@ -262,9 +270,8 @@ class GameLoop:
         if self._hud_interval_s > 0.0 and self.state.sim_time_s >= self._hud_next_s:
             self.print(self.state.hud_line()); self._hud_next_s = self.state.sim_time_s + self._hud_interval_s
 
-# ---------- OpenAI chat (streaming via requests) ----------
+# ---------- OpenAI chat (streaming) ----------
 def build_system_prompt(state: GameState) -> str:
-    # Summarize world state for the Ensign
     col,row = state.grid_pos()
     pri = state.priority_contact()
     contacts_block = []
@@ -275,9 +282,9 @@ def build_system_prompt(state: GameState) -> str:
     pri_txt = "(none)" if not pri else f"#{pri.cid} {pri.label} {pri.side} at {pri.cell_name()} rng≈{state.contact_range_bearing(pri)[0]:.1f}NM thr={pri.threat}"
     guidance = (
         "You are the ship's Ensign. Reply concisely like a capable watch officer.\n"
-        "- Use short, clear sentences. No roleplay flourishes unless asked.\n"
-        "- If asked for advice or status, reference timecode and nearest/highest-threat contact.\n"
-        "- If no contacts, note the blank radar succinctly. Avoid inventing new facts.\n"
+        "- Use short, clear sentences. Avoid roleplay flourishes unless asked.\n"
+        "- If asked for advice or status, reference timecode and priority target.\n"
+        "- Don't invent facts; use only what's provided below.\n"
     )
     world = (
         f"Time: {state.timecode()} | Pos {col}{row} | Spd {state.speed_kn:.1f} kn | Crs {state.course_deg:.0f}°\n"
@@ -290,12 +297,8 @@ def stream_chat(system_prompt: str, user_text: str):
     if not OPENAI_API_KEY:
         print("! OPENAI_API_KEY missing. Create a .env with OPENAI_API_KEY=... and restart.")
         return
-
     url = f"{OPENAI_BASE}/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": OPENAI_MODEL,
         "temperature": 0.5,
@@ -305,7 +308,6 @@ def stream_chat(system_prompt: str, user_text: str):
             {"role": "user", "content": user_text},
         ],
     }
-
     with requests.post(url, headers=headers, json=payload, stream=True, timeout=60) as r:
         r.raise_for_status()
         print("Ensign:", end=" ", flush=True)
@@ -313,7 +315,7 @@ def stream_chat(system_prompt: str, user_text: str):
             if not line:
                 continue
             if line.startswith("data: "):
-                data = line[len("data: "):].strip()
+                data = line[6:].strip()
                 if data == "[DONE]":
                     break
                 try:
@@ -322,9 +324,8 @@ def stream_chat(system_prompt: str, user_text: str):
                     if delta:
                         print(delta, end="", flush=True)
                 except Exception:
-                    # Be tolerant to any parsing hiccup
                     continue
-        print("")  # newline at end of stream
+        print("")  # newline
 
 # ---------- CLI ----------
 PROMPT = "FalklandV2> "
@@ -339,19 +340,20 @@ HELP_TEXT = """Commands:
   grid                         Show grid/cell configuration
 
   seed <int>                   Set RNG seed for deterministic spawns
-  spawn [Label] [Side]         Spawn at 10 NM ring (Side optional: ENEMY|NEUTRAL|FRIENDLY)
+  spawn [Label] [Side]         Spawn at 10 NM ring (Side: ENEMY|NEUTRAL|FRIENDLY)
   schedule <sec> spawn [Label] [Side]
   contacts                     List contacts
   clrcontacts                  Remove all contacts
   setside <id> <Side>          Change side for a contact
   setthreat <id> <0-10>        Set threat level (0..10)
-  priority                     Show priority target (highest threat, then nearest)
+  priority                     Show priority target
 
-  ensign <text>                Ask the Ensign (streams a reply using OpenAI)
+  ensign <text>                Ask the Ensign (streams reply).
+  Any other text is forwarded to the Ensign automatically.
 
   pause | resume               Control realtime clock
-  timescale [factor]           Show or set simulation speed (1 = realtime)
-  tick [sec]                   Manually advance sim time by N seconds (default 1)
+  timescale [factor]           Show/set simulation speed (1 = realtime)
+  tick [sec]                   Manually advance sim time by N seconds
   reset                        Reset world and clear events/contacts
   help                         This help
   exit | quit                  Leave the program
@@ -388,47 +390,63 @@ def main(argv: list[str]) -> int:
                 print(f"! parse error: {e}")
                 continue
 
-            cmd, *args = (parts[0].lower(), *parts[1:])
+            raw_line = line.strip()
+            raw_cmd = parts[0].lower()
+            cmd_norm = re.sub(r'[^a-z]', '', raw_cmd)  # 'ensign,' -> 'ensign'
+            args = parts[1:]
+
             try:
-                if cmd in ("exit","quit"):
+                if cmd_norm in ("exit","quit"):
                     break
-                elif cmd == "help":
+
+                elif cmd_norm == "help":
                     print(HELP_TEXT, end="")
-                elif cmd == "status":
+
+                elif cmd_norm == "status":
                     print(state.hud_line())
-                elif cmd == "hud":
-                    if not args: print("Usage: hud off | <seconds>")
-                    elif args[0].lower() == "off": loop.set_hud_interval(0.0); print("HUD heartbeat off.")
+
+                elif cmd_norm == "hud":
+                    if not args:
+                        print("Usage: hud off | <seconds>")
+                    elif args[0].lower() == "off":
+                        loop.set_hud_interval(0.0); print("HUD heartbeat off.")
                     else:
                         sec = max(0.1, parse_float(args[0], 1.0))
                         loop.set_hud_interval(sec); print(f"HUD heartbeat every {sec:.1f}s.")
-                elif cmd == "nav":
+
+                elif cmd_norm == "nav":
                     col,row = state.grid_pos()
                     print(f"Cell {col}{row} | x={state.x_cells:.3f} y={state.y_cells:.3f} | Spd {state.speed_kn:.2f} kn | Crs {state.course_deg:.1f}°")
-                elif cmd == "grid":
+
+                elif cmd_norm == "grid":
                     print(f"Grid A–Z x 1–26, cell size {CELL_NM} NM")
-                elif cmd == "setpos":
+
+                elif cmd_norm == "setpos":
                     if not args: print("Usage: setpos <Cell>"); continue
                     x_idx, y_idx = parse_cell(args[0])
                     state.x_cells = float(x_idx); state.y_cells = float(y_idx)
                     print(f"Position set to {cell_name(x_idx,y_idx)}")
-                elif cmd == "course":
+
+                elif cmd_norm == "course":
                     if not args: print(f"Course {state.course_deg:.1f}°")
                     else:
                         deg = parse_float(args[0], state.course_deg)
                         state.course_deg = deg % 360.0; print(f"Course set to {state.course_deg:.1f}°")
-                elif cmd == "speed":
+
+                elif cmd_norm == "speed":
                     if not args: print(f"Speed {state.speed_kn:.2f} kn")
                     else:
                         kn = max(0.0, parse_float(args[0], state.speed_kn))
                         state.speed_kn = kn; print(f"Speed set to {state.speed_kn:.2f} kn")
-                elif cmd == "stop":
+
+                elif cmd_norm == "stop":
                     state.speed_kn = 0.0; print("Speed set to 0 kn")
-                # RNG & contacts
-                elif cmd == "seed":
+
+                elif cmd_norm == "seed":
                     if not args: print("Usage: seed <int>")
                     else: state.rng.seed(parse_int(args[0],0)); print("Seed set.")
-                elif cmd == "spawn":
+
+                elif cmd_norm == "spawn":
                     label = args[0] if args else "Contact"
                     side = args[1] if len(args) > 1 else "ENEMY"
                     try:
@@ -436,36 +454,41 @@ def main(argv: list[str]) -> int:
                         print(f"Spawned #{c.cid} {c.label} {c.side} at {c.cell_name()} (thr {c.threat})")
                     except Exception as e:
                         print(f"! spawn failed: {e}")
-                elif cmd == "contacts":
+
+                elif cmd_norm == "contacts":
                     if not state.contacts: print("(no contacts)")
                     else:
                         for c in state.contacts:
                             rng_nm, brg = state.contact_range_bearing(c)
                             print(f"#{c.cid:02d} {c.label:12s} {c.side:9s} {c.cell_name():>3s}  rng {rng_nm:5.1f} NM  brg {brg:6.1f}°T  thr {c.threat}")
-                elif cmd == "clrcontacts":
+
+                elif cmd_norm == "clrcontacts":
                     state.clear_contacts(); print("Contacts cleared.")
-                elif cmd == "setside":
+
+                elif cmd_norm == "setside":
                     if len(args) < 2: print("Usage: setside <id> <NEUTRAL|FRIENDLY|ENEMY>")
                     else:
                         cid = parse_int(args[0], 0); side = normalize_side(args[1])
                         c = state.find_contact(cid)
                         if not c: print(f"! no contact with id {cid}")
                         else: c.side = side; print(f"#{c.cid} side set to {c.side}")
-                elif cmd == "setthreat":
+
+                elif cmd_norm == "setthreat":
                     if len(args) < 2: print("Usage: setthreat <id> <0-10>")
                     else:
                         cid = parse_int(args[0], 0); thr = int(clamp(parse_int(args[1],0),0,10))
                         c = state.find_contact(cid)
                         if not c: print(f"! no contact with id {cid}")
                         else: c.threat = thr; print(f"#{c.cid} threat set to {c.threat}")
-                elif cmd == "priority":
+
+                elif cmd_norm == "priority":
                     pc = state.priority_contact()
                     if not pc: print("(no priority target)")
                     else:
                         rng_nm, brg = state.contact_range_bearing(pc)
                         print(f"PRIORITY -> #{pc.cid} {pc.label} {pc.side} at {pc.cell_name()} | rng {rng_nm:.1f} NM | brg {brg:.1f}°T | thr {pc.threat}")
-                # Scheduler
-                elif cmd == "schedule":
+
+                elif cmd_norm == "schedule":
                     if len(args) < 2:
                         print("Usage: schedule <sec> <label> [payload]"); continue
                     delay_s = parse_float(args[0], 0.0); label = args[1]
@@ -473,20 +496,24 @@ def main(argv: list[str]) -> int:
                     sched.schedule_in(delay_s, label, payload, now_s=state.sim_time_s)
                     due = state.sim_time_s + delay_s
                     print(f"Scheduled '{label}' in {delay_s:.1f}s (t={due:.1f})")
-                elif cmd == "pause":
+
+                elif cmd_norm == "pause":
                     loop.pause(); print("Paused.")
-                elif cmd == "resume":
+                elif cmd_norm == "resume":
                     loop.resume(); print("Resumed.")
-                elif cmd == "timescale":
+
+                elif cmd_norm == "timescale":
                     if not args: print(f"Timescale x{state.timescale:.2f}")
                     else: loop.set_timescale(parse_float(args[0],1.0)); print(f"Timescale set to x{state.timescale:.2f}")
-                elif cmd == "tick":
+
+                elif cmd_norm == "tick":
                     delta = parse_float(args[0] if args else None, 1.0)
                     loop.jump(delta); print(state.hud_line())
-                elif cmd == "reset":
+
+                elif cmd_norm == "reset":
                     loop.reset(); print("Reset OK."); print(state.hud_line())
-                # Ensign
-                elif cmd == "ensign":
+
+                elif cmd_norm == "ensign":
                     if not args:
                         print("Usage: ensign <message>")
                     else:
@@ -498,8 +525,17 @@ def main(argv: list[str]) -> int:
                             print(f"! API HTTP error: {e}")
                         except requests.RequestException as e:
                             print(f"! Network error: {e}")
+
                 else:
-                    print(f"! unknown command: {cmd}. Type 'help'.")
+                    # Free-chat fallback: send the whole line to Ensign
+                    sys_prompt = build_system_prompt(state)
+                    try:
+                        stream_chat(sys_prompt, raw_line)
+                    except requests.HTTPError as e:
+                        print(f"! API HTTP error: {e}")
+                    except requests.RequestException as e:
+                        print(f"! Network error: {e}")
+
             except Exception as e:
                 print(f"! error: {e}")
     finally:
