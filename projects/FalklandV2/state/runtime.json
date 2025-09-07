@@ -1,13 +1,117 @@
 {
-  "created_utc": "2025-09-07T19:48:38.573159+00:00",
+  "created_utc": "2025-09-07T21:51:28",
   "ship": {
-    "cell": "N13", 
-    "course_deg": 90,
-    "speed_kts": 20,
+    "cell": "K13",
+    "course_deg": 0.0,
+    "speed_kts": 0.0,
     "pos": {
-      "x": 13.111111111111128,
+      "x": 10.0,
       "y": 12.0
     }
   },
-  "contacts": []
+  "contacts": [
+    {
+      "id": 2,
+      "name": "ARA General Belgrano",
+      "type": "Ship",
+      "allegiance": "Hostile",
+      "cell": "Z22",
+      "range_nm": 17.2,
+      "course_deg": 238.0,
+      "speed_kts": 16.0
+    },
+    {
+      "id": 3,
+      "name": "Amphibious Ship (Fearless/Intrepid/Sir Galahad)",
+      "type": "Ship",
+      "allegiance": "Friendly",
+      "cell": "P22",
+      "range_nm": 10.4,
+      "course_deg": 194.0,
+      "speed_kts": 9.0
+    },
+    {
+      "id": 4,
+      "name": "Fleet Tanker (RFA)",
+      "type": "Ship",
+      "allegiance": "Friendly",
+      "cell": "D9",
+      "range_nm": 8.3,
+      "course_deg": 85.0,
+      "speed_kts": 10.0
+    },
+    {
+      "id": 5,
+      "name": "Landing Craft (LCU/LCVP)",
+      "type": "Ship",
+      "allegiance": "Friendly",
+      "cell": "X14",
+      "range_nm": 13.1,
+      "course_deg": 96.0,
+      "speed_kts": 5.0
+    },
+    {
+      "id": 6,
+      "name": "Fleet Tanker (RFA)",
+      "type": "Ship",
+      "allegiance": "Friendly",
+      "cell": "B16",
+      "range_nm": 9.8,
+      "course_deg": 270.0,
+      "speed_kts": 10.0
+    },
+    {
+      "id": 8,
+      "name": "A-4 Skyhawk",
+      "type": "Aircraft",
+      "allegiance": "Hostile",
+      "cell": "R12",
+      "range_nm": 6.6,
+      "course_deg": 277.0,
+      "speed_kts": 289.0
+    },
+    {
+      "id": 9,
+      "name": "Dagger (Mirage V)",
+      "type": "Aircraft",
+      "allegiance": "Hostile",
+      "cell": "E5",
+      "range_nm": 9.8,
+      "course_deg": 37.0,
+      "speed_kts": 315.0
+    },
+    {
+      "id": 10,
+      "name": "Lynx Helicopter",
+      "type": "Helicopter",
+      "allegiance": "Friendly",
+      "cell": "B23",
+      "range_nm": 13.2,
+      "course_deg": 11.0,
+      "speed_kts": 68.0
+    },
+    {
+      "id": 11,
+      "name": "Sea Harrier FRS.1",
+      "type": "Aircraft",
+      "allegiance": "Friendly",
+      "cell": "S8",
+      "range_nm": 9.2,
+      "course_deg": 48.0,
+      "speed_kts": 315.0
+    },
+    {
+      "id": 12,
+      "name": "Amphibious Ship (Fearless/Intrepid/Sir Galahad)",
+      "type": "Ship",
+      "allegiance": "Friendly",
+      "cell": "Y9",
+      "range_nm": 14.2,
+      "course_deg": 61.0,
+      "speed_kts": 9.0
+    }
+  ],
+  "radar": {
+    "locked_contact_id": null
+  }
 }
