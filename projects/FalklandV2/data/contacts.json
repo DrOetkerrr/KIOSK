@@ -1,0 +1,26 @@
+[
+  {"name":"A-4 Skyhawk","type":"Aircraft","allegiance":"Hostile","speed_kts":385,"primary_weapon":"Bombs / 20 mm cannon","min_range_nm":0.5,"max_range_nm":1.0,"weight":5},
+  {"name":"Dagger (Mirage V)","type":"Aircraft","allegiance":"Hostile","speed_kts":420,"primary_weapon":"Bombs / 30 mm cannon","min_range_nm":0.8,"max_range_nm":1.2,"weight":4},
+  {"name":"Mirage III","type":"Aircraft","allegiance":"Hostile","speed_kts":455,"primary_weapon":"Bombs / rockets","min_range_nm":1.0,"max_range_nm":2.0,"weight":3},
+  {"name":"Pucar\u00e1","type":"Aircraft","allegiance":"Hostile","speed_kts":196,"primary_weapon":"Rockets / 20 mm cannon","min_range_nm":0.2,"max_range_nm":0.8,"weight":2},
+  {"name":"Super \u00c9tendard","type":"Aircraft","allegiance":"Hostile","speed_kts":434,"primary_weapon":"Exocet AM39","min_range_nm":5.0,"max_range_nm":35.0,"weight":1},
+  {"name":"Canberra bomber","type":"Aircraft","allegiance":"Hostile","speed_kts":336,"primary_weapon":"Bombs","min_range_nm":1.0,"max_range_nm":2.0,"weight":1},
+  {"name":"ARA General Belgrano","type":"Ship","allegiance":"Hostile","speed_kts":22,"primary_weapon":"6-inch main battery","min_range_nm":8.0,"max_range_nm":15.0,"weight":1},
+
+  {"name":"HMS Invincible","type":"Ship","allegiance":"Friendly","speed_kts":20,"primary_weapon":null,"min_range_nm":null,"max_range_nm":null,"weight":1},
+  {"name":"Type 42 Destroyer","type":"Ship","allegiance":"Friendly","speed_kts":22,"primary_weapon":"Sea Dart SAM","min_range_nm":2.0,"max_range_nm":35.0,"weight":3},
+  {"name":"Type 22 Frigate","type":"Ship","allegiance":"Friendly","speed_kts":22,"primary_weapon":"Seawolf SAM","min_range_nm":0.5,"max_range_nm":6.0,"weight":3},
+  {"name":"Amphibious Ship (Fearless/Intrepid/Sir Galahad)","type":"Ship","allegiance":"Friendly","speed_kts":12,"primary_weapon":null,"min_range_nm":null,"max_range_nm":null,"weight":2},
+  {"name":"Fleet Tanker (RFA)","type":"Ship","allegiance":"Friendly","speed_kts":14,"primary_weapon":null,"min_range_nm":null,"max_range_nm":null,"weight":2},
+  {"name":"Stores Ship (RFA)","type":"Ship","allegiance":"Friendly","speed_kts":14,"primary_weapon":null,"min_range_nm":null,"max_range_nm":null,"weight":2},
+
+  {"name":"Merchantman (Neutral)","type":"Ship","allegiance":"Neutral","speed_kts":12,"primary_weapon":null,"min_range_nm":null,"max_range_nm":null,"weight":1},
+  {"name":"Fishing Trawler (Neutral/Uncertain)","type":"Ship","allegiance":"Neutral","speed_kts":10,"primary_weapon":null,"min_range_nm":null,"max_range_nm":null,"weight":1},
+
+  {"name":"Lynx Helicopter","type":"Helicopter","allegiance":"Friendly","speed_kts":90,"primary_weapon":"AS.12 missiles","min_range_nm":1.0,"max_range_nm":6.0,"weight":1},
+  {"name":"Sea King Helicopter","type":"Helicopter","allegiance":"Friendly","speed_kts":90,"primary_weapon":null,"min_range_nm":null,"max_range_nm":null,"weight":1},
+  {"name":"Gazelle Helicopter","type":"Helicopter","allegiance":"Friendly","speed_kts":80,"primary_weapon":"Light rockets / MG","min_range_nm":0.2,"max_range_nm":1.0,"weight":1},
+
+  {"name":"Landing Craft (LCU/LCVP)","type":"Ship","allegiance":"Friendly","speed_kts":7,"primary_weapon":null,"min_range_nm":null,"max_range_nm":null,"weight":2},
+  {"name":"Sea Harrier FRS.1","type":"Aircraft","allegiance":"Friendly","speed_kts":420,"primary_weapon":"AIM-9 Sidewinder / 30 mm cannon","min_range_nm":0.5,"max_range_nm":15.0,"weight":3}
+]

@@ -1,0 +1,7 @@
+{
+  "grid": { "cols": 26, "rows": 26, "cell_nm": 1.0 },
+  "start": { "ship_cell": "K13", "course_deg": 0.0, "speed_kts": 0.0 },
+  "tick_seconds": 1.0,
+  "auto_radar_scan_minutes": 0.05,
+  "rng_seed": 19820425
+}
