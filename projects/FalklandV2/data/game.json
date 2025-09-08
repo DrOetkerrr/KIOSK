@@ -1,5 +1,5 @@
 {
-  "grid": { "cols": 26, "rows": 26, "nm_per_cell": 2 },
+  "grid": { "cols": 26, "rows": 26, "cell_nm": 2 },
 
   "start": {
     "ship_cell": "K13",

@@ -21,7 +21,7 @@
       "rounds": 21,
       "range_nm": [
         1.0,
-        3.0
+        4.0
       ],
       "valid_targets": [
         "Aircraft",
@@ -57,7 +57,7 @@
     },
     "exocet_mm38": {
       "name": "MM38 Exocet",
-      "rounds": 2,
+      "rounds": 4,
       "range_nm": [
         3.0,
         22.0
@@ -69,7 +69,7 @@
     },
     "corvus_chaff": {
       "name": "Corvus chaff",
-      "salvoes": 14,
+      "salvoes": 13,
       "valid_targets": [
         "Missile",
         "Aircraft"

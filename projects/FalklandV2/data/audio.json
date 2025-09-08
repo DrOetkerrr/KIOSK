@@ -1,10 +1,35 @@
 {
   "base_url": "/assets/sounds/",
-  "gun_4_5in":   { "fire": "gun-fire-346766.mp3", "hit": "hit.mp3", "miss": "silence_120ms.wav" },
-  "seacat":      { "fire": "SeaCatLaunch.m4a",     "hit": "hit.mp3", "miss": "silence_120ms.wav" },
-  "oerlikon_20mm": { "fire": "gun-fire-346766.mp3","hit": "hit.mp3", "miss": "silence_120ms.wav" },
-  "gam_bo1_20mm":  { "fire": "gun-fire-346766.mp3","hit": "hit.mp3", "miss": "silence_120ms.wav" },
-  "exocet_mm38": { "fire": "exocet.mp3",          "hit": "hit.mp3", "miss": "silence_120ms.wav" },
-  "corvus_chaff":{ "deploy": "squelch.m4a" },
-  "ui": { "radio_on": "radio_on.wav", "radio_off": "radio_off.wav" }
+  "ui": {
+    "radio_on": "radio_on.wav"
+  },
+  "gun_4_5in": {
+    "fire": "4.5cmgun.wav",
+    "hit": "hit.wav",
+    "miss": "miss.wav"
+  },
+  "oerlikon_20mm": {
+    "fire": "20mmgun.mp3",
+    "hit": "Missile Impact Sound.wav",
+    "miss": ""
+  },
+  "gam_bo1_20mm": {
+    "fire": "20mmgun.mp3",
+    "hit": "Missile Impact Sound.wav",
+    "miss": ""
+  },
+  "seacat": {
+    "fire": "SeaCatLaunch.m4a",
+    "hit": "Missile Impact Sound",
+    "miss": "miss.wav"
+  },
+    "exocet": {
+    "fire": "exocet.mp3",
+    "hit": "Missile Impact Sound",
+    "miss": "miss.wav"
+  },
+  "corvus_chaff": {
+    "deploy": "chaff.wav"
+  }
+    
 }

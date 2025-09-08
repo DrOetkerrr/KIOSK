@@ -1,17 +1,300 @@
+"""
+Radar subsystem — contact spawning, status strings, and fleet logic.
+
+Goals:
+- No instant pool fill-ups.
+- Continuous trickle spawns.
+- Hostile waves (3–5) separated by lulls.
+- Persistent friendlies: HMS Hermes + a Type 21 stay within 3 cells of own ship,
+  roughly matching own course/speed.
+
+Knobs (game.json -> "radar"):
 {
-  "name": "Ensign","Jim Henson"
-  "tone": "calm, concise, professional watch officer",
-  "brevity_policy": "Short, military style, clear sentences. Prefer bullet-like structure when listing items.",
-  "jargon": "Use correct naval terms sparingly; define briefly if asked. Avoid flourish. You act as a british naval officer in the Falklands in 1982",
-  "constraints": [
-    "Do not invent contacts or facts not in state.",
-    "Reference timecode in status summaries.",
-    "When threats exist, lead with nearest/highest-threat contact.",
-    "Offer options, not orders."
-  ],
-  "style_examples": [
-    "Status: H+2, speed 15 kn, course 090. One enemy contact, 11 NM at 045°T. Recommend hold course; weapons tight.",
-    "Advise: Close at 12–18 kn to maintain tactical choice; report at H+3."
-  ],
-  "fallback": "If unsure, ask a precise question in one line."
+  "max_contacts": 10,
+  "friendlies": {
+    "interval_min": 90,
+    "interval_max": 180,
+    "max_active": 4
+  },
+  "hostiles": {
+    "interval_min": 60,
+    "interval_max": 150,
+    "max_active": 6,
+    "wave_chance": 0.6,
+    "wave_size_min": 3,
+    "wave_size_max": 5
+  }
 }
+
+Notes:
+- manual_scan(...) never spawns; it only reports.
+- auto_tick(...) is the ONLY place where spawns happen.
+- Fleet persistence renames/repurposes a spawned friendly if needed, then
+  maintains its proximity and vector.
+"""
+
+from __future__ import annotations
+import math
+import random
+from typing import Dict, List, Optional, Tuple
+
+from subsystems import contacts
+
+# ------------------------------ Status line ----------------------------------
+
+def status_line(pool, ship_xy: Tuple[float, float], locked_id: Optional[int] = None, max_list: int = 3) -> str:
+    sx, sy = ship_xy
+    contacts_sorted = sorted(pool.contacts, key=lambda c: contacts.dist_nm_xy(c.x, c.y, sx, sy, pool.grid))
+    n = len(contacts_sorted)
+    line = f"{n} contact(s)"
+
+    if locked_id:
+        tgt = next((c for c in contacts_sorted if c.id == locked_id), None)
+        if tgt:
+            rng = round(contacts.dist_nm_xy(tgt.x, tgt.y, sx, sy, pool.grid), 1)
+            cell = contacts.format_cell(int(round(tgt.x)), int(round(tgt.y)))
+            line += f" | locked: {cell} {tgt.type} {tgt.allegiance} d={rng}nm (#{tgt.id})"
+
+    if contacts_sorted:
+        descs = []
+        for c in contacts_sorted[:max_list]:
+            rng = round(contacts.dist_nm_xy(c.x, c.y, sx, sy, pool.grid), 1)
+            cell = contacts.format_cell(int(round(c.x)), int(round(c.y)))
+            descs.append(f"{cell} {c.type} {c.allegiance} d={rng}nm (#{c.id})")
+        line += " | " + " | ".join(descs)
+
+    return "RADAR: " + line
+
+
+def unlock_contact(state: Dict) -> None:
+    state.setdefault("radar", {})["locked_contact_id"] = None
+
+
+def lock_contact(state: Dict, cid: int) -> None:
+    state.setdefault("radar", {})["locked_contact_id"] = cid
+
+
+def manual_scan(engine) -> str:
+    """Manual scan: never spawns; just reports current picture."""
+    sx, sy = engine._ship_xy()
+    return status_line(engine.pool, (sx, sy), locked_id=engine.state.get("radar", {}).get("locked_contact_id"))
+
+
+# ------------------------------ Fleet logic ----------------------------------
+
+# IDs of the persistent fleet contacts (set when created/assigned)
+FLEET_IDS: Dict[str, Optional[int]] = {"hermes": None, "type21": None}
+
+def _nm_per_cell(grid) -> float:
+    return getattr(grid, "cell_nm", 2.0)
+
+def _within_cells(c1: Tuple[float, float], c2: Tuple[float, float], max_cells: float) -> bool:
+    dx = c1[0] - c2[0]
+    dy = c1[1] - c2[1]
+    return math.hypot(dx, dy) <= max_cells
+
+def _soft_set_course_speed(c, course_deg: float, speed_kts: float) -> None:
+    try:
+        c.course_deg = float(course_deg) % 360.0
+        c.speed_kts_game = float(speed_kts)
+    except Exception:
+        pass
+
+def _move_towards_cell(c, target_cell_xy: Tuple[float, float], max_step_cells: float = 0.75) -> None:
+    """Gently nudge a contact toward target cell coords (grid units)."""
+    tx, ty = target_cell_xy
+    dx = tx - c.x
+    dy = ty - c.y
+    dist = math.hypot(dx, dy)
+    if dist <= 1e-6:
+        return
+    step = min(max_step_cells, dist)
+    c.x += (dx / dist) * step
+    c.y += (dy / dist) * step
+
+def _promote_or_spawn_friendly(engine) -> Optional[object]:
+    """
+    Ensure we have a friendly contact to designate for fleet use.
+    Prefer reusing an existing Friendly; else spawn one.
+    """
+    fr = [c for c in engine.pool.contacts if getattr(c, "allegiance", "") == "Friendly"]
+    if fr:
+        return fr[0]
+    # else spawn and force to friendly
+    c = _spawn_from_pool(engine)
+    if not c:
+        return None
+    try:
+        c.allegiance = "Friendly"
+        # if it spawned as aircraft, make it a ship-ish thing for fleet feel
+        if "Skyhawk" in c.type or "Mirage" in c.type:
+            c.type = "Frigate"
+    except Exception:
+        pass
+    return c
+
+def _ensure_fleet_presence(engine) -> List[str]:
+    """
+    Make sure HMS Hermes and a Type 21 are present and kept near the player ship.
+    They should roughly share course/speed and remain within 3 cells.
+    """
+    logs: List[str] = []
+    sx, sy = engine._ship_xy()
+    course, speed = engine._ship_course_speed()
+    # Desired anchor offsets (in cells) relative to own ship
+    targets = {
+        "hermes": (sx - 2.0, sy + 1.5),
+        "type21": (sx + 2.0, sy - 1.5),
+    }
+
+    for key in ("hermes", "type21"):
+        cid = FLEET_IDS.get(key)
+        obj = None
+        if cid is not None:
+            obj = next((c for c in engine.pool.contacts if c.id == cid), None)
+
+        if obj is None:
+            # Assign: pick or spawn a friendly and rename it
+            obj = _promote_or_spawn_friendly(engine)
+            if obj is None:
+                continue
+            FLEET_IDS[key] = obj.id
+            if key == "hermes":
+                obj.type = "Carrier"
+                obj.name = "HMS Hermes"
+            else:
+                obj.type = "Type 21 Frigate"
+            obj.allegiance = "Friendly"
+            # drop near desired target cell
+            tx, ty = targets[key]
+            obj.x = tx + random.uniform(-0.5, 0.5)
+            obj.y = ty + random.uniform(-0.5, 0.5)
+            logs.append(f"Fleet: assigned #{obj.id} {obj.name or obj.type} as persistent friendly")
+
+        # Maintain vector and proximity
+        _soft_set_course_speed(obj, course, speed)
+        tx, ty = targets[key]
+        if not _within_cells((obj.x, obj.y), (tx, ty), 3.0):
+            _move_towards_cell(obj, (tx, ty), max_step_cells=1.2)
+
+    return logs
+
+
+# ------------------------------ Spawning helpers -----------------------------
+
+def _spawn_from_pool(engine):
+    """
+    Robustly call the pool's spawn function, whatever it's named.
+    Tries common method names; returns the contact or None.
+    """
+    pool = engine.pool
+    for name in ("spawn_contact", "spawn_random_contact", "spawn", "add_random_contact"):
+        fn = getattr(pool, name, None)
+        if callable(fn):
+            try:
+                return fn()
+            except TypeError:
+                # Some pools require args; try without first and skip if incompatible
+                continue
+    return None
+
+
+# ------------------------------ Spawning timers ------------------------------
+
+_next_friendly_delay: float = 0.0
+_next_hostile_delay: float = 0.0
+_last_friendly_ts: float = 0.0
+_last_hostile_ts: float = 0.0
+
+def _cfg(engine) -> Dict:
+    return engine.game_cfg.get("radar", {}) or {}
+
+def _counts(engine) -> Tuple[int, int]:
+    fr = sum(1 for c in engine.pool.contacts if getattr(c, "allegiance", "") == "Friendly")
+    ho = sum(1 for c in engine.pool.contacts if getattr(c, "allegiance", "") == "Hostile")
+    return fr, ho
+
+def _schedule_next(now: float, min_s: int, max_s: int) -> float:
+    return now + float(random.randint(min_s, max_s))
+
+def _spawn_one(engine, allegiance_hint: Optional[str] = None):
+    c = _spawn_from_pool(engine)
+    if not c:
+        return None
+    # Nudge allegiance if needed (soft override; keeps things simple)
+    try:
+        if allegiance_hint and getattr(c, "allegiance", None) != allegiance_hint:
+            c.allegiance = allegiance_hint
+    except Exception:
+        pass
+    return c
+
+# ------------------------------ Auto tick ------------------------------------
+
+def auto_tick(engine, now: float) -> List[str]:
+    """
+    Called each engine tick; may spawn per-faction contacts and updates fleet.
+    Returns log lines for new contacts or fleet assignments.
+    """
+    global _next_friendly_delay, _next_hostile_delay, _last_friendly_ts, _last_hostile_ts
+
+    logs: List[str] = []
+
+    cfg = _cfg(engine)
+    max_contacts = int(cfg.get("max_contacts", 10))
+
+    f_cfg = cfg.get("friendlies", {}) or {}
+    h_cfg = cfg.get("hostiles", {}) or {}
+
+    f_min = int(f_cfg.get("interval_min", 90))
+    f_max = int(f_cfg.get("interval_max", 180))
+    f_cap = int(f_cfg.get("max_active", 4))
+
+    h_min = int(h_cfg.get("interval_min", 60))
+    h_max = int(h_cfg.get("interval_max", 150))
+    h_cap = int(h_cfg.get("max_active", 6))
+    wave_p = float(h_cfg.get("wave_chance", 0.6))
+    wave_min = int(h_cfg.get("wave_size_min", 3))
+    wave_max = int(h_cfg.get("wave_size_max", 5))
+
+    # Always maintain fleet presence & formation first
+    logs += _ensure_fleet_presence(engine)
+
+    # Respect total cap
+    if len(engine.pool.contacts) >= max_contacts:
+        return logs
+
+    fr_count, ho_count = _counts(engine)
+
+    # Friendly trickle
+    if now - _last_friendly_ts >= _next_friendly_delay:
+        if fr_count < f_cap and len(engine.pool.contacts) < max_contacts:
+            c = _spawn_one(engine, "Friendly")
+            if c:
+                sx, sy = engine._ship_xy()
+                rng = round(contacts.dist_nm_xy(c.x, c.y, sx, sy, engine.pool.grid), 1)
+                cell = contacts.format_cell(int(round(c.x)), int(round(c.y)))
+                logs.append(f"NEW CONTACT: {cell} {c.type} ({c.allegiance}) d={rng}nm crs {c.course_deg:.0f}° {c.speed_kts_game:.0f}kts")
+                fr_count += 1
+        _last_friendly_ts = now
+        _next_friendly_delay = float(random.randint(f_min, f_max))
+
+    # Hostile trickle/wave
+    if now - _last_hostile_ts >= _next_hostile_delay:
+        quantity = 1
+        if random.random() < wave_p:
+            quantity = random.randint(wave_min, wave_max)
+        for _ in range(quantity):
+            if ho_count >= h_cap or len(engine.pool.contacts) >= max_contacts:
+                break
+            c = _spawn_one(engine, "Hostile")
+            if c:
+                sx, sy = engine._ship_xy()
+                rng = round(contacts.dist_nm_xy(c.x, c.y, sx, sy, engine.pool.grid), 1)
+                cell = contacts.format_cell(int(round(c.x)), int(round(c.y)))
+                logs.append(f"NEW CONTACT: {cell} {c.type} ({c.allegiance}) d={rng}nm crs {c.course_deg:.0f}° {c.speed_kts_game:.0f}kts")
+                ho_count += 1
+        _last_hostile_ts = now
+        _next_hostile_delay = float(random.randint(h_min, h_max))
+
+    return logs

@@ -1,8 +1,91 @@
 {
-  "gun_4_5in":     { "cooldown_s": 6.0,  "travel_base_s": 0.0, "travel_per_nm_s": 2.0,  "travel_min_s": 0.8,  "hit_p": 0.32 },
-  "seacat":        { "cooldown_s": 8.0,  "travel_base_s": 4.0, "travel_per_nm_s": 6.0,  "travel_min_s": 0.0,  "hit_p": 0.48 },
-  "oerlikon_20mm": { "cooldown_s": 2.0,  "travel_base_s": 0.0, "travel_per_nm_s": 1.0,  "travel_min_s": 0.3,  "hit_p": 0.22 },
-  "gam_bo1_20mm":  { "cooldown_s": 2.5,  "travel_base_s": 0.0, "travel_per_nm_s": 1.2,  "travel_min_s": 0.4,  "hit_p": 0.26 },
-  "exocet_mm38":   { "cooldown_s": 20.0, "travel_base_s": 10.0,"travel_per_nm_s": 12.0, "travel_min_s": 0.0,  "hit_p": 0.72 },
-  "corvus_chaff":  { "cooldown_s": 10.0, "travel_base_s": 0.0, "travel_per_nm_s": 0.0,  "travel_min_s": 0.0,  "hit_p": null }
+  "exocet": {
+    "min_nm": 3.0,
+    "max_nm": 35.0,
+    "allowed_kinds": ["Ship"],
+    "cooldown_s": 20.0,
+    "travel_base_s": 2.0,
+    "travel_per_nm_s": 6.0,
+    "travel_min_s": 6.0,
+    "hit_p": 0.65,
+    "sfx_key": "exocet",
+    "fire_event": "fire",
+    "requires_lock": true,
+    "target_required": true
+  },
+
+  "gun_4_5in": {
+    "min_nm": 1.0,
+    "max_nm": 12.0,
+    "allowed_kinds": ["Ship", "Aircraft"],
+    "cooldown_s": 5.0,
+    "travel_base_s": 1.0,
+    "travel_per_nm_s": 2.0,
+    "travel_min_s": 2.0,
+    "hit_p": 0.35,
+    "sfx_key": "gun_4_5in",
+    "fire_event": "fire",
+    "requires_lock": true,
+    "target_required": true
+  },
+
+  "oerlikon_20mm": {
+    "min_nm": 0.0,
+    "max_nm": 1.2,
+    "allowed_kinds": ["Aircraft", "Missile"],
+    "cooldown_s": 2.0,
+    "travel_base_s": 0.2,
+    "travel_per_nm_s": 0.5,
+    "travel_min_s": 0.3,
+    "hit_p": 0.18,
+    "sfx_key": "oerlikon_20mm",
+    "fire_event": "fire",
+    "requires_lock": true,
+    "target_required": true
+  },
+
+  "gam_bo1_20mm": {
+    "min_nm": 0.0,
+    "max_nm": 1.2,
+    "allowed_kinds": ["Aircraft", "Missile"],
+    "cooldown_s": 2.0,
+    "travel_base_s": 0.2,
+    "travel_per_nm_s": 0.5,
+    "travel_min_s": 0.3,
+    "hit_p": 0.18,
+    "sfx_key": "gam_bo1_20mm",
+    "fire_event": "fire",
+    "requires_lock": true,
+    "target_required": true
+  },
+
+  "seacat": {
+    "min_nm": 1.0,
+    "max_nm": 5.0,
+    "allowed_kinds": ["Aircraft", "Missile"],
+    "cooldown_s": 8.0,
+    "travel_base_s": 1.0,
+    "travel_per_nm_s": 3.5,
+    "travel_min_s": 3.0,
+    "hit_p": 0.28,
+    "sfx_key": "seacat",
+    "fire_event": "fire",
+    "requires_lock": true,
+    "target_required": true
+  },
+
+  "corvus_chaff": {
+    "min_nm": 0.0,
+    "max_nm": 0.0,
+    "allowed_kinds": ["Any"],
+    "cooldown_s": 10.0,
+    "travel_base_s": 0.0,
+    "travel_per_nm_s": 0.0,
+    "travel_min_s": 0.0,
+    "hit_p": 0.0,
+    "sfx_key": "corvus_chaff",
+    "fire_event": "deploy",
+    "requires_lock": false,
+    "target_required": false
+  }
 }
