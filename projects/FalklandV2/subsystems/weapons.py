@@ -1,113 +1,130 @@
 #!/usr/bin/env python3
 """
-Weapons subsystem (Step 11) — status only.
+Falklands V2 — Weapons helpers (Step 16a)
 
-Single responsibility (for now):
-- Load ship weapons config from data/ship.json
-- Produce a concise, readable status line (ammo + ranges, cell-first style not relevant here)
+What’s here (no side-effects on the engine yet):
+- weapons_status(ship_cfg): concise one-line status for the dashboard
+- display_name(key): stable pretty names for UI/logs
+- get_ammo(ship_cfg, key): read current ammo count(s)
+- consume_ammo(ship_cfg, key, n=1): decrement in-memory ship dict (no file I/O)
+- format_range(range_def): human-friendly range label
 
-No engine dependency. Safe to run standalone for a quick check.
-Later, this module will grow: arming, firing, flight-time, hit resolution.
+Expected ship.json schema (per weapon key):
+- gun_4_5in: { "ammo_he": int, "ammo_illum": int, "effective_max_nm": float? }
+- seacat:     { "rounds": int, "range_nm": [min,max] }
+- oerlikon_20mm: { "rounds": int, "range_nm": [min,max] }
+- gam_bo1_20mm:  { "rounds": int, "range_nm": [min,max] }
+- exocet_mm38:   { "rounds": int, "range_nm": [min,max] }
+- corvus_chaff:  { "salvoes": int }
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, Optional
-import json
+from typing import Dict, Any, Tuple, Optional
 
-ROOT = Path(__file__).resolve().parents[1]   # .../FalklandV2
-DATA = ROOT / "data"
-
-def _load_json(path: Path) -> Dict[str, Any]:
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-@dataclass(frozen=True)
-class WeaponView:
-    name: str
-    info: str  # short text: counts + range
-
-def _fmt_range(r):
-    """Range can be single float (max nm) or [min,max]."""
-    if r is None:
-        return ""
-    if isinstance(r, (int, float)):
-        return f"≤{float(r):.1f} nm"
-    if isinstance(r, (list, tuple)) and len(r) == 2:
-        lo, hi = r
-        parts = []
-        if lo is not None:
-            parts.append(f"≥{float(lo):.1f}")
-        if hi is not None:
-            parts.append(f"≤{float(hi):.1f}")
-        return "–".join(parts) + " nm" if parts else ""
-    return ""
+# ---- Public API -------------------------------------------------------------
 
 def weapons_status(ship_cfg: Dict[str, Any]) -> str:
-    """
-    Returns a single-line concise status like:
-    'WEAPONS: 4.5in HE=550 ILLUM=100 (≤8.0 nm) | Sea Cat ROUNDS=35 (≥1.0–≤3.0 nm) | Exocet ROUNDS=4 (≥3.0–≤22.0 nm) | Corvus CHAFF=15 | 20mm Oerlikon ROUNDS=5000 (≥0.3–≤0.5 nm)'
-    """
+    """Return a short, readable summary for the dashboard top line."""
     w = ship_cfg.get("weapons", {})
-    chunks = []
-
-    # 4.5" gun
+    parts = []
+    # Gun
     if "gun_4_5in" in w:
         g = w["gun_4_5in"]
-        rng = _fmt_range(g.get("effective_max_nm", g.get("range_nm")))
-        chunks.append(f"4.5in HE={g.get('ammo_he',0)} ILLUM={g.get('ammo_illum',0)} ({rng})" if rng else
-                      f"4.5in HE={g.get('ammo_he',0)} ILLUM={g.get('ammo_illum',0)}")
-
-    # Sea Cat
+        parts.append(f"4.5in HE={int(g.get('ammo_he',0))} ILLUM={int(g.get('ammo_illum',0))}")
+    # SAM
     if "seacat" in w:
-        sc = w["seacat"]
-        rng = _fmt_range(sc.get("range_nm"))
-        chunks.append(f"Sea Cat ROUNDS={sc.get('rounds',0)} ({rng})" if rng else
-                      f"Sea Cat ROUNDS={sc.get('rounds',0)}")
-
-    # Oerlikon 20mm
+        parts.append(f"SeaCat {int(w['seacat'].get('rounds',0))}")
+    # CIWS / 20mm
     if "oerlikon_20mm" in w:
-        o = w["oerlikon_20mm"]
-        rng = _fmt_range(o.get("range_nm"))
-        chunks.append(f"20mm Oerlikon ROUNDS={o.get('rounds',0)} ({rng})" if rng else
-                      f"20mm Oerlikon ROUNDS={o.get('rounds',0)}")
-
-    # GAM-BO1 20mm
+        parts.append(f"Oerlikon {int(w['oerlikon_20mm'].get('rounds',0))}")
     if "gam_bo1_20mm" in w:
-        g2 = w["gam_bo1_20mm"]
-        rng = _fmt_range(g2.get("range_nm"))
-        chunks.append(f"GAM-BO1 20mm ({rng})" if rng else "GAM-BO1 20mm")
-
-    # Exocet MM38
+        parts.append(f"GAM-BO1 {int(w['gam_bo1_20mm'].get('rounds',0))}")
+    # SSM
     if "exocet_mm38" in w:
-        ex = w["exocet_mm38"]
-        rng = _fmt_range(ex.get("range_nm"))
-        chunks.append(f"Exocet MM38 ROUNDS={ex.get('rounds',0)} ({rng})" if rng else
-                      f"Exocet MM38 ROUNDS={ex.get('rounds',0)}")
-
-    # Corvus chaff
+        parts.append(f"Exocet {int(w['exocet_mm38'].get('rounds',0))}")
+    # Chaff
     if "corvus_chaff" in w:
-        ch = w["corvus_chaff"]
-        chunks.append(f"Corvus CHAFF={ch.get('salvoes',0)}")
+        parts.append(f"Chaff {int(w['corvus_chaff'].get('salvoes',0))}")
+    return "WEAPONS: " + (" | ".join(parts) if parts else "(none)")
 
-    if not chunks:
-        return "WEAPONS: (none configured)"
-    return "WEAPONS: " + " | ".join(chunks)
+def display_name(key: str) -> str:
+    """Stable pretty names for logs/UI."""
+    return {
+        "gun_4_5in": "4.5in Mk.8",
+        "seacat": "Sea Cat",
+        "oerlikon_20mm": "20mm Oerlikon",
+        "gam_bo1_20mm": "GAM-BO1 20mm",
+        "exocet_mm38": "Exocet MM38",
+        "corvus_chaff": "Corvus chaff",
+    }.get(key, key)
 
-# ---------- Self-test / demo ----------
+def get_ammo(ship_cfg: Dict[str, Any], key: str) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Return (primary, secondary) ammo counts where it makes sense.
+    - gun_4_5in → (HE, ILLUM)
+    - others    → (rounds, None) or (salvoes, None)
+    - unknown   → (None, None)
+    """
+    w = ship_cfg.get("weapons", {})
+    if key not in w:
+        return (None, None)
+    d = w[key]
+    if key == "gun_4_5in":
+        return (int(d.get("ammo_he", 0)), int(d.get("ammo_illum", 0)))
+    if key in ("seacat", "oerlikon_20mm", "gam_bo1_20mm", "exocet_mm38"):
+        return (int(d.get("rounds", 0)), None)
+    if key == "corvus_chaff":
+        return (int(d.get("salvoes", 0)), None)
+    return (None, None)
 
-def _demo() -> None:
-    try:
-        ship = _load_json(DATA / "ship.json")
-    except FileNotFoundError:
-        print("No data/ship.json found; create it first (from earlier step).")
-        return
-    name = ship.get("name", "Own Ship")
-    klass = ship.get("class", "")
-    head = f"{name} ({klass})" if klass else name
-    print(head)
-    print(weapons_status(ship))
+def consume_ammo(ship_cfg: Dict[str, Any], key: str, n: int = 1, *, illum: bool=False) -> bool:
+    """
+    Decrement ammo in the given ship_cfg dict (caller persists).
+    Returns True if successful (enough ammo), False if blocked.
+    - gun_4_5in: decrements HE by default; set illum=True to use illum
+    - others: decrements 'rounds' or 'salvoes'
+    """
+    if n <= 0:
+        return True
+    w = ship_cfg.setdefault("weapons", {})
+    if key not in w:
+        return False
+    d = w[key]
 
-if __name__ == "__main__":
-    _demo()
+    if key == "gun_4_5in":
+        field = "ammo_illum" if illum else "ammo_he"
+        cur = int(d.get(field, 0))
+        if cur < n:
+            return False
+        d[field] = cur - n
+        return True
+
+    if key in ("seacat", "oerlikon_20mm", "gam_bo1_20mm", "exocet_mm38"):
+        cur = int(d.get("rounds", 0))
+        if cur < n:
+            return False
+        d["rounds"] = cur - n
+        return True
+
+    if key == "corvus_chaff":
+        cur = int(d.get("salvoes", 0))
+        if cur < n:
+            return False
+        d["salvoes"] = cur - n
+        return True
+
+    return False
+
+def format_range(rdef) -> str:
+    """Human-friendly range string from float or [min,max]."""
+    if rdef is None:
+        return "—"
+    if isinstance(rdef, (int, float)):
+        return f"≤{float(rdef):.1f} nm"
+    if isinstance(rdef, list) and len(rdef) == 2:
+        lo, hi = rdef
+        parts = []
+        if lo is not None: parts.append(f"≥{float(lo):.1f}")
+        if hi is not None: parts.append(f"≤{float(hi):.1f}")
+        return ("–".join(parts) + " nm") if parts else "—"
+    return "—"

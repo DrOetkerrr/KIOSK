@@ -24,3 +24,4 @@
   {"name":"Landing Craft (LCU/LCVP)","type":"Ship","allegiance":"Friendly","speed_kts":7,"primary_weapon":null,"min_range_nm":null,"max_range_nm":null,"weight":2},
   {"name":"Sea Harrier FRS.1","type":"Aircraft","allegiance":"Friendly","speed_kts":420,"primary_weapon":"AIM-9 Sidewinder / 30 mm cannon","min_range_nm":0.5,"max_range_nm":15.0,"weight":3}
 ]
+

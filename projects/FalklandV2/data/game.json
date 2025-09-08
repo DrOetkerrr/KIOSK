@@ -1,8 +1,21 @@
 {
-  "grid": { "cols": 26, "rows": 26, "cell_nm": 1.0 },
-  "start": { "ship_cell": "K13", "course_deg": 0.0, "speed_kts": 0.0 },
+  "grid": { "cols": 26, "rows": 26, "nm_per_cell": 2 },
+
+  "start": {
+    "ship_cell": "K13",
+    "course_deg": 0,
+    "speed_kts": 20
+  },
+
   "tick_seconds": 1.0,
-  "auto_radar_scan_minutes": 0.05,
-  "rng_seed": 19820425,
-  "log_level": "quiet"
+
+  "auto_radar_scan_minutes": 1,
+
+  "radar": {
+    "spawn_interval_min": 60,
+    "spawn_interval_max": 180,
+    "wave_size_min": 2,
+    "wave_size_max": 5,
+    "max_contacts": 10
+  }
 }

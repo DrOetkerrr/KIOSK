@@ -1,0 +1,8 @@
+{
+  "gun_4_5in":     { "cooldown_s": 6.0,  "travel_base_s": 0.0, "travel_per_nm_s": 2.0,  "travel_min_s": 0.8,  "hit_p": 0.32 },
+  "seacat":        { "cooldown_s": 8.0,  "travel_base_s": 4.0, "travel_per_nm_s": 6.0,  "travel_min_s": 0.0,  "hit_p": 0.48 },
+  "oerlikon_20mm": { "cooldown_s": 2.0,  "travel_base_s": 0.0, "travel_per_nm_s": 1.0,  "travel_min_s": 0.3,  "hit_p": 0.22 },
+  "gam_bo1_20mm":  { "cooldown_s": 2.5,  "travel_base_s": 0.0, "travel_per_nm_s": 1.2,  "travel_min_s": 0.4,  "hit_p": 0.26 },
+  "exocet_mm38":   { "cooldown_s": 20.0, "travel_base_s": 10.0,"travel_per_nm_s": 12.0, "travel_min_s": 0.0,  "hit_p": 0.72 },
+  "corvus_chaff":  { "cooldown_s": 10.0, "travel_base_s": 0.0, "travel_per_nm_s": 0.0,  "travel_min_s": 0.0,  "hit_p": null }
+}

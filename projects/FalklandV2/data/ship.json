@@ -4,56 +4,110 @@
   "speed_max_kts": 32,
   "speed_cruise_kts": 18,
   "range_nm_at_cruise": 4600,
-
   "weapons": {
     "gun_4_5in": {
       "name": "4.5 inch Mk.8 gun",
-      "ammo_he": 550,
+      "ammo_he": 549,
       "ammo_illum": 100,
       "effective_max_nm": 8.0,
-      "valid_targets": ["Ship", "Shore", "Test"]
+      "valid_targets": [
+        "Ship",
+        "Shore",
+        "Test"
+      ]
     },
     "seacat": {
       "name": "GWS-24 Seacat SAM (quad)",
-      "rounds": 35,
-      "range_nm": [1.0, 3.0],
-      "valid_targets": ["Aircraft", "Helicopter", "Test"]
+      "rounds": 21,
+      "range_nm": [
+        1.0,
+        3.0
+      ],
+      "valid_targets": [
+        "Aircraft",
+        "Helicopter",
+        "Test"
+      ]
     },
     "oerlikon_20mm": {
       "name": "20mm Oerlikon",
       "rounds": 5000,
-      "range_nm": [0.25, 0.5],
-      "valid_targets": ["Aircraft", "Helicopter", "Test"]
+      "range_nm": [
+        0.25,
+        0.5
+      ],
+      "valid_targets": [
+        "Aircraft",
+        "Helicopter",
+        "Test"
+      ]
     },
     "gam_bo1_20mm": {
       "name": "20mm GAM-BO1 (twin)",
-      "rounds": 2000,
-      "range_nm": [0.3, 2.5],
-      "valid_targets": ["Aircraft", "Helicopter", "Test"]
+      "rounds": 989,
+      "range_nm": [
+        0.3,
+        2.5
+      ],
+      "valid_targets": [
+        "Aircraft",
+        "Helicopter",
+        "Test"
+      ]
     },
     "exocet_mm38": {
       "name": "MM38 Exocet",
-      "rounds": 4,
-      "range_nm": [3.0, 22.0],
-      "valid_targets": ["Ship", "Test"]
+      "rounds": 2,
+      "range_nm": [
+        3.0,
+        22.0
+      ],
+      "valid_targets": [
+        "Ship",
+        "Test"
+      ]
     },
     "corvus_chaff": {
       "name": "Corvus chaff",
-      "salvoes": 15,
-      "valid_targets": ["Missile", "Aircraft"]
+      "salvoes": 14,
+      "valid_targets": [
+        "Missile",
+        "Aircraft"
+      ]
     }
   },
-
   "systems": {
-    "radar":          { "status": "operational" },
-    "engine":         { "status": "operational" },
-    "navigation":     { "status": "operational" },
-    "communications": { "status": "operational" }
+    "radar": {
+      "status": "operational"
+    },
+    "engine": {
+      "status": "operational"
+    },
+    "navigation": {
+      "status": "operational"
+    },
+    "communications": {
+      "status": "operational"
+    }
   },
-
   "repair_teams": [
-    { "id": 1, "section": "Forward",  "assigned_system": null, "busy_until_s": 0.0 },
-    { "id": 2, "section": "Midships", "assigned_system": null, "busy_until_s": 0.0 },
-    { "id": 3, "section": "Aft",      "assigned_system": null, "busy_until_s": 0.0 }
+    {
+      "id": 1,
+      "section": "Forward",
+      "assigned_system": null,
+      "busy_until_s": 0.0
+    },
+    {
+      "id": 2,
+      "section": "Midships",
+      "assigned_system": null,
+      "busy_until_s": 0.0
+    },
+    {
+      "id": 3,
+      "section": "Aft",
+      "assigned_system": null,
+      "busy_until_s": 0.0
+    }
   ]
 }

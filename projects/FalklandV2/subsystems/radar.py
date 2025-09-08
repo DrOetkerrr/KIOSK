@@ -1,98 +1,88 @@
-#!/usr/bin/env python3
 """
-Radar subsystem — lock/unlock + target selection + status text.
-
-Formatting updated: every reported contact snippet now starts with
-CELL → NAME/TYPE → DISTANCE → other info.
+Radar subsystem — spawns and reports contacts.
+Supports wave spawning with lull periods (driven by game.json -> "radar").
 """
 
-from __future__ import annotations
-from typing import Optional, Tuple, List
-import math
+import random
+from typing import Dict, List, Optional, Tuple
 
-def _range_nm(ax: float, ay: float, bx: float, by: float, cell_nm: float) -> float:
-    return math.hypot(bx - ax, by - ay) * cell_nm
+# Use absolute imports (works when launched as scripts)
+from subsystems import contacts
 
-def choose_primary(pool, ship_xy: Tuple[float, float], mode: str = "nearest_hostile") -> Optional[int]:
-    sx, sy = ship_xy
-    cell_nm = pool.grid.cell_nm
-    hostiles = [c for c in pool.contacts if c.allegiance.lower() == "hostile"]
-    seq = hostiles if mode == "nearest_hostile" else list(pool.contacts)
-    if not seq:
-        return None
-    best = min(seq, key=lambda c: _range_nm(c.x, c.y, sx, sy, cell_nm))
-    return best.id
 
-def lock_contact(state: dict, contact_id: Optional[int]) -> None:
-    radar = state.setdefault("radar", {})
-    radar["locked_contact_id"] = int(contact_id) if contact_id is not None else None
-
-def unlock_contact(state: dict) -> None:
-    radar = state.setdefault("radar", {})
-    radar["locked_contact_id"] = None
-
-def _cell_for(c) -> str:
-    # Present as grid cell (rounded to nearest) e.g., "N13"
-    x = max(0, min(pool_grid_cols(c)-1, int(round(c.x))))
-    y = max(0, min(pool_grid_rows(c)-1, int(round(c.y))))
-    return f"{chr(ord('A') + x)}{y+1}"
-
-def pool_grid_cols(c) -> int:
-    return getattr(getattr(c, "__dict__", {}).get("_grid_override", None), "cols", None) or c.__class__.__dict__.get("_grid_cols", None) or 26
-
-def pool_grid_rows(c) -> int:
-    return getattr(getattr(c, "__dict__", {}).get("_grid_override", None), "rows", None) or c.__class__.__dict__.get("_grid_rows", None) or 26
+# --- Public API --------------------------------------------------------------
 
 def status_line(pool, ship_xy: Tuple[float, float], locked_id: Optional[int] = None, max_list: int = 3) -> str:
-    """
-    RADAR line with cell-first formatting:
-      RADAR: <n> contact(s) | locked: <CELL> <NAME> <ALLEGIANCE> d=<nm> | nearest: <CELL> <NAME> <ALLEGIANCE> d=<nm> | ...
-    """
+    """Short radar status string with optional locked target and top-N nearest."""
     sx, sy = ship_xy
-    n = len(pool.contacts)
-    if n == 0:
-        return "RADAR: no contacts."
+    contacts_sorted = sorted(pool.contacts, key=lambda c: contacts.dist_nm_xy(c.x, c.y, sx, sy, pool.grid))
+    n = len(contacts_sorted)
+    line = f"{n} contact(s)"
 
-    # compute ranges
-    infos = []
-    for c in pool.contacts:
-        d = _range_nm(c.x, c.y, sx, sy, pool.grid.cell_nm)
-        cell = f"{chr(ord('A') + int(round(c.x)))}{int(round(c.y))+1}"
-        infos.append((d, cell, c))
+    if locked_id:
+        tgt = next((c for c in contacts_sorted if c.id == locked_id), None)
+        if tgt:
+            rng = round(contacts.dist_nm_xy(tgt.x, tgt.y, sx, sy, pool.grid), 1)
+            cell = contacts.format_cell(int(round(tgt.x)), int(round(tgt.y)))
+            line += f" | locked: {cell} {tgt.type} {tgt.allegiance} d={rng}nm (#{tgt.id})"
 
-    infos.sort(key=lambda t: t[0])
-    parts: List[str] = [f"RADAR: {n} contact(s)"]
+    if contacts_sorted:
+        descs = []
+        for c in contacts_sorted[:max_list]:
+            rng = round(contacts.dist_nm_xy(c.x, c.y, sx, sy, pool.grid), 1)
+            cell = contacts.format_cell(int(round(c.x)), int(round(c.y)))
+            descs.append(f"{cell} {c.type} {c.allegiance} d={rng}nm (#{c.id})")
+        line += " | " + " | ".join(descs)
 
-    # locked target, if present
-    if locked_id is not None:
-        locked = next((t for t in infos if t[2].id == locked_id), None)
-        if locked:
-            d, cell, c = locked
-            parts.append(f"locked: {cell} {c.name} {c.allegiance} d={d:.1f}nm (#{c.id})")
+    return "RADAR: " + line
 
-    # nearest few
-    top = infos[:max_list]
-    nearest_bits = [f"{cell} {c.name} {c.allegiance} d={d:.1f}nm (#{c.id})" for d, cell, c in top]
-    parts.append("nearest: " + " | ".join(nearest_bits))
 
-    return " | ".join(parts)
+def unlock_contact(state: Dict) -> None:
+    state.setdefault("radar", {})["locked_contact_id"] = None
 
-# ---------- Minimal demo ----------
-if __name__ == "__main__":
-    from dataclasses import dataclass
-    @dataclass
-    class Grid: cols:int=26; rows:int=26; cell_nm:float=1.0
-    @dataclass
-    class C: id:int; name:str; allegiance:str; x:float; y:float
-    class Pool:
-        def __init__(self): self.grid=Grid(); self.contacts=[]
-    p = Pool()
-    # Fake contacts around ship at N13 (13,12)
-    p.contacts = [
-        C(1,"A-4 Skyhawk","Hostile", 8.0, 10.0),
-        C(2,"Type 22 Frigate","Friendly", 20.0, 18.0),
-        C(3,"Dagger","Hostile", 14.0, 12.0),
-    ]
-    ship_xy = (13.0, 12.0)
-    print(status_line(p, ship_xy, locked_id=3))
-    print(status_line(p, ship_xy, locked_id=None))
+
+def lock_contact(state: Dict, cid: int) -> None:
+    state.setdefault("radar", {})["locked_contact_id"] = cid
+
+
+# --- Wave spawning with lulls ------------------------------------------------
+
+_last_spawn_ts: float = 0.0
+_next_spawn_delay: float = 0.0
+
+def auto_tick(engine, now: float) -> List[str]:
+    """
+    Called each engine tick; may spawn a new wave if delay elapsed.
+    Returns list of log lines for newly spawned contacts.
+    """
+    global _last_spawn_ts, _next_spawn_delay
+
+    cfg = engine.game_cfg.get("radar", {})
+    spawn_min = int(cfg.get("spawn_interval_min", 60))
+    spawn_max = int(cfg.get("spawn_interval_max", 180))
+    wave_min = int(cfg.get("wave_size_min", 2))
+    wave_max = int(cfg.get("wave_size_max", 5))
+    max_contacts = int(cfg.get("max_contacts", 10))
+
+    logs: List[str] = []
+
+    # If it's time for a new wave…
+    if now - _last_spawn_ts >= _next_spawn_delay:
+        # …and we're below the cap, spawn a wave
+        if len(engine.pool.contacts) < max_contacts:
+            wave_size = random.randint(wave_min, wave_max)
+            for _ in range(wave_size):
+                c = contacts.spawn_contact(engine.pool)
+                if c:
+                    sx, sy = engine._ship_xy()
+                    rng = round(contacts.dist_nm_xy(c.x, c.y, sx, sy, engine.pool.grid), 1)
+                    cell = contacts.format_cell(int(round(c.x)), int(round(c.y)))
+                    logs.append(
+                        f"NEW CONTACT: {cell} {c.type} ({c.allegiance}) d={rng}nm crs {c.course_deg:.0f}° {c.speed_kts_game:.0f}kts"
+                    )
+
+        # Schedule next wave regardless (lull)
+        _last_spawn_ts = now
+        _next_spawn_delay = random.randint(spawn_min, spawn_max)
+
+    return logs

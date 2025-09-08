@@ -1,0 +1,98 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Falklands V2 — Web Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 20px; }
+    h1 { margin: 0 0 8px; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 12px 14px; box-shadow: 0 1px 4px rgba(0,0,0,.05); }
+    .card h2 { margin: 0 0 8px; font-size: 16px; }
+    #contacts table { border-collapse: collapse; width: 100%; }
+    #contacts th, #contacts td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; font-variant-numeric: tabular-nums; }
+    .controls label { display: inline-block; margin-right: 8px; }
+    input[type=number] { width: 90px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; background:#f2f2f2; }
+    .badge { padding:2px 8px; border-radius:999px; background:#eee; }
+    .ready { background:#d9f2d9; }
+    .notready { background:#f7d9d9; }
+    tr.clickable { cursor: pointer; }
+    button.small { font-size: 12px; padding: 2px 8px; margin-left: 8px; }
+    #log ul { margin: 0; padding-left: 18px; }
+  </style>
+</head>
+<body>
+  <h1>Falklands V2 — Web Dashboard</h1>
+  <div class="row">
+    <div id="hud" class="card" style="flex:1 1 460px;">
+      <h2>HUD</h2>
+      <div class="mono" id="hud_line">loading…</div>
+    </div>
+    <div id="ship" class="card" style="flex:1 1 360px;">
+      <h2>Own Ship</h2>
+      <div>Cell: <span id="ship_cell" class="pill">—</span></div>
+      <div>Course: <span id="ship_course" class="mono">—</span>°</div>
+      <div>Speed: <span id="ship_speed" class="mono">—</span> kts</div>
+      <div class="controls" style="margin-top:10px;">
+        <label>Set course <input type="number" id="set_course" min="0" max="359" step="1"></label>
+        <label>Set speed <input type="number" id="set_speed" min="0" step="1"></label>
+        <button onclick="helm()">Apply</button>
+        <button style="margin-left:8px;" onclick="resetGame()">Reset</button>
+        <button style="margin-left:8px;" id="pauseBtn" onclick="togglePause()">Pause</button>
+      </div>
+    </div>
+    <div id="radar" class="card" style="flex:1 1 520px;">
+      <h2>Radar</h2>
+      <div class="mono" id="radar_line">loading…</div>
+      <div style="margin-top:8px;">
+        <button onclick="scan()">Scan now</button>
+        <button onclick="unlock()">Unlock</button>
+        <label>Lock #<input type="number" id="lock_id" min="1" step="1" style="width:80px;"> <button onclick="lock()">Go</button></label>
+      </div>
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:16px;">
+    <div id="weapons" class="card" style="flex:1 1 100%;">
+      <h2>Weapons</h2>
+      <div class="mono" id="weapons_ship">—</div>
+      <div class="mono" id="weapons_line" style="margin-top:6px;">loading…</div>
+      <div style="margin-top:8px; overflow-x:auto;">
+        <table>
+          <thead><tr><th>Weapon</th><th>Ammo</th><th>Range</th><th>READY</th><th>CD</th><th></th></tr></thead>
+          <tbody id="weapons_table"><tr><td colspan="6">—</td></tr></tbody>
+        </table>
+      </div>
+      <div id="weapons_hint" class="mono" style="margin-top:6px; font-size:12px; color:#666;"></div>
+      <div id="weapons_controls" style="margin-top:6px;">
+        <button class="small" onclick="refit()">Refit ammo</button>
+        <button class="small" id="btn_sfx_test" onclick="sfxTest()">Sound test</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="contacts" class="card" style="margin-top:16px;">
+    <h2>Nearest Contacts (click a row to lock)</h2>
+    <table>
+      <thead><tr><th>CELL</th><th>TYPE</th><th>NAME</th><th>RANGE</th><th>CRS</th><th>SPD</th><th>ID</th></tr></thead>
+      <tbody id="contacts_body"><tr><td colspan="7">loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="row" style="margin-top:16px;">
+    <div id="log" class="card" style="flex:1 1 60%;">
+      <h2>Engagements</h2>
+      <ul id="eng_log"><li>—</li></ul>
+    </div>
+    <div id="inflight" class="card" style="flex:1 1 38%;">
+      <h2>In-flight</h2>
+      <ul id="inflight_list"><li>—</li></ul>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

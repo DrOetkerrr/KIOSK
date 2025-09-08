@@ -1,213 +1,252 @@
 #!/usr/bin/env python3
 """
-Falklands V2 — Web Dashboard (Step 13d fixed)
-- Pause/Resume
-- Click a contact row to lock
-- Weapons panel (per-weapon table + READY vs locked)
-- Reset game
-- Runs on 127.0.0.1:8080 to avoid macOS AirPlay conflict on 5000
+Falklands V2 — Web API + Engine (UI served from /web)
+- Serves:   /            -> web/index.html
+            /app.js      -> web/app.js
+            /assets/sounds/<file> from data/sounds/
+- APIs:     /api/status, /api/scan, /api/unlock, /api/lock, /api/helm,
+            /api/reset, /api/pause, /api/refit, /api/sfx_test, /api/fire
+- Features: cooldowns, in-flight events with travel time, HIT/MISS resolution,
+            JSON-driven weapon profiles & sounds, 20mm burst (2×50),
+            SFX queue drained to client each poll + immediate sound-test URL,
+            wave-based hostile spawns with lull periods (see game.json: "radar").
 """
 
 from __future__ import annotations
-import threading, time, json
+import json, random, threading, time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from flask import Flask, jsonify, request, Response
+from flask import Flask, Response, jsonify, request, send_from_directory
 
-# --- Local imports
+# ---- Local imports ----------------------------------------------------------
 import sys
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from engine import Engine
-from subsystems import radar as rdar
 from subsystems import contacts as cons
+from subsystems import engage
 from subsystems import nav as navi
+from subsystems import radar as rdar
 from subsystems import weapons as weap
 
+# ---- App / paths ------------------------------------------------------------
 app = Flask(__name__)
 
-# --- Paths
 DATA = ROOT / "data"
 STATE = ROOT / "state"
+WEB_DIR = ROOT / "web"
+
 RUNTIME = STATE / "runtime.json"
 GAMECFG = DATA / "game.json"
+SHIP_FILE = DATA / "ship.json"
+LOADOUT_FILE = DATA / "ship_loadout.json"
 
-# --- Engine runner in a background thread
+AUDIO_FILE = DATA / "audio.json"
+PROFILES_FILE = DATA / "weapon_profiles.json"
+SOUNDS_DIR = DATA / "sounds"
+
+# ---- Engine / runtime -------------------------------------------------------
 ENG_LOCK = threading.Lock()
 ENG: Optional[Engine] = None
 RUN = True
-PAUSED = False  # toggled by /api/pause
+PAUSED = False
 
+ENG_LOG: List[str] = []
+COOLDOWNS: Dict[str, float] = {}      # weapon_key -> unix_ts_ready
+EVENTS: List[Dict[str, Any]] = []     # in-flight shots
+EVENT_SEQ = 1
+
+AUDIO: Dict[str, Any] = {}            # audio.json
+PROFILES: Dict[str, Any] = {}         # weapon_profiles.json
+SFX_QUEUE: List[str] = []             # URLs to play on next poll
+
+# 20mm burst logic
+BURST_ROUNDS = {"oerlikon_20mm": 50, "gam_bo1_20mm": 50}
+BURSTS_PER_ENGAGEMENT = 2  # => consume 100 per engagement
+
+
+# ---- Utils ------------------------------------------------------------------
 def _read_json(p: Path) -> Dict[str, Any]:
-    return json.loads(p.read_text(encoding="utf-8"))
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
 
 def _write_json(p: Path, obj: Dict[str, Any]) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
 
+def _load_configs() -> None:
+    global AUDIO, PROFILES
+    AUDIO = _read_json(AUDIO_FILE) or {}
+    PROFILES = _read_json(PROFILES_FILE) or {}
+
 def _fresh_runtime_state() -> Dict[str, Any]:
-    """Build a fresh runtime.json using game.json start values."""
-    game = _read_json(GAMECFG)
+    game = _read_json(GAMECFG) or {}
     start = game.get("start", {})
     cell = start.get("ship_cell", "K13")
     course = float(start.get("course_deg", 0.0))
     speed = float(start.get("speed_kts", 0.0))
     return {
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
-        "ship": {
-            "cell": cell,
-            "course_deg": course,
-            "speed_kts": speed
-        },
+        "ship": {"cell": cell, "course_deg": course, "speed_kts": speed},
         "contacts": [],
-        "radar": {"locked_contact_id": None}
+        "radar": {"locked_contact_id": None},
     }
 
+def _sfx_push(key: str, event: str) -> None:
+    """Queue a sound URL mapped in audio.json."""
+    try:
+        m = AUDIO.get(key, {})
+        fname = m.get(event)
+        base = AUDIO.get("base_url", "/assets/sounds/")
+        if fname:
+            SFX_QUEUE.append(base + fname)
+    except Exception:
+        pass
+
+def _rounds_required_for_fire(key: str) -> int:
+    if key in BURST_ROUNDS:
+        return BURSTS_PER_ENGAGEMENT * BURST_ROUNDS[key]  # 2*50 = 100
+    return 1
+
+# ---- Profiles (timing / odds) ----------------------------------------------
+def _weapon_profile(key: str) -> Dict[str, Any]:
+    defaults = {
+        "cooldown_s": 5.0,
+        "travel_base_s": 0.0,
+        "travel_per_nm_s": 2.0,
+        "travel_min_s": 0.0,
+        "hit_p": 0.25,
+    }
+    p = dict(defaults)
+    p.update(PROFILES.get(key, {}))
+
+    def travel_s(rnm: float) -> float:
+        base = float(p.get("travel_base_s", 0.0))
+        per = float(p.get("travel_per_nm_s", 0.0))
+        min_s = float(p.get("travel_min_s", 0.0))
+        return max(min_s, base + per * float(rnm))
+
+    return {"cooldown_s": float(p["cooldown_s"]), "travel_s": travel_s, "hit_p": p.get("hit_p")}
+
+# ---- Event resolution -------------------------------------------------------
+def _resolve_due_events(now: float) -> None:
+    global EVENTS, ENG_LOG
+    if not EVENTS:
+        return
+
+    due = [e for e in EVENTS if e["ts_resolve"] <= now]
+    if not due:
+        return
+    EVENTS = [e for e in EVENTS if e["ts_resolve"] > now]
+
+    with ENG_LOCK:
+        eng = ENG
+        assert eng is not None
+
+        for e in due:
+            key = e["weapon"]
+            prof = _weapon_profile(key)
+            hit_p = prof.get("hit_p", 0.0) or 0.0
+
+            if key == "corvus_chaff":
+                ENG_LOG.append(f"[{time.strftime('%H:%M:%S')}] CHAFF cloud active.")
+                _sfx_push("corvus_chaff", "deploy")
+                continue
+
+            tgt = next((c for c in eng.pool.contacts if c.id == e["target_id"]), None)
+            if tgt is None:
+                ENG_LOG.append(f"[{time.strftime('%H:%M:%S')}] {weap.display_name(key)} resolve: target lost.")
+                continue
+
+            roll = random.random()
+            if roll < hit_p:
+                cell = cons.format_cell(int(round(tgt.x)), int(round(tgt.y)))
+                eng.pool.contacts = [c for c in eng.pool.contacts if c.id != tgt.id]
+                ENG_LOG.append(f"[{time.strftime('%H:%M:%S')}] HIT: {weap.display_name(key)} destroyed #{tgt.id} {tgt.type} at {cell}")
+                _sfx_push(key, "hit")
+                if eng.state.get("radar", {}).get("locked_contact_id") == tgt.id:
+                    rdar.unlock_contact(eng.state)
+                try:
+                    eng._autosave()
+                except Exception:
+                    pass
+            else:
+                ENG_LOG.append(f"[{time.strftime('%H:%M:%S')}] MISS: {weap.display_name(key)} vs #{tgt.id} {tgt.type}")
+                _sfx_push(key, "miss")
+
+# ---- Engine thread ----------------------------------------------------------
 def engine_thread():
-    """Background tick loop. Respects PAUSED, reuses ENG; reset hot-swaps it."""
     global ENG, RUN, PAUSED
     if not RUNTIME.exists():
         _write_json(RUNTIME, _fresh_runtime_state())
     ENG = Engine()
     tick = float(ENG.game_cfg.get("tick_seconds", 1.0))
+
     while RUN:
         time.sleep(tick)
         with ENG_LOCK:
             if not PAUSED and ENG is not None:
                 ENG.tick(tick)
+                # Wave-based hostile spawns with lull periods
+                newlogs = rdar.auto_tick(ENG, time.time())
+                for line in newlogs:
+                    ENG_LOG.append(f"[{time.strftime('%H:%M:%S')}] {line}")
+        _resolve_due_events(time.time())
 
-# ---------- Snapshots / helpers
+# ---- Snapshots --------------------------------------------------------------
+def _locked_snapshot(eng: Engine, sx: float, sy: float) -> Dict[str, Any]:
+    locked_id = eng.state.get("radar", {}).get("locked_contact_id")
+    locked_rng = None
+    locked_cell = None
+    if locked_id is not None:
+        tgt = next((c for c in eng.pool.contacts if c.id == locked_id), None)
+        if tgt is not None:
+            locked_rng = round(cons.dist_nm_xy(tgt.x, tgt.y, sx, sy, eng.pool.grid), 2)
+            locked_cell = cons.format_cell(int(round(tgt.x)), int(round(tgt.y)))
+    return {"id": locked_id, "range_nm": locked_rng, "cell": locked_cell}
 
 def _weapons_snapshot(locked_range_nm: Optional[float]) -> Dict[str, Any]:
-    """
-    Build weapons info:
-      - status_line (legacy single-line summary)
-      - table: list of { name, ammo, range, ready } (ready requires locked target distance within range and ammo > 0)
-    """
-    path = DATA / "ship.json"
     ship_name = "Own Ship"
-    status_line = "WEAPONS: (no ship.json found)"
+    if not SHIP_FILE.exists():
+        return {"ship_name": ship_name, "status_line": "WEAPONS: (no ship.json)", "table": []}
+
+    ship = _read_json(SHIP_FILE)
+    name = ship.get("name", ship_name); klass = ship.get("class", "")
+    ship_name = f"{name} ({klass})" if klass else name
+    status_line = weap.weapons_status(ship)
+
+    results = engage.assess_all(ship, locked_range_nm)
     table: List[Dict[str, Any]] = []
-    if not path.exists():
-        return {"ship_name": ship_name, "status_line": status_line, "table": table}
-
-    try:
-        ship = _read_json(path)
-        # Header
-        name = ship.get("name", ship_name); klass = ship.get("class", "")
-        ship_name = f"{name} ({klass})" if klass else name
-        # Legacy summary
-        status_line = weap.weapons_status(ship)
-
-        # Table
-        w = ship.get("weapons", {})
-        def in_range(rdef, rng_nm: float) -> Optional[bool]:
-            if rng_nm is None:
-                return None
-            if rdef is None:
-                return None
-            if isinstance(rdef, (int, float)):
-                return rng_nm <= float(rdef)
-            if isinstance(rdef, list) and len(rdef) == 2:
-                lo = float(rdef[0]) if rdef[0] is not None else None
-                hi = float(rdef[1]) if rdef[1] is not None else None
-                if lo is not None and rng_nm < lo: return False
-                if hi is not None and rng_nm > hi: return False
-                return True
-            return None
-
-        # Gun 4.5"
-        if "gun_4_5in" in w:
-            g = w["gun_4_5in"]
-            ammo_he = int(g.get("ammo_he", 0))
-            ammo_il = int(g.get("ammo_illum", 0))
-            rng_def = g.get("effective_max_nm", g.get("range_nm"))
-            ready = (in_range(rng_def, locked_range_nm) if locked_range_nm is not None else None)
-            table.append({
-                "name": "4.5in Mk.8",
-                "ammo": f"HE={ammo_he} ILLUM={ammo_il}",
-                "range": (f"≤{float(rng_def):.1f} nm" if isinstance(rng_def, (int,float))
-                          else f"{('≥'+str(rng_def[0])) if rng_def and rng_def[0] else ''}"
-                               f"{'–' if rng_def and (rng_def[0] or rng_def[1]) else ''}"
-                               f"{('≤'+str(rng_def[1])) if rng_def and rng_def[1] else ''} nm"),
-                "ready": (ready and ammo_he > 0)
-            })
-
-        # Sea Cat
-        if "seacat" in w:
-            sc = w["seacat"]; rounds = int(sc.get("rounds", 0)); rng_def = sc.get("range_nm")
-            rd = in_range(rng_def, locked_range_nm) if locked_range_nm is not None else None
-            table.append({
-                "name": "Sea Cat",
-                "ammo": f"{rounds}",
-                "range": f"{('≥'+str(rng_def[0])) if rng_def and rng_def[0] else ''}"
-                         f"{'–' if rng_def and (rng_def[0] or rng_def[1]) else ''}"
-                         f"{('≤'+str(rng_def[1])) if rng_def and rng_def[1] else ''} nm",
-                "ready": (rd and rounds > 0)
-            })
-
-        # 20mm Oerlikon
-        if "oerlikon_20mm" in w:
-            o = w["oerlikon_20mm"]; rounds = int(o.get("rounds", 0)); rng_def = o.get("range_nm")
-            rd = in_range(rng_def, locked_range_nm) if locked_range_nm is not None else None
-            table.append({
-                "name": "20mm Oerlikon",
-                "ammo": f"{rounds}",
-                "range": f"{('≥'+str(rng_def[0])) if rng_def and rng_def[0] else ''}"
-                         f"{'–' if rng_def and (rng_def[0] or rng_def[1]) else ''}"
-                         f"{('≤'+str(rng_def[1])) if rng_def and rng_def[1] else ''} nm",
-                "ready": (rd and rounds > 0)
-            })
-
-        # GAM-BO1 20mm
-        if "gam_bo1_20mm" in w:
-            g2 = w["gam_bo1_20mm"]; rounds = int(g2.get("rounds", 0)); rng_def = g2.get("range_nm")
-            rd = in_range(rng_def, locked_range_nm) if locked_range_nm is not None else None
-            table.append({
-                "name": "GAM-BO1 20mm",
-                "ammo": f"{rounds}",
-                "range": f"{('≥'+str(rng_def[0])) if rng_def and rng_def[0] else ''}"
-                         f"{'–' if rng_def and (rng_def[0] or rng_def[1]) else ''}"
-                         f"{('≤'+str(rng_def[1])) if rng_def and rng_def[1] else ''} nm",
-                "ready": (rd and rounds > 0)
-            })
-
-        # Exocet
-        if "exocet_mm38" in w:
-            ex = w["exocet_mm38"]; rounds = int(ex.get("rounds", 0)); rng_def = ex.get("range_nm")
-            rd = in_range(rng_def, locked_range_nm) if locked_range_nm is not None else None
-            table.append({
-                "name": "Exocet MM38",
-                "ammo": f"{rounds}",
-                "range": f"{('≥'+str(rng_def[0])) if rng_def and rng_def[0] else ''}"
-                         f"{'–' if rng_def and (rng_def[0] or rng_def[1]) else ''}"
-                         f"{('≤'+str(rng_def[1])) if rng_def and rng_def[1] else ''} nm",
-                "ready": (rd and rounds > 0)
-            })
-
-        # Corvus chaff
-        if "corvus_chaff" in w:
-            ch = w["corvus_chaff"]; salvoes = int(ch.get("salvoes", 0))
-            table.append({
-                "name": "Corvus chaff",
-                "ammo": f"{salvoes}",
-                "range": "—",
-                "ready": None
-            })
-
-        return {"ship_name": ship_name, "status_line": status_line, "table": table}
-    except Exception as e:
-        return {"ship_name": ship_name, "status_line": f"WEAPONS: (error reading ship.json: {e})", "table": table}
+    now = time.time()
+    for r in results:
+        cd_left = 0.0
+        if r.key in COOLDOWNS:
+            t_ready = COOLDOWNS[r.key]
+            if t_ready > now:
+                cd_left = round(t_ready - now, 1)
+        table.append({
+            "key": r.key,
+            "name": r.name,
+            "ammo": r.ammo_text,
+            "range": r.range_text,
+            "ready": (r.ready if cd_left == 0 else False),
+            "reason": ("cooldown" if cd_left > 0 else r.reason),
+            "cooldown_s": cd_left,
+        })
+    return {"ship_name": ship_name, "status_line": status_line, "table": table}
 
 def snapshot() -> Dict[str, Any]:
-    """Build a JSON picture for the UI."""
     with ENG_LOCK:
         eng = ENG
         assert eng is not None
         sx, sy = eng._ship_xy()
-        locked_id = eng.state.get("radar", {}).get("locked_contact_id")
+
         nearest = sorted(eng.pool.contacts, key=lambda c: cons.dist_nm_xy(c.x, c.y, sx, sy, eng.pool.grid))[:10]
         contacts = [{
             "id": c.id,
@@ -217,16 +256,26 @@ def snapshot() -> Dict[str, Any]:
             "allegiance": c.allegiance,
             "range_nm": round(cons.dist_nm_xy(c.x, c.y, sx, sy, eng.pool.grid), 1),
             "course_deg": round(c.course_deg, 0),
-            "speed_kts": round(c.speed_kts_game, 0)
+            "speed_kts": round(c.speed_kts_game, 0),
         } for c in nearest]
+
         course, speed = eng._ship_course_speed()
-        # locked distance (if any)
-        locked_rng = None
-        if locked_id is not None:
-            tgt = next((c for c in eng.pool.contacts if c.id == locked_id), None)
-            if tgt is not None:
-                locked_rng = round(cons.dist_nm_xy(tgt.x, tgt.y, sx, sy, eng.pool.grid), 2)
-        weapons = _weapons_snapshot(locked_rng)
+        lock = _locked_snapshot(eng, sx, sy)
+        weapons = _weapons_snapshot(lock["range_nm"])
+
+        inflight = []
+        now = time.time()
+        for e in sorted(EVENTS, key=lambda x: x["ts_resolve"])[:6]:
+            inflight.append({
+                "id": e["id"], "weapon": e["weapon"], "target_id": e["target_id"],
+                "cell": e["target_cell"], "range_nm": e["range_nm"],
+                "eta_s": max(0, int(round(e["ts_resolve"] - now))),
+            })
+
+        global SFX_QUEUE
+        sfx = list(SFX_QUEUE)
+        SFX_QUEUE.clear()
+
         return {
             "hud": eng.hud(),
             "ship": {
@@ -234,202 +283,36 @@ def snapshot() -> Dict[str, Any]:
                     navi.NavState(eng.state["ship"]["pos"]["x"], eng.state["ship"]["pos"]["y"])
                 )),
                 "course_deg": round(course, 1),
-                "speed_kts": round(speed, 1)
+                "speed_kts": round(speed, 1),
             },
             "radar": {
-                "locked_contact_id": locked_id,
-                "locked_range_nm": locked_rng,
-                "status_line": rdar.status_line(eng.pool, (sx, sy), locked_id=locked_id, max_list=3)
+                "locked_contact_id": lock["id"],
+                "locked_cell": lock["cell"],
+                "locked_range_nm": lock["range_nm"],
+                "status_line": rdar.status_line(eng.pool, (sx, sy), locked_id=lock["id"], max_list=3),
             },
             "contacts": contacts,
             "weapons": weapons,
             "paused": PAUSED,
+            "engagements": ENG_LOG[-8:],
+            "inflight": inflight,
+            "sfx": sfx,
         }
 
-# --- Routes
-
+# ---- Static routes ----------------------------------------------------------
 @app.get("/")
 def index() -> Response:
-    html = """<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <title>Falklands V2 — Web Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 20px; }
-    h1 { margin: 0 0 8px; }
-    .row { display: flex; gap: 16px; flex-wrap: wrap; }
-    .card { border: 1px solid #ddd; border-radius: 12px; padding: 12px 14px; box-shadow: 0 1px 4px rgba(0,0,0,.05); }
-    .card h2 { margin: 0 0 8px; font-size: 16px; }
-    #contacts table { border-collapse: collapse; width: 100%; }
-    #contacts th, #contacts td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; font-variant-numeric: tabular-nums; }
-    .controls label { display: inline-block; margin-right: 8px; }
-    input[type=number] { width: 90px; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; background:#f2f2f2; }
-    .badge { padding:2px 8px; border-radius:999px; background:#eee; font-size:12px; }
-    .ready { background:#d9f2d9; }
-    .notready { background:#f7d9d9; }
-    tr.clickable { cursor: pointer; }
-  </style>
-</head>
-<body>
-  <h1>Falklands V2 — Web Dashboard</h1>
-  <div class="row">
-    <div id="hud" class="card" style="flex:1 1 460px;">
-      <h2>HUD</h2>
-      <div class="mono" id="hud_line">loading…</div>
-    </div>
-    <div id="ship" class="card" style="flex:1 1 360px;">
-      <h2>Own Ship</h2>
-      <div>Cell: <span id="ship_cell" class="pill">—</span></div>
-      <div>Course: <span id="ship_course" class="mono">—</span>°</div>
-      <div>Speed: <span id="ship_speed" class="mono">—</span> kts</div>
-      <div class="controls" style="margin-top:10px;">
-        <label>Set course <input type="number" id="set_course" min="0" max="359" step="1"></label>
-        <label>Set speed <input type="number" id="set_speed" min="0" step="1"></label>
-        <button onclick="helm()">Apply</button>
-        <button style="margin-left:8px;" onclick="resetGame()">Reset</button>
-        <button style="margin-left:8px;" id="pauseBtn" onclick="togglePause()">Pause</button>
-      </div>
-    </div>
-    <div id="radar" class="card" style="flex:1 1 520px;">
-      <h2>Radar</h2>
-      <div class="mono" id="radar_line">loading…</div>
-      <div style="margin-top:8px;">
-        <button onclick="scan()">Scan now</button>
-        <button onclick="unlock()">Unlock</button>
-        <label>Lock #<input type="number" id="lock_id" min="1" step="1" style="width:80px;"> <button onclick="lock()">Go</button></label>
-      </div>
-    </div>
-  </div>
+    return send_from_directory(WEB_DIR, "index.html", conditional=True)
 
-  <div class="row" style="margin-top:16px;">
-    <div id="weapons" class="card" style="flex:1 1 100%;">
-      <h2>Weapons</h2>
-      <div class="mono" id="weapons_ship">—</div>
-      <div class="mono" id="weapons_line" style="margin-top:6px;">loading…</div>
-      <div style="margin-top:8px; overflow-x:auto;">
-        <table>
-          <thead><tr><th>Weapon</th><th>Ammo</th><th>Range</th><th>READY vs locked</th></tr></thead>
-          <tbody id="weapons_table"><tr><td colspan="4">—</td></tr></tbody>
-        </table>
-      </div>
-      <div id="weapons_hint" class="mono" style="margin-top:6px; font-size:12px; color:#666;"></div>
-    </div>
-  </div>
+@app.get("/app.js")
+def app_js() -> Response:
+    return send_from_directory(WEB_DIR, "app.js", conditional=True)
 
-  <div id="contacts" class="card" style="margin-top:16px;">
-    <h2>Nearest Contacts (click a row to lock)</h2>
-    <table>
-      <thead><tr><th>CELL</th><th>TYPE</th><th>NAME</th><th>RANGE</th><th>CRS</th><th>SPD</th><th>ID</th></tr></thead>
-      <tbody id="contacts_body"><tr><td colspan="7">loading…</td></tr></tbody>
-    </table>
-  </div>
+@app.get("/assets/sounds/<path:fname>")
+def sounds_asset(fname: str):
+    return send_from_directory(SOUNDS_DIR, fname, conditional=True)
 
-<script>
-async function load() {
-  const r = await fetch('/api/status');
-  const j = await r.json();
-
-  // HUD + ship
-  document.getElementById('hud_line').textContent = j.hud;
-  document.getElementById('ship_cell').textContent = j.ship.cell;
-  document.getElementById('ship_course').textContent = j.ship.course_deg;
-  document.getElementById('ship_speed').textContent = j.ship.speed_kts;
-
-  // Pause button label
-  document.getElementById('pauseBtn').textContent = j.paused ? 'Resume' : 'Pause';
-
-  // Radar
-  document.getElementById('radar_line').textContent = j.radar.status_line;
-
-  // Weapons
-  document.getElementById('weapons_ship').textContent = j.weapons.ship_name;
-  document.getElementById('weapons_line').textContent = j.weapons.status_line;
-
-  const wt = document.getElementById('weapons_table');
-  wt.innerHTML = '';
-  for (const row of (j.weapons.table || [])) {
-    const tr = document.createElement('tr');
-    const badge = (row.ready === true) ? '<span class="badge ready">READY</span>'
-                : (row.ready === false) ? '<span class="badge notready">OUT</span>'
-                : '<span class="badge">N/A</span>';
-    tr.innerHTML = `<td>${row.name}</td><td class="mono">${row.ammo}</td><td class="mono">${row.range}</td><td>${badge}</td>`;
-    wt.appendChild(tr);
-  }
-  const hint = (j.radar.locked_contact_id && j.radar.locked_range_nm !== null)
-      ? `Locked target range: ${j.radar.locked_range_nm.toFixed(2)} nm`
-      : `Lock a target to evaluate weapon ranges.`;
-  document.getElementById('weapons_hint').textContent = hint;
-
-  // Contacts table (click to lock)
-  const tb = document.getElementById('contacts_body');
-  tb.innerHTML = '';
-  if (j.contacts.length === 0) {
-    tb.innerHTML = '<tr><td colspan="7">No contacts.</td></tr>';
-  } else {
-    for (const c of j.contacts) {
-      const tr = document.createElement('tr');
-      tr.className = 'clickable';
-      tr.onclick = () => lockById(c.id);
-      tr.innerHTML = `
-        <td class="mono">${c.cell}</td>
-        <td>${c.type}</td>
-        <td>${c.name} <span class="pill">${c.allegiance}</span></td>
-        <td class="mono">${c.range_nm.toFixed(1)} nm</td>
-        <td class="mono">${c.course_deg}°</td>
-        <td class="mono">${c.speed_kts}</td>
-        <td class="mono">#${String(c.id).padStart(2,'0')}</td>`;
-      tb.appendChild(tr);
-    }
-  }
-}
-
-async function scan() { await fetch('/api/scan', {method:'POST'}); await load(); }
-async function unlock() { await fetch('/api/unlock', {method:'POST'}); await load(); }
-async function lock() {
-  const id = parseInt(document.getElementById('lock_id').value);
-  if (!id) return;
-  await fetch('/api/lock', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})});
-  await load();
-}
-async function lockById(id) {
-  await fetch('/api/lock', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})});
-  await load();
-}
-async function helm() {
-  const c = document.getElementById('set_course').value;
-  const s = document.getElementById('set_speed').value;
-  const payload = {};
-  if (c !== '') payload.course_deg = parseFloat(c);
-  if (s !== '') payload.speed_kts = parseFloat(s);
-  if (Object.keys(payload).length === 0) return;
-  await fetch('/api/helm', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-  await load();
-}
-async function resetGame() {
-  const ok = confirm('Reset game to fresh state? Contacts will be cleared.');
-  if (!ok) return;
-  const r = await fetch('/api/reset', {method:'POST'});
-  const j = await r.json();
-  if (!j.ok) { alert('Reset failed: ' + (j.error || 'unknown error')); }
-  await load();
-}
-async function togglePause() {
-  const r = await fetch('/api/pause', {method:'POST'});
-  const j = await r.json();
-  document.getElementById('pauseBtn').textContent = j.paused ? 'Resume' : 'Pause';
-}
-
-load();
-setInterval(load, 1000);
-</script>
-</body>
-</html>"""
-    return Response(html, mimetype="text/html")
-
+# ---- API routes -------------------------------------------------------------
 @app.get("/api/status")
 def api_status():
     return jsonify(snapshot())
@@ -471,27 +354,155 @@ def api_helm():
 
 @app.post("/api/reset")
 def api_reset():
-    """Reset runtime state and hot-swap the Engine."""
     try:
         fresh = _fresh_runtime_state()
         _write_json(RUNTIME, fresh)
         with ENG_LOCK:
-            global ENG
+            global ENG, ENG_LOG, EVENTS, COOLDOWNS
             ENG = Engine()
+            ENG_LOG = []
+            EVENTS = []
+            COOLDOWNS = {}
+        _load_configs()
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.post("/api/pause")
 def api_pause():
-    """Toggle paused state server-side; return new state."""
     global PAUSED
     with ENG_LOCK:
         PAUSED = not PAUSED
-        return jsonify({"ok": True, "paused": PAUSED})
+    return jsonify({"ok": True, "paused": PAUSED})
 
+@app.post("/api/refit")
+def api_refit():
+    ship = _read_json(SHIP_FILE)
+    load = _read_json(LOADOUT_FILE)
+    if not ship or "weapons" not in load:
+        return jsonify({"ok": False, "error": "loadout missing"}), 500
+    w = ship.setdefault("weapons", {})
+    for k, v in load["weapons"].items():
+        d = w.setdefault(k, {})
+        for field, val in v.items():
+            d[field] = val
+    _write_json(SHIP_FILE, ship)
+    ENG_LOG.append(f"[{time.strftime('%H:%M:%S')}] Refit complete (ammo restored).")
+    return jsonify({"ok": True})
+
+@app.post("/api/sfx_test")
+def api_sfx_test():
+    """Queue UI sound and also return URL for immediate in-gesture playback."""
+    _sfx_push("ui", "radio_on")
+    try:
+        base = AUDIO.get("base_url", "/assets/sounds/")
+        fname = (AUDIO.get("ui") or {}).get("radio_on")
+        url = base + fname if fname else None
+    except Exception:
+        url = None
+    return jsonify({"ok": True, "url": url})
+
+@app.post("/api/fire")
+def api_fire():
+    global EVENT_SEQ
+    data = request.get_json(silent=True) or {}
+    key = str(data.get("weapon", "")).strip()
+    mode = str(data.get("mode", "he")).lower()  # "he" or "illum" for 4.5in
+    if not key:
+        return jsonify({"ok": False, "error": "no weapon provided"}), 400
+
+    ship = _read_json(SHIP_FILE)
+    if not ship:
+        return jsonify({"ok": False, "error": "ship.json missing"}), 500
+
+    now = time.time()
+    t_ready = COOLDOWNS.get(key, 0.0)
+    if t_ready > now:
+        return jsonify({"ok": False, "error": f"cooldown {round(t_ready - now, 1)}s"}), 400
+
+    with ENG_LOCK:
+        eng = ENG
+        assert eng is not None
+        sx, sy = eng._ship_xy()
+        lock = _locked_snapshot(eng, sx, sy)
+
+    rng = lock["range_nm"]
+    cell = lock["cell"]
+    if key != "corvus_chaff" and (lock["id"] is None or rng is None):
+        return jsonify({"ok": False, "error": "no locked target"}), 400
+
+    wdefs = ship.get("weapons", {})
+    if key not in wdefs:
+        return jsonify({"ok": False, "error": f"unknown weapon '{key}'"}), 400
+
+    res_list = engage.assess_all(ship, rng if key != "corvus_chaff" else None)
+    res = next((r for r in res_list if r.key == key), None)
+    if res is None:
+        return jsonify({"ok": False, "error": "internal assessment error"}), 500
+
+    # ammo checks
+    primary, secondary = weap.get_ammo(ship, key)
+    if key == "gun_4_5in":
+        need = 1
+        have = (secondary if mode == "illum" else primary) or 0
+        if have < need:
+            return jsonify({"ok": False, "error": f"no {'ILLUM' if mode=='illum' else 'HE'} ammo"}), 400
+    elif key == "corvus_chaff":
+        need = 1
+        if (primary or 0) < need:
+            return jsonify({"ok": False, "error": "no chaff remaining"}), 400
+    else:
+        need = _rounds_required_for_fire(key)  # 100 for 20mm
+        if (primary or 0) < need:
+            return jsonify({"ok": False, "error": f"need {need} rounds, have {(primary or 0)}"}), 400
+
+    # final gate (chaff is ammo-only)
+    if key != "corvus_chaff" and res.ready is not True:
+        why = res.reason or "blocked"
+        ENG_LOG.append(f"[{time.strftime('%H:%M:%S')}] FIRE {res.name}: BLOCKED — {why}")
+        return jsonify({"ok": False, "error": why}), 400
+
+    # consume ammo + persist
+    if key == "gun_4_5in":
+        ok = weap.consume_ammo(ship, key, 1, illum=(mode == "illum"))
+    elif key == "corvus_chaff":
+        ok = weap.consume_ammo(ship, key, 1)
+    else:
+        ok = weap.consume_ammo(ship, key, need)
+    if not ok:
+        return jsonify({"ok": False, "error": "ammo depletion race"}), 409
+    _write_json(SHIP_FILE, ship)
+
+    # cooldown + SFX
+    prof = _weapon_profile(key)
+    COOLDOWNS[key] = now + float(prof["cooldown_s"])
+    stamp = time.strftime("%H:%M:%S")
+
+    if key == "corvus_chaff":
+        ENG_LOG.append(f"[{stamp}] DEPLOY Chaff — OK")
+        _sfx_push("corvus_chaff", "deploy")
+        return jsonify({"ok": True})
+
+    # create in-flight event
+    travel = float(prof["travel_s"](float(rng)))
+    with ENG_LOCK:
+        EVENTS.append({
+            "id": EVENT_SEQ,
+            "ts_fire": now,
+            "ts_resolve": now + travel,
+            "weapon": key,
+            "target_id": lock["id"],
+            "target_cell": cell,
+            "range_nm": float(rng),
+        })
+        EVENT_SEQ += 1
+    ENG_LOG.append(f"[{stamp}] LAUNCH {weap.display_name(key)} → #{lock['id']} @ {cell} ({rng} nm), T+{int(travel)}s")
+    _sfx_push(key, "fire")
+    return jsonify({"ok": True})
+
+# ---- Main -------------------------------------------------------------------
 def main():
-    # start engine tick thread
+    _load_configs()
     t = threading.Thread(target=engine_thread, daemon=True)
     t.start()
     try:
