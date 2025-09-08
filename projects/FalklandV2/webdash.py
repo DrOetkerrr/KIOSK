@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading, time, json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from flask import Flask, jsonify, request, render_template
+from flask import Flask, jsonify, request, render_template, send_from_directory
 
 import sys
 ROOT = Path(__file__).resolve().parent
@@ -16,14 +16,19 @@ from subsystems import contacts as cons
 from subsystems import nav as navi
 from subsystems import engage as enga
 from subsystems.hermes_cap import HermesCAP
+from subsystems.audio import AudioManager
 
-# NEW: use the Convoy class that your convoy.py exposes
+# Convoy class API
 try:
     from subsystems.convoy import Convoy
 except Exception:
     Convoy = None  # type: ignore
 
-app = Flask(__name__, template_folder=str(ROOT / "templates"))
+app = Flask(
+    __name__,
+    template_folder=str(ROOT / "templates"),
+    static_folder=str(ROOT / "static"),
+)
 
 DATA = ROOT / "data"
 STATE = ROOT / "state"
@@ -32,11 +37,13 @@ AMMO_OVR = STATE / "ammo.json"
 ARMING = STATE / "arming.json"
 GAMECFG = DATA / "game.json"
 SHIPCFG = DATA / "ship.json"
+SOUNDS_DIR = DATA / "sounds"  # <-- your existing location
 
 ENG_LOCK = threading.Lock()
 ENG: Optional[Engine] = None
 CAP: Optional[HermesCAP] = None
 CONVOY: Optional["Convoy"] = None  # type: ignore
+AUDIO: Optional[AudioManager] = None
 RUN = True
 PAUSED = False
 
@@ -69,8 +76,9 @@ def _load_ship_cfg_with_overrides() -> Dict[str, Any]:
     ovr = _read_json(AMMO_OVR, {}) or {}
     wbase = base.setdefault("weapons", {})
     wovr = (ovr or {}).get("weapons", {})
-    for key, patch in wovr.items():
-        if key not in wbase: continue
+    for key, patch in (wovr or {}).items():
+        if key not in wbase:
+            continue
         for f, val in (patch or {}).items():
             if isinstance(val, (int, float)):
                 wbase[key][f] = val
@@ -106,7 +114,8 @@ def _ensure_armed_state_updated(now: float) -> Dict[str, Any]:
             wst.pop("arming_until", None)
             wst["armed"] = True
             changed = True
-    if changed: _save_arming(st)
+    if changed:
+        _save_arming(st)
     return st
 
 def _start_arming(wkey: str, now: float, delay_s: int = 5) -> Dict[str, Any]:
@@ -120,16 +129,21 @@ def _start_arming(wkey: str, now: float, delay_s: int = 5) -> Dict[str, Any]:
 # ---------- engine thread
 
 def engine_thread():
-    global ENG, CAP, CONVOY, RUN, PAUSED
+    global ENG, CAP, CONVOY, AUDIO, RUN, PAUSED
     if not RUNTIME.exists():
         _write_json(RUNTIME, _fresh_runtime_state())
     ENG = Engine()
     CAP = HermesCAP(DATA)
     if Convoy is not None:
         try:
-            CONVOY = Convoy.load(DATA)  # create formation from data/convoy.json
+            CONVOY = Convoy.load(DATA)
         except Exception:
             CONVOY = None
+    AUDIO = AudioManager(DATA)
+
+    # start ambience once (it loops client-side)
+    AUDIO.play("bridge_ambience", replace=True)
+
     tick = float(ENG.game_cfg.get("tick_seconds", 1.0))
     while RUN:
         time.sleep(tick)
@@ -138,6 +152,8 @@ def engine_thread():
                 ENG.tick(tick)
                 CAP.tick()
                 _ensure_armed_state_updated(time.time())
+                if AUDIO is not None:
+                    AUDIO.tick()
 
 # ---------- helpers
 
@@ -230,8 +246,6 @@ def _weapon_rows(ship_cfg: Dict[str, Any], locked_range_nm: Optional[float], tar
 
     return {"ship_name": ship_name, "table": table}
 
-# ---------- escorts snapshot using Convoy instance
-
 def _escorts_snapshot(eng: Engine, sx: float, sy: float, course: float, speed: float) -> List[Dict[str, Any]]:
     if CONVOY is None:
         return []
@@ -253,12 +267,18 @@ def _escorts_snapshot(eng: Engine, sx: float, sy: float, course: float, speed: f
 
 def snapshot() -> Dict[str, Any]:
     with ENG_LOCK:
-        eng = ENG; cap = CAP
-        assert eng is not None and cap is not None
+        eng = ENG; cap = CAP; audio = AUDIO
+        assert eng is not None and cap is not None and audio is not None
         sx, sy = eng._ship_xy()
         locked_id = eng.state.get("radar", {}).get("locked_contact_id")
 
-        nearest = sorted(eng.pool.contacts, key=lambda c: cons.dist_nm_xy(c.x, c.y, sx, sy, eng.pool.grid))[:10]
+        # hostiles only
+        nearest = [
+            c for c in eng.pool.contacts
+            if str(c.allegiance).lower().startswith("host")
+        ]
+        nearest.sort(key=lambda c: cons.dist_nm_xy(c.x, c.y, sx, sy, eng.pool.grid))
+        nearest = nearest[:10]
         contacts = [{
             "id": c.id,
             "cell": cons.format_cell(int(round(c.x)), int(round(c.y))),
@@ -277,10 +297,10 @@ def snapshot() -> Dict[str, Any]:
         now = time.time()
         arming = _ensure_armed_state_updated(now)
         weapons = _weapon_rows(ship_cfg, locked_rng, locked_ttype, arming, now)
-
         escorts = _escorts_snapshot(eng, sx, sy, course, speed)
 
         cap_snap = cap.snapshot()
+        audio_snap = audio.snapshot()
 
         return {
             "hud": eng.hud(),
@@ -294,8 +314,9 @@ def snapshot() -> Dict[str, Any]:
             "locked_target": locked_obj,
             "contacts": contacts,
             "weapons": weapons,
-            "escorts": escorts,   # now filled
+            "escorts": escorts,
             "cap": cap_snap,
+            "audio": audio_snap,
             "paused": PAUSED,
         }
 
@@ -351,11 +372,16 @@ def api_reset():
         if AMMO_OVR.exists(): AMMO_OVR.unlink()
         if ARMING.exists(): ARMING.unlink()
         with ENG_LOCK:
-            global ENG, CAP, CONVOY
+            global ENG, CAP, CONVOY, AUDIO
             ENG = Engine()
             CAP = HermesCAP(DATA)
             if Convoy is not None:
                 CONVOY = Convoy.load(DATA)
+            if AUDIO is None:
+                AUDIO = AudioManager(DATA)
+            else:
+                AUDIO.clear()
+                AUDIO.play("bridge_ambience", replace=True)
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -396,6 +422,9 @@ def api_arm():
     arming_until = wst.get("arming_until")
     armed = bool(wst.get("armed"))
     secs = int(max(0, float(arming_until)-now)) if arming_until else 0
+    # audio cue for arming start (soft)
+    if AUDIO is not None and not armed and arming_until:
+        AUDIO.play("weapon_ready", cooldown_s=1.0, gain=0.4)  # quiet cue
     return jsonify({"ok": True, "weapon": wkey, "armed": armed, "arming_seconds": secs})
 
 @app.post("/api/fire")
@@ -430,6 +459,18 @@ def api_fire():
             rng_nm = float(cons.dist_nm_xy(tgt.x, tgt.y, sx, sy, eng.pool.grid))
             ttype = _target_type_from_contact(tgt)
 
+            # launch cue
+            if AUDIO is not None:
+                if wkey == "gun_4_5in":
+                    AUDIO.play("gun_fire", cooldown_s=0.2)
+                elif wkey == "seacat":
+                    AUDIO.play("seacat_launch", cooldown_s=0.2)
+                    AUDIO.schedule("missile_track", 1.0)
+                elif wkey == "exocet_mm38":
+                    AUDIO.play("exocet_launch", cooldown_s=0.2)
+                    AUDIO.schedule("missile_track", 2.0)
+                    AUDIO.schedule("exocet_terminal", 10.0)
+
             outcome = enga.fire_once(ship_cfg, enga.FireRequest(weapon=wkey, target_range_nm=rng_nm, target_type=ttype))
             if not outcome.ok:
                 return jsonify({"ok": False, "error": outcome.reason, "in_range": outcome.in_range, "pk": outcome.pk_used}), 400
@@ -438,11 +479,16 @@ def api_fire():
 
             destroyed = False
             if outcome.hit:
+                if AUDIO is not None:
+                    AUDIO.play("hit", cooldown_s=0.5)
                 eng.pool.contacts = [c for c in eng.pool.contacts if c.id != tgt.id]
                 if eng.state.get("radar", {}).get("locked_contact_id") == tgt.id:
                     rdar.unlock_contact(eng.state)
                 eng._autosave()
                 destroyed = True
+            else:
+                if AUDIO is not None:
+                    AUDIO.play("splash", cooldown_s=0.5)
 
             st["weapons"][wkey] = {"armed": False}
             _save_arming(st)
@@ -458,6 +504,15 @@ def api_fire():
                 "destroyed": destroyed,
             })
         else:
+            # TEST FIRE path
+            if AUDIO is not None:
+                if wkey == "gun_4_5in":
+                    AUDIO.play("gun_fire", cooldown_s=0.2)
+                elif wkey == "seacat":
+                    AUDIO.play("seacat_launch", cooldown_s=0.2)
+                elif wkey == "exocet_mm38":
+                    AUDIO.play("exocet_launch", cooldown_s=0.2)
+
             _dec_ammo(wkey)
             st["weapons"][wkey] = {"armed": False}
             _save_arming(st)
@@ -487,6 +542,13 @@ def api_cap_request():
         cell = cons.format_cell(int(round(tgt.x)), int(round(tgt.y)))
         result = cap.request_cap_to_cell(cell, distance_nm=dist_nm)
         return jsonify(result)
+
+# ---------- serve sounds from data/sounds
+
+@app.get("/sounds/<path:fname>")
+def serve_sound(fname: str):
+    # Browser will request /sounds/<file> and we send from data/sounds
+    return send_from_directory(SOUNDS_DIR, fname, as_attachment=False)
 
 def main():
     t = threading.Thread(target=engine_thread, daemon=True)

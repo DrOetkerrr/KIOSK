@@ -1,117 +1,117 @@
 {
-  "created_utc": "2025-09-08T17:19:28",
+  "created_utc": "2025-09-08T17:58:21",
   "ship": {
     "cell": "K13",
-    "course_deg": 270.0,
-    "speed_kts": 30.0,
+    "course_deg": 0.0,
+    "speed_kts": 0.0,
     "pos": {
-      "x": 9.70833333333335,
+      "x": 10.0,
       "y": 12.0
     }
   },
   "contacts": [
     {
       "id": 1,
-      "name": "Stores Ship (RFA)",
+      "name": "Sea King Helicopter",
+      "type": "Helicopter",
+      "allegiance": "Friendly",
+      "cell": "B19",
+      "range_nm": 10.7,
+      "course_deg": 346.0,
+      "speed_kts": 68.0
+    },
+    {
+      "id": 2,
+      "name": "Type 42 Destroyer",
       "type": "Ship",
       "allegiance": "Friendly",
-      "cell": "V10",
-      "range_nm": 11.9,
-      "course_deg": 52.0,
-      "speed_kts": 10.0
+      "cell": "M7",
+      "range_nm": 6.4,
+      "course_deg": 50.0,
+      "speed_kts": 16.0
     },
     {
       "id": 3,
-      "name": "Landing Craft (LCU/LCVP)",
+      "name": "Type 22 Frigate",
       "type": "Ship",
       "allegiance": "Friendly",
-      "cell": "N8",
-      "range_nm": 5.8,
-      "course_deg": 286.0,
-      "speed_kts": 5.0
+      "cell": "O26",
+      "range_nm": 13.2,
+      "course_deg": 197.0,
+      "speed_kts": 16.0
     },
     {
       "id": 4,
-      "name": "Mirage III",
-      "type": "Aircraft",
-      "allegiance": "Hostile",
-      "cell": "V8",
-      "range_nm": 11.9,
-      "course_deg": 293.0,
-      "speed_kts": 341.0
+      "name": "HMS Invincible",
+      "type": "Ship",
+      "allegiance": "Friendly",
+      "cell": "K7",
+      "range_nm": 6.4,
+      "course_deg": 289.0,
+      "speed_kts": 15.0
     },
     {
       "id": 5,
-      "name": "Dagger (Mirage V)",
-      "type": "Aircraft",
-      "allegiance": "Hostile",
-      "cell": "U14",
-      "range_nm": 10.5,
-      "course_deg": 265.0,
-      "speed_kts": 315.0
+      "name": "Fleet Tanker (RFA)",
+      "type": "Ship",
+      "allegiance": "Friendly",
+      "cell": "N22",
+      "range_nm": 9.9,
+      "course_deg": 187.0,
+      "speed_kts": 10.0
+    },
+    {
+      "id": 6,
+      "name": "Fishing Trawler (Neutral/Uncertain)",
+      "type": "Ship",
+      "allegiance": "Neutral",
+      "cell": "J25",
+      "range_nm": 12.1,
+      "course_deg": 122.0,
+      "speed_kts": 8.0
     },
     {
       "id": 7,
       "name": "Stores Ship (RFA)",
       "type": "Ship",
       "allegiance": "Friendly",
-      "cell": "W10",
-      "range_nm": 13.0,
-      "course_deg": 275.0,
+      "cell": "C22",
+      "range_nm": 12.2,
+      "course_deg": 306.0,
       "speed_kts": 10.0
     },
     {
       "id": 8,
-      "name": "Sea King Helicopter",
-      "type": "Helicopter",
-      "allegiance": "Friendly",
-      "cell": "F15",
-      "range_nm": 4.5,
-      "course_deg": 31.0,
-      "speed_kts": 68.0
-    },
-    {
-      "id": 9,
-      "name": "A-4 Skyhawk",
-      "type": "Aircraft",
-      "allegiance": "Hostile",
-      "cell": "G19",
-      "range_nm": 7.4,
-      "course_deg": 148.0,
-      "speed_kts": 289.0
-    },
-    {
-      "id": 10,
-      "name": "Mirage III",
-      "type": "Aircraft",
-      "allegiance": "Hostile",
-      "cell": "U21",
-      "range_nm": 13.0,
-      "course_deg": 231.0,
-      "speed_kts": 341.0
-    },
-    {
-      "id": 11,
       "name": "Type 42 Destroyer",
       "type": "Ship",
       "allegiance": "Friendly",
-      "cell": "S15",
-      "range_nm": 8.4,
-      "course_deg": 264.0,
+      "cell": "C22",
+      "range_nm": 12.0,
+      "course_deg": 42.0,
       "speed_kts": 16.0
     },
     {
-      "id": 12,
+      "id": 9,
       "name": "Stores Ship (RFA)",
       "type": "Ship",
       "allegiance": "Friendly",
-      "cell": "S3",
-      "range_nm": 13.0,
-      "course_deg": 264.0,
+      "cell": "G2",
+      "range_nm": 11.3,
+      "course_deg": 195.0,
       "speed_kts": 10.0
+    },
+    {
+      "id": 10,
+      "name": "A-4 Skyhawk",
+      "type": "Aircraft",
+      "allegiance": "Hostile",
+      "cell": "R21",
+      "range_nm": 10.3,
+      "course_deg": 222.0,
+      "speed_kts": 289.0
     }
   ],
   "radar": {
-    "locked_contact_id": 9
+    "locked_contact_id": 10
   }
 }
