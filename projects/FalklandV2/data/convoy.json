@@ -1,0 +1,27 @@
+{
+  "leader": "own_ship",
+  "grid_units": "cells",
+  "notes": "Escorts maintain a relative offset to own ship. Positive dx = east (letters increase), positive dy = south (numbers increase). Tweak offsets later if formation looks odd.",
+  "escorts": [
+    {
+      "id": "hermes",
+      "name": "HMS Hermes",
+      "class": "Carrier",
+      "type": "carrier",
+      "allegiance": "Friendly",
+      "offset_cells": [-2, 3],
+      "speed_lock": "leader",
+      "role": ["air_ops", "cap_origin"]
+    },
+    {
+      "id": "t21_escort",
+      "name": "HMS Glamorgan",
+      "class": "Type 21",
+      "type": "frigate",
+      "allegiance": "Friendly",
+      "offset_cells": [2, 1],
+      "speed_lock": "leader",
+      "role": ["screen"]
+    }
+  ]
+}

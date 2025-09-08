@@ -1,0 +1,35 @@
+{
+  "cap_config": {
+    "aircraft_type": "Sea Harrier FRS.1",
+    "cruise_speed_kts": 420,
+    "min_launch_interval_s": 30,
+    "deck_cycle_per_pair_s": 180,
+    "max_ready_pairs": 2,
+    "airframe_pool_total": 8,
+    "pair_rearm_refuel_min": 25,
+    "scramble_cooldown_min": 10,
+    "default_pair_size": 2,
+    "default_onstation_min": 20,
+    "bingo_rtb_buffer_min": 4,
+    "station_radius_nm": 5,
+    "effects": {
+      "spawn_weight_multiplier": {
+        "A-4 Skyhawk": 0.6,
+        "Dagger (Mirage V)": 0.6,
+        "Mirage III": 0.7,
+        "Pucar\u00e1": 0.5,
+        "Super \u00c9tendard": 0.8,
+        "Canberra bomber": 0.8
+      },
+      "intercept_prob_pre_release": {
+        "A-4 Skyhawk": 0.50,
+        "Dagger (Mirage V)": 0.50,
+        "Mirage III": 0.45,
+        "Pucar\u00e1": 0.70,
+        "Super \u00c9tendard": 0.30,
+        "Canberra bomber": 0.40
+      },
+      "defence_bonus_if_not_intercepted": 0.10
+    }
+  }
+}

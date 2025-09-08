@@ -1,73 +1,93 @@
 {
-  "created_utc": "2025-09-07T21:51:28",
+  "created_utc": "2025-09-08T10:57:28",
   "ship": {
-    "cell": "K13",
-    "course_deg": 0.0,
-    "speed_kts": 0.0,
+    "cell": "N13",
+    "course_deg": 120.0,
+    "speed_kts": 10.0,
     "pos": {
-      "x": 10.0,
-      "y": 12.0
+      "x": 12.901844521099752,
+      "y": 11.561111111111323
     }
   },
   "contacts": [
     {
-      "id": 2,
-      "name": "ARA General Belgrano",
+      "id": 1,
+      "name": "Type 22 Frigate",
       "type": "Ship",
-      "allegiance": "Hostile",
-      "cell": "Z22",
-      "range_nm": 17.2,
-      "course_deg": 238.0,
+      "allegiance": "Friendly",
+      "cell": "D23",
+      "range_nm": 14.9,
+      "course_deg": 88.0,
       "speed_kts": 16.0
+    },
+    {
+      "id": 2,
+      "name": "A-4 Skyhawk",
+      "type": "Aircraft",
+      "allegiance": "Hostile",
+      "cell": "E18",
+      "range_nm": 10.6,
+      "course_deg": 123.0,
+      "speed_kts": 289.0
     },
     {
       "id": 3,
       "name": "Amphibious Ship (Fearless/Intrepid/Sir Galahad)",
       "type": "Ship",
       "allegiance": "Friendly",
-      "cell": "P22",
-      "range_nm": 10.4,
-      "course_deg": 194.0,
+      "cell": "E21",
+      "range_nm": 12.6,
+      "course_deg": 35.0,
       "speed_kts": 9.0
     },
     {
       "id": 4,
-      "name": "Fleet Tanker (RFA)",
+      "name": "Type 22 Frigate",
       "type": "Ship",
       "allegiance": "Friendly",
-      "cell": "D9",
-      "range_nm": 8.3,
-      "course_deg": 85.0,
-      "speed_kts": 10.0
+      "cell": "O5",
+      "range_nm": 8.1,
+      "course_deg": 57.0,
+      "speed_kts": 16.0
     },
     {
       "id": 5,
-      "name": "Landing Craft (LCU/LCVP)",
+      "name": "Merchantman (Neutral)",
       "type": "Ship",
-      "allegiance": "Friendly",
-      "cell": "X14",
-      "range_nm": 13.1,
-      "course_deg": 96.0,
-      "speed_kts": 5.0
+      "allegiance": "Neutral",
+      "cell": "O5",
+      "range_nm": 7.8,
+      "course_deg": 115.0,
+      "speed_kts": 9.0
     },
     {
       "id": 6,
-      "name": "Fleet Tanker (RFA)",
+      "name": "Type 22 Frigate",
       "type": "Ship",
       "allegiance": "Friendly",
-      "cell": "B16",
-      "range_nm": 9.8,
-      "course_deg": 270.0,
-      "speed_kts": 10.0
+      "cell": "R7",
+      "range_nm": 7.2,
+      "course_deg": 183.0,
+      "speed_kts": 16.0
+    },
+    {
+      "id": 7,
+      "name": "Mirage III",
+      "type": "Aircraft",
+      "allegiance": "Hostile",
+      "cell": "V18",
+      "range_nm": 10.3,
+      "course_deg": 236.0,
+      "speed_kts": 341.0
     },
     {
       "id": 8,
       "name": "A-4 Skyhawk",
       "type": "Aircraft",
       "allegiance": "Hostile",
-      "cell": "R12",
-      "range_nm": 6.6,
-      "course_deg": 277.0,
+      "cell": "S21",
+      "range_nm": 9.8,
+      "course_deg": 213.0,
       "speed_kts": 289.0
     },
     {
@@ -75,40 +95,20 @@
       "name": "Dagger (Mirage V)",
       "type": "Aircraft",
       "allegiance": "Hostile",
-      "cell": "E5",
-      "range_nm": 9.8,
-      "course_deg": 37.0,
+      "cell": "S20",
+      "range_nm": 9.2,
+      "course_deg": 213.0,
       "speed_kts": 315.0
     },
     {
       "id": 10,
-      "name": "Lynx Helicopter",
-      "type": "Helicopter",
-      "allegiance": "Friendly",
-      "cell": "B23",
-      "range_nm": 13.2,
-      "course_deg": 11.0,
-      "speed_kts": 68.0
-    },
-    {
-      "id": 11,
-      "name": "Sea Harrier FRS.1",
+      "name": "Canberra bomber",
       "type": "Aircraft",
-      "allegiance": "Friendly",
-      "cell": "S8",
-      "range_nm": 9.2,
-      "course_deg": 48.0,
-      "speed_kts": 315.0
-    },
-    {
-      "id": 12,
-      "name": "Amphibious Ship (Fearless/Intrepid/Sir Galahad)",
-      "type": "Ship",
-      "allegiance": "Friendly",
-      "cell": "Y9",
-      "range_nm": 14.2,
-      "course_deg": 61.0,
-      "speed_kts": 9.0
+      "allegiance": "Hostile",
+      "cell": "Q23",
+      "range_nm": 10.9,
+      "course_deg": 199.0,
+      "speed_kts": 252.0
     }
   ],
   "radar": {
