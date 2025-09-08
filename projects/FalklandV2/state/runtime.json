@@ -1,5 +1,5 @@
 {
-  "created_utc": "2025-09-08T18:36:54",
+  "created_utc": "2025-09-08T20:08:59",
   "ship": {
     "cell": "K13",
     "course_deg": 0.0,
@@ -12,106 +12,108 @@
   "contacts": [
     {
       "id": 1,
-      "name": "Pucar\u00e1",
-      "type": "Aircraft",
-      "allegiance": "Hostile",
-      "cell": "U22",
-      "range_nm": 12.9,
-      "course_deg": 229.0,
-      "speed_kts": 147.0
-    },
-    {
-      "id": 2,
-      "name": "Type 22 Frigate",
+      "name": "Amphibious Ship (Fearless/Intrepid/Sir Galahad)",
       "type": "Ship",
       "allegiance": "Friendly",
-      "cell": "J8",
-      "range_nm": 4.9,
-      "course_deg": 75.0,
-      "speed_kts": 16.0
-    },
-    {
-      "id": 3,
-      "name": "Merchantman (Neutral)",
-      "type": "Ship",
-      "allegiance": "Neutral",
-      "cell": "D18",
-      "range_nm": 8.8,
-      "course_deg": 181.0,
+      "cell": "A12",
+      "range_nm": 9.6,
+      "course_deg": 122.0,
       "speed_kts": 9.0
     },
     {
-      "id": 5,
-      "name": "Type 42 Destroyer",
+      "id": 2,
+      "name": "Stores Ship (RFA)",
       "type": "Ship",
       "allegiance": "Friendly",
-      "cell": "Y12",
-      "range_nm": 13.8,
-      "course_deg": 10.0,
-      "speed_kts": 16.0
-    },
-    {
-      "id": 6,
-      "name": "Dagger (Mirage V)",
-      "type": "Aircraft",
-      "allegiance": "Hostile",
-      "cell": "Q7",
-      "range_nm": 8.7,
-      "course_deg": 318.0,
-      "speed_kts": 315.0
-    },
-    {
-      "id": 7,
-      "name": "Lynx Helicopter",
-      "type": "Helicopter",
-      "allegiance": "Friendly",
-      "cell": "V8",
-      "range_nm": 11.8,
-      "course_deg": 312.0,
-      "speed_kts": 68.0
-    },
-    {
-      "id": 8,
-      "name": "Type 42 Destroyer",
-      "type": "Ship",
-      "allegiance": "Friendly",
-      "cell": "P13",
-      "range_nm": 5.3,
-      "course_deg": 256.0,
-      "speed_kts": 16.0
-    },
-    {
-      "id": 9,
-      "name": "Dagger (Mirage V)",
-      "type": "Aircraft",
-      "allegiance": "Hostile",
-      "cell": "K21",
-      "range_nm": 8.4,
-      "course_deg": 180.0,
-      "speed_kts": 315.0
-    },
-    {
-      "id": 10,
-      "name": "Fleet Tanker (RFA)",
-      "type": "Ship",
-      "allegiance": "Friendly",
-      "cell": "H23",
-      "range_nm": 10.3,
-      "course_deg": 86.0,
+      "cell": "M7",
+      "range_nm": 6.6,
+      "course_deg": 115.0,
       "speed_kts": 10.0
     },
     {
-      "id": 11,
-      "name": "Dagger (Mirage V)",
+      "id": 3,
+      "name": "Fishing Trawler (Neutral/Uncertain)",
+      "type": "Ship",
+      "allegiance": "Neutral",
+      "cell": "R3",
+      "range_nm": 11.8,
+      "course_deg": 334.0,
+      "speed_kts": 8.0
+    },
+    {
+      "id": 4,
+      "name": "Canberra bomber",
       "type": "Aircraft",
       "allegiance": "Hostile",
-      "cell": "W8",
-      "range_nm": 12.7,
-      "course_deg": 293.0,
-      "speed_kts": 315.0
+      "cell": "M7",
+      "range_nm": 6.5,
+      "course_deg": 341.0,
+      "speed_kts": 252.0
+    },
+    {
+      "id": 5,
+      "name": "HMS Invincible",
+      "type": "Ship",
+      "allegiance": "Friendly",
+      "cell": "I25",
+      "range_nm": 11.8,
+      "course_deg": 241.0,
+      "speed_kts": 15.0
+    },
+    {
+      "id": 6,
+      "name": "Stores Ship (RFA)",
+      "type": "Ship",
+      "allegiance": "Friendly",
+      "cell": "W9",
+      "range_nm": 12.3,
+      "course_deg": 59.0,
+      "speed_kts": 10.0
+    },
+    {
+      "id": 7,
+      "name": "Mirage III",
+      "type": "Aircraft",
+      "allegiance": "Hostile",
+      "cell": "I8",
+      "range_nm": 5.9,
+      "course_deg": 23.0,
+      "speed_kts": 341.0
+    },
+    {
+      "id": 8,
+      "name": "Stores Ship (RFA)",
+      "type": "Ship",
+      "allegiance": "Friendly",
+      "cell": "U17",
+      "range_nm": 11.2,
+      "course_deg": 74.0,
+      "speed_kts": 10.0
+    },
+    {
+      "id": 9,
+      "name": "Mirage III",
+      "type": "Aircraft",
+      "allegiance": "Hostile",
+      "cell": "Q17",
+      "range_nm": 7.2,
+      "course_deg": 236.0,
+      "speed_kts": 341.0
+    },
+    {
+      "id": 11,
+      "name": "Super \u00c9tendard",
+      "type": "Aircraft",
+      "allegiance": "Hostile",
+      "cell": "P16",
+      "range_nm": 5.6,
+      "course_deg": 239.0,
+      "speed_kts": 326.0
     }
   ],
   "radar": {
-    "locked_contact_id": null
-  }
+    "locked_contact_id": 11
+  },
+  "arming": {},
+  "audio": {}
 }

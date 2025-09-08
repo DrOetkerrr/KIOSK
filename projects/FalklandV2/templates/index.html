@@ -5,108 +5,116 @@
   <title>Falklands V2 — Web Dashboard</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <style>
-    :root { --fg:#111; --muted:#666; --line:#e6e6e6; --bg:#fff; font-size:14px; }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; color: var(--fg); }
-    h1 { margin: 0 0 8px; font-size: 18px; }
-    h2 { margin: 0 0 8px; font-size: 15px; }
-    .row { display: flex; gap: 12px; flex-wrap: wrap; }
-    .card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,.04); background: var(--bg); }
-    #contacts table, #weapons table, #cap table, #radar table { border-collapse: collapse; width: 100%; }
-    th, td { text-align: left; padding: 6px 6px; border-bottom: 1px solid #f0f0f0; font-variant-numeric: tabular-nums; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .pill { display:inline-block; padding:1px 6px; border-radius:999px; font-size:12px; background:#f2f2f2; }
-    .ready { background:#d9f2d9; }
-    .notready { background:#f7d9d9; }
-    .badge { padding:2px 8px; border-radius:999px; background:#eee; font-size:12px; }
-    .muted { color: var(--muted); }
-    .btn { padding:4px 8px; border:1px solid #ddd; border-radius:8px; background:#fafafa; cursor:pointer; }
-    .btn:hover { background:#f2f2f2; }
-    .controls label { display:inline-block; margin-right: 6px; }
-    input[type=number] { width: 90px; }
-    .al-hostile { background:#ffe2e2; }
-    .al-friendly { background:#e2edff; }
-    .al-unknown { background:#eeeeee; }
-    #audio_pool { position: fixed; left: -9999px; top: -9999px; width: 1px; height: 1px; overflow: hidden; }
+    :root{
+      --fg:#111; --muted:#666; --line:#eaeaea; --chip:#f6f6f6;
+      --ok-bg:#dff5e1; --ok-fg:#186a3b;
+      --out-bg:#fde2e0; --out-fg:#92332a;
+      --na-bg:#eee; --na-fg:#555;
+      --hostile:#ffefef; --hostile-fg:#a61313;
+      --friendly:#eef4ff; --friendly-fg:#224b9b;
+      --neutral:#f1f1f1; --neutral-fg:#666;
+    }
+    *{box-sizing:border-box}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:16px;color:var(--fg)}
+    h1{margin:0 0 10px}
+    .row{display:flex;gap:14px;flex-wrap:wrap}
+    .card{border:1px solid var(--line);border-radius:12px;padding:12px 14px;box-shadow:0 1px 3px rgba(0,0,0,.05);background:#fff}
+    .card h2{margin:0 0 10px;font-size:16px}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:var(--chip)}
+    .pill.hostile{background:var(--hostile);color:var(--hostile-fg);border:1px solid #f2c5c5}
+    .pill.friendly{background:var(--friendly);color:var(--friendly-fg);border:1px solid #c9d7ff}
+    .pill.neutral{background:var(--neutral);color:var(--neutral-fg);border:1px solid #ddd}
+    .badge{padding:2px 8px;border-radius:999px;font-size:12px;display:inline-block}
+    .badge.ready{background:var(--ok-bg);color:var(--ok-fg);border:1px solid #c2e6c6}
+    .badge.out{background:var(--out-bg);color:var(--out-fg);border:1px solid #f3b1ab}
+    .badge.na{background:var(--na-bg);color:var(--na-fg);border:1px solid #ddd}
+    table{border-collapse:collapse;width:100%}
+    th,td{border-bottom:1px solid var(--line);text-align:left;padding:6px 8px}
+    th{font-weight:600}
+    input[type=number],input[type=text]{width:86px;padding:4px 6px}
+    button{padding:4px 10px;border:1px solid #ccc;border-radius:8px;background:#fafafa;cursor:pointer}
+    button:disabled{opacity:.55;cursor:not-allowed}
+    .tiny{font-size:12px;color:var(--muted)}
+    #debug{margin-top:10px;color:#a13;font-size:12px}
   </style>
 </head>
 <body>
   <h1>Falklands V2 — Web Dashboard</h1>
 
-  <!-- Top row: HUD, Own Ship, Primary Target -->
+  <!-- HUD row -->
   <div class="row">
-    <div id="hud" class="card" style="flex:1 1 520px;">
+    <div class="card" style="flex:2 1 520px;">
       <h2>HUD</h2>
       <div class="mono" id="hud_line">loading…</div>
-      <div class="mono" id="hud_escorts" style="margin-top:4px;">Escorts: —</div>
-
-      <!-- audio toggle -->
-      <div style="margin-top:6px;">
-        <button id="audio_toggle" class="btn" onclick="toggleAudio()">Enable sound</button>
-        <span id="audio_status" class="muted" style="margin-left:6px;">(sound is off)</span>
-      </div>
+      <div class="tiny" id="hud_escorts">Escorts: —</div>
     </div>
 
-    <div id="ship" class="card" style="flex:1 1 360px;">
+    <div class="card" style="flex:1 1 360px;">
       <h2>Own Ship</h2>
       <div>Cell: <span id="ship_cell" class="pill">—</span></div>
       <div>Course: <span id="ship_course" class="mono">—</span>°</div>
       <div>Speed: <span id="ship_speed" class="mono">—</span> kts</div>
-      <div class="controls" style="margin-top:8px;">
-        <label>Set course <input type="number" id="set_course" min="0" max="359" step="1"></label>
-        <label>Set speed <input type="number" id="set_speed" min="0" step="1"></label>
-        <button class="btn" onclick="helm()">Apply</button>
-        <button class="btn" style="margin-left:6px;" onclick="resetGame()">Reset</button>
-        <button class="btn" style="margin-left:6px;" id="pauseBtn" onclick="togglePause()">Pause</button>
+      <div style="margin-top:8px">
+        <label>Set course <input id="set_course" type="number" min="0" max="359" step="1"></label>
+        <label style="margin-left:8px;">Set speed <input id="set_speed" type="number" min="0" step="1"></label>
+        <button onclick="helm()">Apply</button>
+        <button onclick="resetGame()">Reset</button>
+        <button id="pauseBtn" onclick="togglePause()">Pause</button>
       </div>
-    </div>
-
-    <div id="target" class="card" style="flex:1 1 520px;">
-      <h2>Primary Target</h2>
-      <div class="mono" id="radar_line">Scan to acquire contacts.</div>
-      <div style="margin-top:8px;">
-        <button class="btn" onclick="scan()">Scan</button>
-        <label style="margin-left:6px;">Lock #<input type="number" id="lock_id" min="1" step="1" style="width:80px;"> <button class="btn" onclick="lock()">Lock</button></label>
-        <button class="btn" style="margin-left:6px;" onclick="unlock()">Unlock</button>
-      </div>
-      <div id="locked_target" class="mono" style="margin-top:8px;">(no target)</div>
     </div>
   </div>
 
-  <!-- Radar (hostiles list) -->
-  <div id="radar" class="card" style="margin-top:12px;">
-    <h2>Radar</h2>
-    <table>
-      <thead><tr><th>CELL</th><th>TYPE</th><th>NAME</th><th>RANGE</th><th>CRS</th><th>SPD</th><th>ID</th></tr></thead>
-      <tbody id="radar_body"><tr><td colspan="7">loading…</td></tr></tbody>
-    </table>
+  <!-- Primary Target + Radar -->
+  <div class="row" style="margin-top:14px;">
+    <div class="card" style="flex:2 1 520px;">
+      <h2>Primary Target</h2>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+        <label>Target ID <input id="lock_id" type="number" min="1" step="1" class="mono" style="width:90px"></label>
+        <button onclick="lock()">Lock</button>
+        <button onclick="unlock()">Unlock</button>
+      </div>
+      <div class="mono tiny" id="primary_lock_line">LOCKED: —</div>
+      <div style="margin-top:8px;overflow-x:auto">
+        <table>
+          <thead><tr><th>CELL</th><th>TYPE</th><th>NAME</th><th>RANGE</th><th>CRS</th><th>SPD</th><th>ID</th></tr></thead>
+          <tbody id="primary_table_body"><tr><td colspan="7">No hostile contacts.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="flex:1 1 360px;">
+      <h2>Radar</h2>
+      <div class="mono tiny" id="radar_line">loading…</div>
+      <div style="margin-top:8px;"><button onclick="scan()">Scan now</button></div>
+    </div>
   </div>
 
   <!-- Weapons -->
-  <div class="card" id="weapons" style="margin-top:12px;">
-    <div style="display:flex; align-items:center; justify-content:space-between;">
-      <h2 style="margin:0;">Weapons</h2>
-      <label class="mono" style="font-size:13px;">
-        <input type="checkbox" id="test_mode"> Test Fire
-      </label>
-    </div>
-    <div style="overflow-x:auto; margin-top:6px;">
+  <div class="card" style="margin-top:14px;">
+    <h2>Weapons</h2>
+    <div class="mono tiny" id="weapons_ship">—</div>
+    <div style="margin-top:8px;overflow-x:auto">
       <table>
-        <thead><tr><th>Weapon</th><th>Ammo</th><th>Range</th><th>Status</th><th>Arming</th><th>Action</th></tr></thead>
-        <tbody id="weapons_table"><tr><td colspan="6">—</td></tr></tbody>
+        <thead>
+          <tr><th>Weapon</th><th>Ammo</th><th>Range</th><th>Status</th><th>Arming</th><th>Action</th></tr>
+        </thead>
+        <tbody id="weapons_tbl"><tr><td colspan="6">loading…</td></tr></tbody>
       </table>
     </div>
-    <div class="muted mono" style="margin-top:6px;">Arm first (5s), then Fire. Test mode ignores lock/range but still requires arming.</div>
+    <div class="tiny mono" style="margin-top:6px;">Arm first (5s), then Fire. Test mode ignores lock/range but still requires arming.</div>
   </div>
 
   <!-- Hermes CAP -->
-  <div id="cap" class="card" style="margin-top:12px;">
+  <div class="card" style="margin-top:14px;">
     <h2>Hermes CAP</h2>
-    <div class="mono" id="cap_line">loading…</div>
-    <div style="margin-top:6px;">
-      <button class="btn" onclick="capRefresh()">Refresh</button>
-      <button class="btn" style="margin-left:6px;" onclick="capRequest()">Request CAP to locked</button>
+    <div class="mono tiny" id="cap_head">loading…</div>
+    <div style="margin:6px 0;">
+      <button onclick="capRequest()">Request CAP to locked</button>
+      <button onclick="capRefresh()">Refresh</button>
+      <label style="margin-left:8px"><input id="cap_test_sound" type="checkbox"> sound on</label>
     </div>
-    <div style="margin-top:6px; overflow-x:auto;">
+    <div style="overflow-x:auto">
       <table>
         <thead><tr><th>#</th><th>Target cell</th><th>Status</th><th>Notes</th></tr></thead>
         <tbody id="cap_table"><tr><td colspan="4">—</td></tr></tbody>
@@ -114,267 +122,206 @@
     </div>
   </div>
 
-  <!-- Nearest contacts (hostiles) -->
-  <div id="contacts" class="card" style="margin-top:12px;">
-    <h2>Nearest Hostile Contacts (top 10)</h2>
-    <table>
-      <thead><tr><th>CELL</th><th>TYPE</th><th>NAME</th><th>RANGE</th><th>CRS</th><th>SPD</th><th>ID</th></tr></thead>
-      <tbody id="contacts_body"><tr><td colspan="7">loading…</td></tr></tbody>
-    </table>
+  <!-- Nearest Contacts (ALL) -->
+  <div class="card" style="margin-top:14px;">
+    <h2>Nearest Contacts (top 10)</h2>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>CELL</th><th>TYPE</th><th>NAME</th><th>RANGE</th><th>CRS</th><th>SPD</th><th>ID</th></tr></thead>
+        <tbody id="contacts_body"><tr><td colspan="7">loading…</td></tr></tbody>
+      </table>
+    </div>
   </div>
 
-  <!-- Hidden audio pool -->
-  <div id="audio_pool"></div>
+  <div id="debug" class="mono"></div>
 
-<script>
-let AUDIO_ENABLED = false;
+<script defer>
+const $ = id => document.getElementById(id);
+const fmt = n => (typeof n === 'number' && isFinite(n)) ? n.toFixed(2) : (n ?? '—');
+const safe = f => { try{ f(); } catch(e){ const d=$('debug'); d.textContent = String(e); console.error(e); } };
 
-// ---------- audio toggle
-function readAudioPref(){
-  try { AUDIO_ENABLED = (localStorage.getItem('audio_enabled') === '1'); } catch(e){ AUDIO_ENABLED = false; }
-  refreshAudioUI();
-}
-function writeAudioPref(){
-  try { localStorage.setItem('audio_enabled', AUDIO_ENABLED ? '1' : '0'); } catch(e){}
-  refreshAudioUI();
-}
-function refreshAudioUI(){
-  const btn = document.getElementById('audio_toggle');
-  const st = document.getElementById('audio_status');
-  if (AUDIO_ENABLED) { btn.textContent = 'Disable sound'; st.textContent = '(sound is on)'; }
-  else { btn.textContent = 'Enable sound'; st.textContent = '(sound is off)'; }
-}
-function toggleAudio(){
-  AUDIO_ENABLED = !AUDIO_ENABLED;
-  writeAudioPref();
-  const pool = document.getElementById('audio_pool');
-  if (AUDIO_ENABLED) {
-    [...pool.querySelectorAll('audio')].forEach(a => { a.muted=false; a.play().catch(()=>{}); });
-  } else {
-    [...pool.querySelectorAll('audio')].forEach(a => { try{ a.pause(); }catch(e){} });
-  }
-}
-
-// ---------- polling
 async function load() {
-  const r = await fetch('/api/status');
-  const j = await r.json();
-
-  // HUD + ship
-  document.getElementById('hud_line').textContent = j.hud;
-  document.getElementById('ship_cell').textContent = j.ship.cell;
-  document.getElementById('ship_course').textContent = j.ship.course_deg;
-  document.getElementById('ship_speed').textContent = j.ship.speed_kts;
-  document.getElementById('pauseBtn').textContent = j.paused ? 'Resume' : 'Pause';
-
-  // Escorts short line
-  const esc = (j.escorts || []);
-  if (esc.length === 0) document.getElementById('hud_escorts').textContent = 'Escorts: —';
-  else {
-    const parts = esc.map(e => `${e.name}=${e.cell} (${e.course_deg.toFixed(0)}°/${e.speed_kts.toFixed(0)}kts)`);
-    document.getElementById('hud_escorts').textContent = 'Escorts: ' + parts.join(', ');
-  }
-
-  // Primary target
-  const lt = j.locked_target;
-  if (lt) {
-    document.getElementById('radar_line').textContent = `LOCKED: #${lt.id} ${lt.name} ${lt.type} ${lt.allegiance}`;
-    document.getElementById('locked_target').textContent =
-      `Cell ${lt.cell} | Range ${lt.range_nm.toFixed(2)} nm | CRS ${lt.course_deg}° | SPD ${lt.speed_kts} kts`;
-  } else {
-    document.getElementById('radar_line').textContent = 'Lock a target (or Scan).';
-    document.getElementById('locked_target').textContent = '(no target)';
-  }
-
-  // Radar hostiles table
-  fillContactsTable('radar_body', j.contacts || []);
-
-  // Weapons
-  const wt = document.getElementById('weapons_table');
-  wt.innerHTML = '';
-  for (const row of (j.weapons.table || [])) {
-    const status = row.ready ? '<span class="badge ready">READY</span>' :
-                   (row.in_range === false ? '<span class="badge notready">OUT</span>' : '<span class="badge">N/A</span>');
-    const armlabel = row.armed ? 'Armed' : (row.arming_s > 0 ? `Arming ${row.arming_s}s` : 'Safe');
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${row.name}</td>
-      <td class="mono">${row.ammo}</td>
-      <td class="mono">${row.range}</td>
-      <td>${status}</td>
-      <td class="mono">${armlabel}</td>
-      <td>
-        <button class="btn" onclick="arm('${row.key}')">Arm</button>
-        <button class="btn" onclick="fire('${row.key}')">Fire</button>
-      </td>`;
-    wt.appendChild(tr);
-  }
-
-  // CAP
-  renderCAP(j.cap || {readiness:{}, missions:[]});
-
-  // Nearest contacts
-  fillContactsTable('contacts_body', j.contacts || []);
-
-  // AUDIO
-  syncAudio(j.audio || {playing: [], scheduled: [], now: (Date.now()/1000)});
-}
-
-function fillContactsTable(tbodyId, list){
-  const tb = document.getElementById(tbodyId);
-  tb.innerHTML = '';
-  if (list.length === 0) {
-    tb.innerHTML = '<tr><td colspan="7">No hostile contacts.</td></tr>';
-  } else {
-    for (const c of list) {
-      const pillClass =
-        (String(c.allegiance).toLowerCase().startsWith('host')) ? 'al-hostile' :
-        (String(c.allegiance).toLowerCase().startsWith('fri')) ? 'al-friendly' : 'al-unknown';
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td class="mono">${c.cell}</td>
-        <td>${c.type}</td>
-        <td>${c.name} <span class="pill ${pillClass}">${c.allegiance}</span></td>
-        <td class="mono">${c.range_nm.toFixed(1)} nm</td>
-        <td class="mono">${c.course_deg}°</td>
-        <td class="mono">${c.speed_kts}</td>
-        <td class="mono">#${String(c.id).padStart(2,'0')}</td>`;
-      tb.appendChild(tr);
-    }
-  }
-}
-
-// ---- CAP helpers
-async function capRefresh() {
-  const r = await fetch('/api/cap/status');
-  const j = await r.json();
-  renderCAP(j);
-}
-async function capRequest() {
-  const r = await fetch('/api/cap/request', {method:'POST'});
-  const j = await r.json();
-  if (!j.ok) alert(j.message || j.error || 'CAP request failed');
-  await capRefresh();
-}
-function renderCAP(snap){
-  const r = snap.readiness || {};
-  const line =
-    `${r.available ? 'READY' : 'NOT READY'} | pairs ${r.ready_pairs ?? '—'} | airframes ${r.airframes ?? '—'} | ` +
-    `cooldown ${r.cooldown_s ?? 0}s | station ~${r.station_radius_nm ?? 5} nm`;
-  document.getElementById('cap_line').textContent = line;
-
-  const tb = document.getElementById('cap_table');
-  tb.innerHTML = '';
-  const missions = snap.missions || [];
-  if (missions.length === 0) {
-    tb.innerHTML = '<tr><td colspan="4">—</td></tr>';
-  } else {
-    for (const m of missions) {
-      const tr = document.createElement('tr');
-      const notes = (() => {
-        const ts = m.timestamps || {};
-        if (m.status === 'airborne') return `en route ETA OS: ${fmtTime(ts.eta_onstation)}`;
-        if (m.status === 'onstation') return `ETD RTB: ${fmtTime(ts.etd_rtb)}`;
-        if (m.status === 'rtb') return `ETA recovery: ${fmtTime(ts.eta_recovery)}`;
-        if (m.status === 'recovering') return `ready again: ${fmtTime(ts.ready_again)}`;
-        return '';
-      })();
-      tr.innerHTML = `<td class="mono">#${m.id}</td><td class="mono">${m.target_cell}</td><td>${m.status}</td><td class="mono">${notes}</td>`;
-      tb.appendChild(tr);
-    }
-  }
-}
-function fmtTime(ts){ if(!ts) return '—'; const d=new Date(ts*1000); return d.toLocaleTimeString(); }
-
-// ---- commands
-async function scan() { await fetch('/api/scan', {method:'POST'}); await load(); }
-async function unlock() { await fetch('/api/unlock', {method:'POST'}); await load(); }
-async function lock() {
-  const id = parseInt(document.getElementById('lock_id').value);
-  if (!id) return;
-  await fetch('/api/lock', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})});
-  await load();
-}
-async function helm() {
-  const c = document.getElementById('set_course').value;
-  const s = document.getElementById('set_speed').value;
-  const payload = {};
-  if (c !== '') payload.course_deg = parseFloat(c);
-  if (s !== '') payload.speed_kts = parseFloat(s);
-  if (Object.keys(payload).length === 0) return;
-  await fetch('/api/helm', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-  await load();
-}
-async function resetGame() {
-  const ok = confirm('Reset game to fresh state? Contacts will be cleared.');
-  if (!ok) return;
-  const r = await fetch('/api/reset', {method:'POST'});
-  const j = await r.json();
-  if (!j.ok) { alert('Reset failed: ' + (j.error || 'unknown error')); }
-  await load();
-}
-async function togglePause() {
-  const r = await fetch('/api/pause', {method:'POST'});
-  const j = await r.json();
-  document.getElementById('pauseBtn').textContent = j.paused ? 'Resume' : 'Pause';
-}
-
-// ---- Weapons actions
-async function arm(key) {
-  const r = await fetch('/api/arm', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({weapon:key})});
-  const j = await r.json();
-  if (!j.ok) alert('Arm failed: ' + (j.error || 'unknown error'));
-  await load();
-}
-function getTestMode(){ return !!document.getElementById('test_mode').checked; }
-async function fire(key) {
-  const mode = getTestMode() ? 'test' : 'fire';
-  const r = await fetch('/api/fire', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({weapon:key, mode})});
-  const j = await r.json();
-  if (!j.ok) alert('Fire failed: ' + (j.error || 'unknown error'));
-  await load();
-}
-
-// ---- Audio sync
-function makeKey(p){ return `${p.sound_id}::${p.started_at || p.start_at || Math.random()}`; }
-function syncAudio(audioSnap){
-  const pool = document.getElementById('audio_pool');
-  const active = (audioSnap.playing || []).map(p => ({...p, _key: makeKey(p)}));
-
-  if (!AUDIO_ENABLED) {
-    [...pool.querySelectorAll('audio')].forEach(a => { try{ a.pause(); }catch(e){} a.remove(); });
+  let j=null;
+  try {
+    const r = await fetch('/api/status', {cache:'no-store'});
+    j = await r.json();
+  } catch(e){
+    $('debug').textContent = 'Failed to fetch /api/status';
     return;
   }
 
-  const existing = {};
-  [...pool.querySelectorAll('audio')].forEach(a => { existing[a.dataset.key] = a; });
+  // HUD + escort line
+  safe(()=>{ $('hud_line').textContent = j.hud ?? '—'; });
+  safe(()=>{ $('ship_cell').textContent = j.ship?.cell ?? '—'; });
+  safe(()=>{ $('ship_course').textContent = j.ship?.course_deg ?? '—'; });
+  safe(()=>{ $('ship_speed').textContent = j.ship?.speed_kts ?? '—'; });
+  safe(()=>{ $('pauseBtn').textContent = j.paused ? 'Resume' : 'Pause'; });
+  safe(()=>{
+    const esc = (j.hud_escorts || j.escorts || j.convoy_text || '').trim();
+    $('hud_escorts').textContent = esc ? esc : 'Escorts: —';
+  });
 
-  for (const p of active) {
-    let el = existing[p._key];
-    if (!el) {
-      el = document.createElement('audio');
-      el.dataset.key = p._key;
-      el.src = `/sounds/${p.file}`;
-      el.loop = !!p.loop;
-      el.volume = Math.max(0, Math.min(1, p.volume || 0.8));
-      pool.appendChild(el);
-      el.muted = false;
-      el.play().catch(()=>{});
-    } else {
-      el.loop = !!p.loop;
-      el.volume = Math.max(0, Math.min(1, p.volume || 0.8));
-      if (el.paused) el.play().catch(()=>{});
+  // Radar
+  safe(()=>{ $('radar_line').textContent = (j.radar && j.radar.status_line) ? j.radar.status_line : '—'; });
+
+  // Locked line
+  safe(()=>{
+    const lk = j.radar?.locked_contact || null;
+    $('primary_lock_line').textContent = lk
+      ? `LOCKED: #${lk.id} ${lk.name} ${lk.type} ${lk.allegiance} at ${lk.cell}, ${fmt(lk.range_nm)} nm`
+      : 'LOCKED: —';
+  });
+
+  // Primary = hostiles only
+  safe(()=>{
+    const ptb = $('primary_table_body'); ptb.innerHTML='';
+    const all = Array.isArray(j.contacts) ? j.contacts : [];
+    const hostiles = all.filter(c => (c.allegiance||'').toLowerCase()==='hostile')
+                        .sort((a,b)=> (a.range_nm??1e9) - (b.range_nm??1e9))
+                        .slice(0,5);
+    if (!hostiles.length){ ptb.innerHTML='<tr><td colspan="7">No hostile contacts.</td></tr>'; return; }
+    for (const c of hostiles){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="mono">${c.cell??'—'}</td>
+        <td>${c.type??'—'}</td>
+        <td>${c.name??'—'} ${pillFor(c.allegiance)}</td>
+        <td class="mono">${fmt(c.range_nm)} nm</td>
+        <td class="mono">${c.course_deg??'—'}°</td>
+        <td class="mono">${c.speed_kts??'—'}</td>
+        <td class="mono">#${String(c.id??'').padStart(2,'0')}</td>`;
+      ptb.appendChild(tr);
     }
-  }
+  });
 
-  const activeKeys = new Set(active.map(p => p._key));
-  [...pool.querySelectorAll('audio')].forEach(a => {
-    if (!activeKeys.has(a.dataset.key)) { try{ a.pause(); }catch(e){} a.remove(); }
+  // Weapons
+  safe(()=> renderWeapons(j));
+
+  // CAP
+  safe(()=> renderCAP(j));
+
+  // All contacts
+  safe(()=>{
+    const tb = $('contacts_body'); tb.innerHTML='';
+    const list = Array.isArray(j.contacts) ? j.contacts : [];
+    if (!list.length){ tb.innerHTML='<tr><td colspan="7">No contacts.</td></tr>'; return; }
+    for (const c of list){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="mono">${c.cell??'—'}</td>
+        <td>${c.type??'—'}</td>
+        <td>${c.name??'—'} ${pillFor(c.allegiance)}</td>
+        <td class="mono">${fmt(c.range_nm)} nm</td>
+        <td class="mono">${c.course_deg??'—'}°</td>
+        <td class="mono">${c.speed_kts??'—'}</td>
+        <td class="mono">#${String(c.id??'').padStart(2,'0')}</td>`;
+      tb.appendChild(tr);
+    }
   });
 }
 
-// boot
-(function(){ try { AUDIO_ENABLED = (localStorage.getItem('audio_enabled') === '1'); } catch(e){} refreshAudioUI(); })();
+function pillFor(a){
+  const t = String(a||'').toLowerCase();
+  if (t==='hostile') return '<span class="pill hostile">Hostile</span>';
+  if (t==='friendly') return '<span class="pill friendly">Friendly</span>';
+  return '<span class="pill neutral">Neutral</span>';
+}
+
+function statusBadge(r){
+  if (r.ready === true)  return '<span class="badge ready">READY</span>';
+  if (r.ready === false) return '<span class="badge out">OUT</span>';
+  return '<span class="badge na">N/A</span>';
+}
+
+function renderWeapons(j){
+  const tb = $('weapons_tbl'); tb.innerHTML='';
+  const W = j.weapons || {};
+  // accept either new rows[] or legacy table[]
+  const rows = Array.isArray(W.rows) ? W.rows :
+               Array.isArray(W.table) ? W.table.map(w=>({
+                 key:w.key||w.name, name:w.name, ammo_text:w.ammo, range_text:w.range,
+                 ready:(w.ready===true || w.status==='READY'),
+                 reason:w.reason||''
+               })) : [];
+  if (!rows.length){ tb.innerHTML='<tr><td colspan="6">No weapons data.</td></tr>'; return; }
+  for (const r of rows){
+    const key = r.key || r.name || '';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${r.name||r.key||'—'}</td>
+      <td class="mono">${r.ammo_text||r.ammo||'—'}</td>
+      <td class="mono">${r.range_text||r.range||'—'}</td>
+      <td>${statusBadge(r)} <span class="tiny mono">${r.reason||''}</span></td>
+      <td id="arm_${cssSafe(key)}" class="mono tiny">${r.armed ? 'Armed' : 'Safe'}</td>
+      <td>
+        <button ${!key?'disabled':''} onclick="arm('${jsSafe(key)}')">Arm</button>
+        <button ${!key?'disabled':''} onclick="fire('${jsSafe(key)}','fire')">Fire</button>
+        <button ${!key?'disabled':''} onclick="fire('${jsSafe(key)}','test')">Test</button>
+      </td>`;
+    tb.appendChild(tr);
+  }
+}
+function cssSafe(s){ return String(s).replace(/[^a-zA-Z0-9_-]/g,'_'); }
+function jsSafe(s){ return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
+
+// controls
+async function scan(){ await fetch('/api/scan',{method:'POST'}); await load(); }
+async function unlock(){ await fetch('/api/unlock',{method:'POST'}); await load(); }
+async function lock(){
+  const id = parseInt($('lock_id').value); if (!id) return;
+  await fetch('/api/lock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+  await load();
+}
+async function helm(){
+  const c=$('set_course').value, s=$('set_speed').value;
+  const p={}; if(c!=='') p.course_deg=parseFloat(c); if(s!=='') p.speed_kts=parseFloat(s);
+  if(!Object.keys(p).length) return;
+  await fetch('/api/helm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
+  await load();
+}
+async function resetGame(){ if(!confirm('Reset game to fresh state?')) return; await fetch('/api/reset',{method:'POST'}); await load(); }
+async function togglePause(){ const r=await fetch('/api/pause',{method:'POST'}); const j=await r.json(); $('pauseBtn').textContent=j.paused?'Resume':'Pause'; }
+
+// weapon actions
+async function arm(key){
+  try{
+    await fetch('/api/arm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weapon:key})});
+  }catch(e){ $('debug').textContent='Arm failed'; }
+}
+async function fire(key,mode){
+  try{
+    await fetch('/api/fire',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weapon:key,mode})});
+  }catch(e){ $('debug').textContent='Fire failed'; }
+}
+
+// CAP
+async function capRequest(){
+  try{
+    const r=await fetch('/api/cap/request',{method:'POST'});
+    if(!r.ok){ $('debug').textContent='CAP request rejected (likely no lock or not ready).'; }
+    await load();
+  }catch(e){ $('debug').textContent='CAP request failed.'; }
+}
+async function capRefresh(){ await load(); }
+function renderCAP(j){
+  const hdr = j.cap?.readiness || j.cap_readiness || j.hermes?.readiness || null;
+  $('cap_head').textContent = hdr
+    ? `${hdr.available ? 'READY' : 'NOT READY'} | pairs ${hdr.ready_pairs} | airframes ${hdr.airframes} | cooldown ${hdr.cooldown_s}s | station ~${hdr.station_radius_nm||5} nm`
+    : '—';
+  const tb = $('cap_table'); tb.innerHTML='';
+  const missions = (j.cap?.missions || j.hermes?.missions || []);
+  if(!missions.length){ tb.innerHTML='<tr><td colspan="4">—</td></tr>'; return; }
+  for(const m of missions){
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="mono">#${m.id}</td>
+      <td class="mono">${m.target_cell||'?'}</td>
+      <td>${m.status||'?'}</td>
+      <td class="mono tiny">${m.timestamps?.eta_onstation ? ('ETA OS: ' + new Date(m.timestamps.eta_onstation*1000).toLocaleTimeString()) : ''}</td>`;
+    tb.appendChild(tr);
+  }
+}
+
 load();
 setInterval(load, 1000);
 </script>
