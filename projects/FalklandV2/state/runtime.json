@@ -1,117 +1,117 @@
 {
-  "created_utc": "2025-09-08T10:57:28",
+  "created_utc": "2025-09-08T17:19:28",
   "ship": {
-    "cell": "N13",
-    "course_deg": 120.0,
-    "speed_kts": 10.0,
+    "cell": "K13",
+    "course_deg": 270.0,
+    "speed_kts": 30.0,
     "pos": {
-      "x": 12.901844521099752,
-      "y": 11.561111111111323
+      "x": 9.70833333333335,
+      "y": 12.0
     }
   },
   "contacts": [
     {
       "id": 1,
-      "name": "Type 22 Frigate",
+      "name": "Stores Ship (RFA)",
       "type": "Ship",
       "allegiance": "Friendly",
-      "cell": "D23",
-      "range_nm": 14.9,
-      "course_deg": 88.0,
-      "speed_kts": 16.0
-    },
-    {
-      "id": 2,
-      "name": "A-4 Skyhawk",
-      "type": "Aircraft",
-      "allegiance": "Hostile",
-      "cell": "E18",
-      "range_nm": 10.6,
-      "course_deg": 123.0,
-      "speed_kts": 289.0
+      "cell": "V10",
+      "range_nm": 11.9,
+      "course_deg": 52.0,
+      "speed_kts": 10.0
     },
     {
       "id": 3,
-      "name": "Amphibious Ship (Fearless/Intrepid/Sir Galahad)",
+      "name": "Landing Craft (LCU/LCVP)",
       "type": "Ship",
       "allegiance": "Friendly",
-      "cell": "E21",
-      "range_nm": 12.6,
-      "course_deg": 35.0,
-      "speed_kts": 9.0
+      "cell": "N8",
+      "range_nm": 5.8,
+      "course_deg": 286.0,
+      "speed_kts": 5.0
     },
     {
       "id": 4,
-      "name": "Type 22 Frigate",
-      "type": "Ship",
-      "allegiance": "Friendly",
-      "cell": "O5",
-      "range_nm": 8.1,
-      "course_deg": 57.0,
-      "speed_kts": 16.0
-    },
-    {
-      "id": 5,
-      "name": "Merchantman (Neutral)",
-      "type": "Ship",
-      "allegiance": "Neutral",
-      "cell": "O5",
-      "range_nm": 7.8,
-      "course_deg": 115.0,
-      "speed_kts": 9.0
-    },
-    {
-      "id": 6,
-      "name": "Type 22 Frigate",
-      "type": "Ship",
-      "allegiance": "Friendly",
-      "cell": "R7",
-      "range_nm": 7.2,
-      "course_deg": 183.0,
-      "speed_kts": 16.0
-    },
-    {
-      "id": 7,
       "name": "Mirage III",
       "type": "Aircraft",
       "allegiance": "Hostile",
-      "cell": "V18",
-      "range_nm": 10.3,
-      "course_deg": 236.0,
+      "cell": "V8",
+      "range_nm": 11.9,
+      "course_deg": 293.0,
       "speed_kts": 341.0
     },
     {
-      "id": 8,
-      "name": "A-4 Skyhawk",
-      "type": "Aircraft",
-      "allegiance": "Hostile",
-      "cell": "S21",
-      "range_nm": 9.8,
-      "course_deg": 213.0,
-      "speed_kts": 289.0
-    },
-    {
-      "id": 9,
+      "id": 5,
       "name": "Dagger (Mirage V)",
       "type": "Aircraft",
       "allegiance": "Hostile",
-      "cell": "S20",
-      "range_nm": 9.2,
-      "course_deg": 213.0,
+      "cell": "U14",
+      "range_nm": 10.5,
+      "course_deg": 265.0,
       "speed_kts": 315.0
     },
     {
-      "id": 10,
-      "name": "Canberra bomber",
+      "id": 7,
+      "name": "Stores Ship (RFA)",
+      "type": "Ship",
+      "allegiance": "Friendly",
+      "cell": "W10",
+      "range_nm": 13.0,
+      "course_deg": 275.0,
+      "speed_kts": 10.0
+    },
+    {
+      "id": 8,
+      "name": "Sea King Helicopter",
+      "type": "Helicopter",
+      "allegiance": "Friendly",
+      "cell": "F15",
+      "range_nm": 4.5,
+      "course_deg": 31.0,
+      "speed_kts": 68.0
+    },
+    {
+      "id": 9,
+      "name": "A-4 Skyhawk",
       "type": "Aircraft",
       "allegiance": "Hostile",
-      "cell": "Q23",
-      "range_nm": 10.9,
-      "course_deg": 199.0,
-      "speed_kts": 252.0
+      "cell": "G19",
+      "range_nm": 7.4,
+      "course_deg": 148.0,
+      "speed_kts": 289.0
+    },
+    {
+      "id": 10,
+      "name": "Mirage III",
+      "type": "Aircraft",
+      "allegiance": "Hostile",
+      "cell": "U21",
+      "range_nm": 13.0,
+      "course_deg": 231.0,
+      "speed_kts": 341.0
+    },
+    {
+      "id": 11,
+      "name": "Type 42 Destroyer",
+      "type": "Ship",
+      "allegiance": "Friendly",
+      "cell": "S15",
+      "range_nm": 8.4,
+      "course_deg": 264.0,
+      "speed_kts": 16.0
+    },
+    {
+      "id": 12,
+      "name": "Stores Ship (RFA)",
+      "type": "Ship",
+      "allegiance": "Friendly",
+      "cell": "S3",
+      "range_nm": 13.0,
+      "course_deg": 264.0,
+      "speed_kts": 10.0
     }
   ],
   "radar": {
-    "locked_contact_id": null
+    "locked_contact_id": 9
   }
 }

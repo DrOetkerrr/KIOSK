@@ -32,4 +32,18 @@
       "defence_bonus_if_not_intercepted": 0.10
     }
   }
+  {
+  "cap_config": {
+    "station_radius_nm": 5,
+    "weapons": {
+      "aim9": {
+        "min_nm": 1.0,
+        "max_nm": 5.0,
+        "missiles_total": 2,
+        "engagement_cooldown_s": 5,
+        "pk_points": [[1.0,0.30],[2.0,0.55],[2.5,0.65],[3.0,0.55],[4.0,0.35],[5.0,0.20]]
+      }
+    }
+  }
+}
 }

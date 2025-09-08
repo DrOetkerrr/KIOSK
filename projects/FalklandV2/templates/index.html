@@ -14,13 +14,14 @@
     th, td { text-align:left; padding:4px 6px; border-bottom:1px solid #eee; font-variant-numeric:tabular-nums; }
     .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size:13px; }
     .pill { display:inline-block; padding:1px 6px; border-radius:999px; font-size:11px; background:#f2f2f2; border:1px solid #e0e0e0; }
-    .badge { padding:1px 6px; border-radius:999px; background:#eee; font-size:11px; }
-    .ready { background:#d9f2d9; }
-    .notready { background:#f7d9d9; }
-    .muted { color:#666; font-size:11px; }
+    .pill.-ok { background:#e9f7e9; border-color:#b9e2b9; color:#0b5a0b; }
+    .pill.-bad { background:#ffe6e6; border-color:#ffb3b3; color:#8a0000; }
     .pill.-hostile { background:#ffe6e6; border-color:#ffb3b3; color:#8a0000; }
     .pill.-friendly { background:#e6efff; border-color:#b3ccff; color:#003a99; }
     .pill.-neutral { background:#f2f2f2; border-color:#e0e0e0; color:#555; }
+    .muted { color:#666; font-size:11px; }
+    button:disabled { opacity:0.5; cursor:not-allowed; }
+    .right { float:right; }
   </style>
 </head>
 <body>
@@ -63,38 +64,47 @@
 
   <div id="radar" class="card" style="flex:1 1 420px;">
     <h2>Radar</h2>
-    <div class="mono" id="radar_line">loading…</div>
+    <div class="mono" id="radar_line">Hostile contacts summary will appear here.</div>
     <div style="margin-top:6px;">
       <button onclick="scan()">Scan now</button>
+    </div>
+    <div style="margin-top:6px; overflow-x:auto;">
+      <table>
+        <thead><tr><th>CELL</th><th>TYPE</th><th>RANGE</th><th>CRS</th><th>SPD</th><th>ID</th></tr></thead>
+        <tbody id="radar_hostiles_body"><tr><td colspan="6" class="muted">—</td></tr></tbody>
+      </table>
     </div>
   </div>
 </div>
 
 <div class="row" style="margin-top:12px;">
   <div id="weapons" class="card" style="flex:1 1 100%;">
-    <h2>Weapons</h2>
+    <h2>Weapons
+      <label class="right" style="font-weight:normal;"><input type="checkbox" id="test_mode"> Test Fire</label>
+    </h2>
     <div class="mono" id="weapons_ship">—</div>
     <div style="margin-top:6px; overflow-x:auto;">
       <table>
-        <thead><tr><th>Weapon</th><th>Ammo</th><th>Range</th><th>READY vs locked</th></tr></thead>
-        <tbody id="weapons_table"><tr><td colspan="4">—</td></tr></tbody>
+        <thead><tr><th>Weapon</th><th>Ammo</th><th>Range</th><th>Status</th><th>Controls</th></tr></thead>
+        <tbody id="weapons_table"><tr><td colspan="5">—</td></tr></tbody>
       </table>
     </div>
-    <div id="weapons_hint" class="mono muted" style="margin-top:4px;"></div>
+    <div id="weapons_hint" class="mono muted" style="margin-top:4px;">Green = valid weapon & in range. Arm (5s) before Fire. Test Fire ignores lock/range but still requires arming.</div>
   </div>
 </div>
 
 <div class="row" style="margin-top:12px;">
   <div id="cap" class="card" style="flex:1 1 100%;">
     <h2>Hermes CAP</h2>
-    <div id="cap_readiness" class="mono muted">loading…</div>
-    <div style="margin-top:6px;">
-      <button onclick="requestCap()">Request CAP on Locked Target</button>
+    <div class="mono" id="cap_readiness">loading…</div>
+    <div style="margin:6px 0;">
+      <button onclick="capRequest()">Request CAP to locked</button>
+      <button onclick="capRefresh()">Refresh</button>
     </div>
-    <div style="margin-top:6px; overflow-x:auto;">
+    <div style="overflow-x:auto;">
       <table>
-        <thead><tr><th>ID</th><th>Target</th><th>Status</th><th>On-station until</th></tr></thead>
-        <tbody id="cap_table"><tr><td colspan="4">—</td></tr></tbody>
+        <thead><tr><th>#</th><th>Target cell</th><th>Status</th><th>Notes</th></tr></thead>
+        <tbody id="cap_body"><tr><td colspan="4" class="muted">—</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -104,7 +114,7 @@
   <h2>Nearest Contacts</h2>
   <table>
     <thead><tr><th>CELL</th><th>TYPE</th><th>NAME</th><th>RANGE</th><th>CRS</th><th>SPD</th><th>ID</th></tr></thead>
-    <tbody id="contacts_body"><tr><td colspan="7">loading…</td></tr></tbody>
+    <tbody id="contacts_body"><tr><td colspan="7" class="muted">loading…</td></tr></tbody>
   </table>
 </div>
 
@@ -117,27 +127,31 @@ function allegianceClass(a){
   return '-neutral';
 }
 function pad2(n){ return String(n).padStart(2,'0'); }
+function setTestModeFromStorage(){
+  const v = localStorage.getItem('fv2_test_mode');
+  document.getElementById('test_mode').checked = (v === '1');
+}
+document.addEventListener('DOMContentLoaded', setTestModeFromStorage);
+document.getElementById('test_mode').addEventListener('change', e=>{
+  localStorage.setItem('fv2_test_mode', e.target.checked ? '1' : '0');
+});
 
-function buildHostileRadarLine(j){
+function hostileSummary(j){
   const contacts = Array.isArray(j.contacts) ? j.contacts : [];
-  const hostiles = contacts.filter(c => String(c.allegiance||'').toLowerCase().startsWith('host'))
-                           .sort((a,b)=>a.range_nm-b.range_nm);
-  const count = hostiles.length;
-  const parts = [];
-  if (count === 0) {
-    parts.push('RADAR: no hostile contacts');
-  } else {
-    parts.push(`RADAR: ${count} hostile contact(s)`);
-    if (j.locked_target && String(j.locked_target.allegiance||'').toLowerCase().startsWith('host')) {
-      const t = j.locked_target;
-      parts.push(`locked: ${t.cell} ${t.name} d=${Number(t.range_nm).toFixed(1)}nm (#${pad2(t.id)})`);
-    }
-    const list = hostiles.slice(0,3).map(c =>
-      `${c.cell} ${c.name} d=${c.range_nm.toFixed(1)}nm (#${pad2(c.id)})`
-    ).join(' | ');
-    if (list) parts.push(`nearest: ${list}`);
-  }
-  return parts.join(' | ');
+  const hostiles = contacts.filter(c => String(c.allegiance||'').toLowerCase().startsWith('host'));
+  return hostiles.length ? `RADAR: ${hostiles.length} hostile contact(s)` : 'RADAR: no hostile contacts';
+}
+
+function escortsLine(es){
+  if (!Array.isArray(es) || es.length===0) return 'Escorts: —';
+  const parts = es.map(e => {
+    const n = e.name || 'Escort';
+    const cell = e.cell || '—';
+    const crs = (e.course_deg!=null)? `${Number(e.course_deg).toFixed(0)}°` : '—';
+    const spd = (e.speed_kts!=null)? `${Number(e.speed_kts).toFixed(0)} kts` : '—';
+    return `${n}=${cell} COG ${crs} SOG ${spd}`;
+  });
+  return 'Escorts: ' + parts.join(' | ');
 }
 
 async function load() {
@@ -146,15 +160,7 @@ async function load() {
 
   // HUD
   document.getElementById('hud_line').textContent = j.hud;
-  const eb = document.getElementById('escorts_line');
-  if (j.escorts && j.escorts.length > 0) {
-    const line = j.escorts.map(e =>
-      `${e.name} (${e.klass||e.type}) ${e.cell} ${e.course_deg}°/${e.speed_kts}kts`
-    ).join(' | ');
-    eb.textContent = `Escorts: ${line}`;
-  } else {
-    eb.textContent = 'Escorts: —';
-  }
+  document.getElementById('escorts_line').textContent = escortsLine(j.escorts);
 
   // Ship
   document.getElementById('ship_cell').textContent = j.ship.cell;
@@ -162,10 +168,31 @@ async function load() {
   document.getElementById('ship_speed').textContent = j.ship.speed_kts;
   document.getElementById('pauseBtn').textContent = j.paused ? 'Resume' : 'Pause';
 
-  // Radar
-  document.getElementById('radar_line').textContent = buildHostileRadarLine(j);
+  // Radar hostiles
+  document.getElementById('radar_line').textContent = hostileSummary(j);
+  const contacts = Array.isArray(j.contacts) ? j.contacts : [];
+  const hostiles = contacts.filter(c => String(c.allegiance||'').toLowerCase().startsWith('host'))
+                           .sort((a,b)=>a.range_nm-b.range_nm)
+                           .slice(0,5);
+  const rhb = document.getElementById('radar_hostiles_body');
+  rhb.innerHTML = '';
+  if (hostiles.length === 0) {
+    rhb.innerHTML = '<tr><td colspan="6" class="muted">No hostile contacts.</td></tr>';
+  } else {
+    for (const c of hostiles) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="mono">${c.cell}</td>
+        <td>${c.type} <span class="pill ${allegianceClass(c.allegiance)}">${c.allegiance}</span></td>
+        <td class="mono">${c.range_nm.toFixed(1)} nm</td>
+        <td class="mono">${c.course_deg}°</td>
+        <td class="mono">${c.speed_kts}</td>
+        <td class="mono">#${pad2(c.id)}</td>`;
+      rhb.appendChild(tr);
+    }
+  }
 
-  // Primary target
+  // Primary
   const p = document.getElementById('primary_info');
   if (j.locked_target) {
     p.textContent = `${j.locked_target.name} (${j.locked_target.allegiance}) at ${j.locked_target.cell}, ${j.locked_target.range_nm} nm, ${j.locked_target.course_deg}°/${j.locked_target.speed_kts} kts`;
@@ -173,58 +200,88 @@ async function load() {
     p.textContent = 'No target locked.';
   }
 
-  // Weapons (ship name only, no duplicate status line)
+  // Weapons
   document.getElementById('weapons_ship').textContent = j.weapons.ship_name;
   const wt = document.getElementById('weapons_table');
   wt.innerHTML = '';
   for (const row of (j.weapons.table || [])) {
-    const badge = (row.ready === true) ? '<span class="badge ready">READY</span>'
-               : (row.ready === false) ? '<span class="badge notready">OUT</span>'
-               : '<span class="badge">N/A</span>';
+    const inRangePill =
+      row.in_range === true ? '<span class="pill -ok">IN RANGE</span>' :
+      row.in_range === false ? '<span class="pill -bad">OUT</span>' :
+      '<span class="pill">N/A</span>';
+
+    const status =
+      row.armed ? '<span class="pill -ok">ARMED</span>' :
+      (row.arming_s && row.arming_s > 0) ? `<span class="pill">ARMING ${row.arming_s}s</span>` :
+      '<span class="pill">SAFE</span>';
+
+    const canFireNormal = (row.armed && row.in_range === true);
+    const testMode = document.getElementById('test_mode').checked;
+    const canFire = testMode ? row.armed : canFireNormal;
+
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${row.name}</td><td class="mono">${row.ammo}</td><td class="mono">${row.range}</td><td>${badge}</td>`;
+    tr.innerHTML = `
+      <td>${row.name}</td>
+      <td class="mono">${row.ammo}</td>
+      <td class="mono">${row.range} &nbsp; ${inRangePill}</td>
+      <td>${status}</td>
+      <td>
+        <button onclick="arm('${row.key}')" ${row.armed || (row.arming_s && row.arming_s>0) ? 'disabled' : ''}>Arm</button>
+        <button onclick="fire('${row.key}')" ${canFire ? '' : 'disabled'}>Fire</button>
+      </td>`;
     wt.appendChild(tr);
   }
-  const hint = (j.locked_target && j.locked_target.range_nm !== null)
-      ? `Locked target range: ${j.locked_target.range_nm.toFixed(2)} nm`
-      : `Lock a target to evaluate weapon ranges.`;
-  document.getElementById('weapons_hint').textContent = hint;
 
   // CAP
-  const cap = j.cap || {};
-  const cr = document.getElementById('cap_readiness');
-  cr.textContent = cap.readiness
-    ? `Pairs ready: ${cap.readiness.ready_pairs} | Airframes: ${cap.readiness.airframes}`
-    : 'CAP system offline';
-  const ct = document.getElementById('cap_table');
-  ct.innerHTML = '';
-  if (cap.missions && cap.missions.length > 0) {
-    for (const m of cap.missions) {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${m.id}</td><td>${m.target_cell}</td><td>${m.status}</td><td>${m.timestamps.etd_rtb ? new Date(m.timestamps.etd_rtb*1000).toLocaleTimeString() : '—'}</td>`;
-      ct.appendChild(tr);
-    }
-  } else {
-    ct.innerHTML = '<tr><td colspan="4">No missions.</td></tr>';
-  }
+  renderCAP(j.cap);
 
-  // Contacts
-  const tb = document.getElementById('contacts_body');
-  tb.innerHTML = '';
-  if (j.contacts.length === 0) {
-    tb.innerHTML = '<tr><td colspan="7">No contacts.</td></tr>';
+  // Nearest contacts
+  const cb = document.getElementById('contacts_body');
+  cb.innerHTML = '';
+  if (contacts.length === 0) {
+    cb.innerHTML = '<tr><td colspan="7" class="muted">No contacts.</td></tr>';
   } else {
-    for (const c of j.contacts) {
-      const cls = allegianceClass(c.allegiance);
+    for (const c of contacts) {
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td class="mono">${c.cell}</td>
         <td>${c.type}</td>
-        <td>${c.name} <span class="pill ${cls}">${c.allegiance}</span></td>
+        <td>${c.name} <span class="pill ${allegianceClass(c.allegiance)}">${c.allegiance}</span></td>
         <td class="mono">${c.range_nm.toFixed(1)} nm</td>
         <td class="mono">${c.course_deg}°</td>
         <td class="mono">${c.speed_kts}</td>
         <td class="mono">#${pad2(c.id)}</td>`;
+      cb.appendChild(tr);
+    }
+  }
+}
+
+function renderCAP(cap){
+  const r = cap?.readiness;
+  const missions = cap?.missions || [];
+  const line = r
+    ? `${r.available ? 'READY' : 'NOT READY'} | pairs ${r.ready_pairs} | airframes ${r.airframes} | cooldown ${r.cooldown_s}s | station ~${r.station_radius_nm} nm`
+    : '—';
+  document.getElementById('cap_readiness').textContent = line;
+
+  const tb = document.getElementById('cap_body');
+  tb.innerHTML = '';
+  if (missions.length === 0) {
+    tb.innerHTML = '<tr><td colspan="4" class="muted">No missions.</td></tr>';
+  } else {
+    for (const m of missions) {
+      const notes = [];
+      const ts = m.timestamps || {};
+      if (ts.eta_onstation) {
+        const d = new Date((ts.eta_onstation*1000)||ts.eta_onstation);
+        notes.push('ETA OS: ' + d.toTimeString().slice(0,8));
+      }
+      if (ts.etd_rtb) {
+        const d = new Date((ts.etd_rtb*1000)||ts.etd_rtb);
+        notes.push('ETD RTB: ' + d.toTimeString().slice(0,8));
+      }
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>#${m.id}</td><td class="mono">${m.target_cell}</td><td>${m.status}</td><td class="mono">${notes.join('  ')}</td>`;
       tb.appendChild(tr);
     }
   }
@@ -261,11 +318,39 @@ async function togglePause() {
   const j=await r.json();
   document.getElementById('pauseBtn').textContent=j.paused?'Resume':'Pause';
 }
-async function requestCap() {
-  const r=await fetch('/api/cap/request_locked',{method:'POST'});
-  const j=await r.json();
-  alert(j.message||'CAP request sent');
+async function arm(key){
+  const r = await fetch('/api/arm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weapon:key})});
+  const j = await r.json();
+  if(!j.ok){ alert(j.error||'Arm failed'); }
   await load();
+}
+async function fire(key){
+  const testMode = document.getElementById('test_mode').checked;
+  const r = await fetch('/api/fire',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weapon:key, mode: testMode?'test':'fire'})});
+  const j = await r.json();
+  if(!j.ok){
+    let msg = j.error || 'Fire failed';
+    if (j.arming_seconds!=null) msg += ` (arming ${j.arming_seconds}s)`;
+    alert(msg);
+  } else {
+    if (j.mode === 'test') {
+      alert(`[${key}] TEST FIRE: one round expended.`);
+    } else {
+      alert(`[${key}] fired @ ${j.range_nm} nm → ${j.hit ? 'HIT' : 'MISS'} (Pk=${(j.pk*100).toFixed(0)}%)`);
+    }
+  }
+  await load();
+}
+async function capRefresh(){
+  const r = await fetch('/api/cap/status');
+  const j = await r.json();
+  renderCAP(j);
+}
+async function capRequest(){
+  const r = await fetch('/api/cap/request',{method:'POST'});
+  const j = await r.json();
+  if(!j.ok){ alert(j.message || j.error || 'CAP request failed'); }
+  await capRefresh();
 }
 
 load();

@@ -3,8 +3,10 @@ Runtime manager for Falklands V2.
 - Owns Engine, CAP, Convoy instances
 - Runs the background tick thread
 - Provides start()/stop() and fresh_state()
+- Auto-engages CAP on locked hostile if in Sidewinder range
 """
 
+from __future__ import annotations
 import threading, time, json
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -17,6 +19,7 @@ if str(ROOT) not in sys.path:
 from engine import Engine
 from subsystems.hermes_cap import HermesCAP
 from subsystems.convoy import Convoy
+from subsystems import contacts as cons  # for distance and cell formatting helpers
 
 # Globals
 ENG: Optional[Engine] = None
@@ -39,7 +42,6 @@ def _write_json(p: Path, obj: Dict[str, Any]) -> None:
     p.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
 
 def fresh_state() -> Dict[str, Any]:
-    """Build a fresh runtime.json using game.json start values."""
     game = _read_json(GAMECFG)
     start = game.get("start", {})
     cell = start.get("ship_cell", "K13")
@@ -64,8 +66,25 @@ def engine_thread():
         time.sleep(tick)
         with ENG_LOCK:
             if not PAUSED and ENG is not None:
+                # Core engine step
                 ENG.tick(tick)
-                if CAP: CAP.tick()
+
+                # CAP mission ticking
+                if CAP:
+                    CAP.tick()
+
+                    # Auto-engage logic: if a target is locked, compute range and let CAP fire if in envelope
+                    try:
+                        locked_id = ENG.state.get("radar", {}).get("locked_contact_id")
+                        if locked_id is not None:
+                            sx, sy = ENG._ship_xy()
+                            tgt = next((c for c in ENG.pool.contacts if c.id == locked_id), None)
+                            if tgt is not None:
+                                dist_nm = cons.dist_nm_xy(tgt.x, tgt.y, sx, sy, ENG.pool.grid)
+                                CAP.auto_engage(dist_nm, locked_id)
+                    except Exception:
+                        # Keep runtime robust; engagement is optional
+                        pass
 
 def start() -> threading.Thread:
     """Start the background engine thread."""
