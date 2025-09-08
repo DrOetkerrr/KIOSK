@@ -20,4 +20,4 @@ falklands_state.json
 .LSOverride
 
 # --- VS Code settings (optional, keeps workspace clean) ---
-.vscode/
+.vscode/.DS_Store
