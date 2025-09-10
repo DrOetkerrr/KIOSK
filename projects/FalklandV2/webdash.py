@@ -4326,19 +4326,6 @@ def flight_tail():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-# ---- Main ----
-if __name__ == "__main__":
-    # Keep logs concise
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    info = _template_info("index.html")
-    print(f"[webdash] templates -> {info['template_folder']} | index -> {info.get('path')} | sha1={info.get('sha1')}")
-    # Start the background engine thread only after all functions/routes are defined
-    try:
-        _t = threading.Thread(target=engine_thread, daemon=True)
-        _t.start()
-    except Exception:
-        pass
-    app.run(host="127.0.0.1", port=PORT, debug=False, threaded=True)
 # ---- Crew config (roles, voices, messages) ----
 def _load_crew() -> Dict[str, Any]:
     try:
@@ -4376,3 +4363,17 @@ def officer_say(role: str, key: str, ctx: Dict[str, Any] | None = None, fallback
     text = _fmt_msg(tpl, ctx or {}) if tpl else (fallback or "")
     if text:
         record_officer(role, text)
+
+# ---- Main ----
+if __name__ == "__main__":
+    # Keep logs concise
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    info = _template_info("index.html")
+    print(f"[webdash] templates -> {info['template_folder']} | index -> {info.get('path')} | sha1={info.get('sha1')}")
+    # Start the background engine thread only after all functions/routes are defined
+    try:
+        _t = threading.Thread(target=engine_thread, daemon=True)
+        _t.start()
+    except Exception:
+        pass
+    app.run(host="127.0.0.1", port=PORT, debug=False, threaded=True)
