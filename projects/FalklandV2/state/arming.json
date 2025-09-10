@@ -1,6 +1,12 @@
 {
-  "MM38 Exocet": "Armed",
-  "4.5 inch Mk.8 gun": "Safe",
+  "MM38 Exocet": {
+    "armed": true,
+    "arming_until": 0
+  },
+  "4.5 inch Mk.8 gun": {
+    "armed": true,
+    "arming_until": 0
+  },
   "Sea Dart SAM": "Armed",
   "20mm Oerlikon": "Armed",
   "20mm GAM-BO1 (twin)": "Armed",
