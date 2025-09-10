@@ -3162,14 +3162,20 @@ def api_command():
                 RADAR.rec.log("radar.lock", {"id": tid})
             except Exception:
                 pass
-            # Officer radio (Fire Control)
+            # Officer radio (Fire Control) — best-effort, never fail the command
             try:
                 st = ENG.public_state() if hasattr(ENG, 'public_state') else {}
                 own_x, own_y = get_own_xy(st)
                 ui = contact_to_ui(target, (own_x, own_y))
-                officer_say('Fire Control','locked',{'name': ui.get('name'), 'id': tid, 'range_nm': ui.get('range_nm')})
+                try:
+                    officer_say('Fire Control','locked',{'name': ui.get('name'), 'id': tid, 'range_nm': ui.get('range_nm')})
+                except Exception:
+                    pass
             except Exception:
-                officer_say('Fire Control','locked',{'id': tid})
+                try:
+                    officer_say('Fire Control','locked',{'id': tid})
+                except Exception:
+                    pass
             payload = {"ok": True, "result": f"LOCKED id={tid}"}
             record_flight({
                 "route": route, "method": request.method, "status": 200,
