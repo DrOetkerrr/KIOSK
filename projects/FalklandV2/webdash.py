@@ -58,6 +58,8 @@ try:
     # Register blueprints (split routes)
     from projects.falklandV2.routes.command import bp as command_bp
     app.register_blueprint(command_bp)
+    from projects.falklandV2.routes.radar import bp as radar_bp
+    app.register_blueprint(radar_bp)
 except Exception:
     # Keep server working even if blueprint import fails
     pass
