@@ -188,6 +188,7 @@
       <div class="row" style="margin-bottom:10px">
         <button id="cmd-scan" class="btn">Scan now</button>
         <button id="cmd-unlock" class="btn" disabled>Unlock</button>
+        <button id="btn-lock-nearest" class="btn">Lock Nearest</button>
         <button class="btn warn" disabled>Deploy Chaff</button>
         <button id="btn-cap-request" class="btn">Request CAP</button>
         <button id="btn-spawn-air" class="btn">Spawn Near Aircraft</button>
@@ -432,6 +433,10 @@
     $('#cmd-scan').onclick = scanNow;
     $('#btn-lock').onclick = lockNow;
     $('#btn-unlock').onclick = unlockNow;
+    const lockNearest = async ()=>{
+      try{ const j=await doGET('/api/command?cmd=/radar%20lock%20nearest'); appendConsole(`[lock nearest] ${j.ok?'OK':'ERR'}`);}catch(e){ appendConsole(`[lock nearest] ERR ${e}`); }
+    };
+    $('#btn-lock-nearest').onclick = lockNearest;
     $('#cmd-unlock').onclick = unlockNow;
     const capBtn = $('#btn-cap-request'); if (capBtn) capBtn.onclick = requestCAP;
     const capCellBtn = $('#btn-cap-to-cell'); if (capCellBtn) capCellBtn.onclick = async ()=>{
@@ -493,11 +498,11 @@
         appendConsole(`[nav] ${j.ok?'OK':'ERR'} ${j.result||''}`);
       }catch(e){ appendConsole(`[nav] ERR ${e}`); }
     };
-    // Enable Lock button when an ID is typed
-    $('#lock-id').addEventListener('input', ()=>{
-      const v = ($('#lock-id').value||'').trim();
-      $('#btn-lock').disabled = !v;
-    });
+        // Enable Lock button when an ID is typed; lock nearest when none typed
+        $('#lock-id').addEventListener('input', ()=>{
+          const v = ($('#lock-id').value||'').trim();
+          $('#btn-lock').disabled = !v;
+        });
     $('#lock-id').addEventListener('keydown', (e)=>{
       if(e.key === 'Enter'){
         e.preventDefault();

@@ -52,11 +52,14 @@ class Catalog:
         self.rng = rng or random.Random()
         self._hostile: List[Tuple[str, float, int, Optional[str]]] = []
         self._friendly: List[Tuple[str, float, int, Optional[str]]] = []
+        # Details by name for capability lookups
+        self._details: Dict[str, Dict[str, Any]] = {}
         self.reload()
 
     def reload(self) -> None:
         self._hostile.clear()
         self._friendly.clear()
+        self._details.clear()
         try:
             txt = open(self.path, 'r', encoding='utf-8').read()
             data = json.loads(txt)
@@ -80,6 +83,15 @@ class Catalog:
                     weight = 1
                 klass = (it.get('class') or it.get('type'))
                 klass = str(klass) if klass is not None else None
+                # Optional capability fields
+                cap = {
+                    'primary_weapon': it.get('primary_weapon'),
+                    'min_range_nm': it.get('min_range_nm'),
+                    'max_range_nm': it.get('max_range_nm'),
+                    'class': klass,
+                    'allegiance': allegiance,
+                }
+                self._details[name] = cap
                 if allegiance == 'Hostile':
                     self._hostile.append((name, speed, max(1, weight), klass))
                 elif allegiance == 'Friendly':
@@ -138,6 +150,9 @@ class Catalog:
                 return (n, float(s), k)
         n, s, _w, k = adjusted[-1]
         return (n, float(s), k)
+    
+    def details(self, name: str) -> Dict[str, Any]:
+        return dict(self._details.get(name, {}))
 
     def counts(self) -> Tuple[int, int]:
         return (len(self._hostile), len(self._friendly))
@@ -301,7 +316,10 @@ class Radar:
             id=self._next_id, name=name, allegiance=allegiance,
             x=x, y=y, course_deg=course_deg, speed_kts=float(speed),
             threat=("medium" if allegiance == "Hostile" else "low"),
-            meta={"spawn": {"bearing_deg": round(bearing_deg,1), "range_nm": round(r,2), "surprise": surprise, "allegiance": allegiance}}
+            meta={
+                "spawn": {"bearing_deg": round(bearing_deg,1), "range_nm": round(r,2), "surprise": surprise, "allegiance": allegiance},
+                "cap": self.catalog.details(name)
+            }
         )
         self._next_id += 1
         # CAP pre-release intercept chance: if active and mapping provides type-specific chance
@@ -366,7 +384,10 @@ class Radar:
             id=self._next_id, name=name, allegiance=allegiance_norm,
             x=float(x), y=float(y), course_deg=course_deg, speed_kts=float(speed),
             threat="high" if name in ("Super Etendard", "Mirage III") else "medium",
-            meta={"spawn": {"bearing_deg": round(float(bearing_deg),1), "range_nm": round(r,2), "surprise": False, "forced": True}}
+            meta={
+                "spawn": {"bearing_deg": round(float(bearing_deg),1), "range_nm": round(r,2), "surprise": False, "forced": True},
+                "cap": self.catalog.details(name)
+            }
         )
         self._next_id += 1
         self.contacts.append(c)

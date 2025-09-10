@@ -75,6 +75,61 @@
   let alarmAudio = null;
   let lastCapLaunch = null;
 
+  // ---- Web Audio context + radio filter helper ----
+  let ACtx = null;
+  function ensureCtx() {
+    try{
+      if(!ACtx) ACtx = new (window.AudioContext || window.webkitAudioContext)();
+      if(ACtx && ACtx.state === 'suspended') ACtx.resume().catch(()=>{});
+    }catch(_){ ACtx = null; }
+    return ACtx;
+  }
+
+  function playRadio(file, opts) {
+    try {
+      const ctx = ensureCtx();
+      const url = file.startsWith('/') ? file : (BASE + file);
+      const el = new Audio(url);
+      el.crossOrigin = 'anonymous';
+      const src = (ctx && ctx.createMediaElementSource) ? ctx.createMediaElementSource(el) : null;
+      if (!ctx || !src) {
+        // Fallback: normal playback
+        el.volume = Math.max(0, Math.min(1, Number((opts&&opts.vol)!=null?opts.vol:0.6)));
+        // Gentle fade-out
+        el.addEventListener('loadedmetadata', ()=>{
+          const dur = el.duration || 0;
+          const fadeMs = Math.max(100, Number((opts&&opts.fadeOutMs)!=null?opts.fadeOutMs:300));
+          const startMs = Math.max(0, (dur*1000)-fadeMs);
+          setTimeout(()=>{
+            let i=0; const steps=Math.max(4, Math.floor(fadeMs/50)); const v0=el.volume;
+            const id=setInterval(()=>{ i++; el.volume=Math.max(0, v0*(1 - i/steps)); if(i>=steps||el.paused) clearInterval(id); }, 50);
+          }, startMs);
+        });
+        el.play().catch(()=>{});
+        return;
+      }
+      // Filters: HPF ~300 Hz, LPF ~3400 Hz, light compression, gain
+      const hpf = ctx.createBiquadFilter(); hpf.type = 'highpass'; hpf.frequency.value = (opts&&opts.hp)||300;
+      const lpf = ctx.createBiquadFilter(); lpf.type = 'lowpass'; lpf.frequency.value = (opts&&opts.lp)||3400;
+      const comp = ctx.createDynamicsCompressor();
+      try { comp.threshold.value = -20; comp.knee.value = 20; comp.ratio.value = 3; comp.attack.value = 0.01; comp.release.value = 0.25; } catch(_){ }
+      const gain = ctx.createGain(); gain.gain.value = Math.max(0, Math.min(1, Number((opts&&opts.vol)!=null?opts.vol:0.6)));
+      src.connect(hpf); hpf.connect(lpf); lpf.connect(comp); comp.connect(gain); gain.connect(ctx.destination);
+      // Fade-out near end via gain ramp
+      el.addEventListener('loadedmetadata', ()=>{
+        const dur = el.duration || 0; const fadeMs = Math.max(100, Number((opts&&opts.fadeOutMs)!=null?opts.fadeOutMs:300));
+        const startMs = Math.max(0, (dur*1000)-fadeMs);
+        setTimeout(()=>{
+          try{
+            const v0 = gain.gain.value; const steps=Math.max(4, Math.floor(fadeMs/50)); let i=0;
+            const id=setInterval(()=>{ i++; const t=i/steps; gain.gain.value=Math.max(0, v0*(1-t)); if(i>=steps||el.paused) clearInterval(id); }, 50);
+          }catch(_){ }
+        }, startMs);
+      });
+      el.play().catch(()=>{});
+    } catch (_) {}
+  }
+
   async function pollLaunchAndPlay() {
     try {
       const r = await fetch("/api/status", { cache: "no-store" });
@@ -148,7 +203,7 @@
         const ts5 = cap.ts || 0;
         if (!lastCapLaunch || lastCapLaunch.ts !== ts5) {
           lastCapLaunch = { ts: ts5 };
-          if (unlocked) playWithFade(cap.file || 'SHAR.wav', Number(cap.vol || 0.1), Number(cap.fade_s || 2.0));
+          if (unlocked) playRadio(cap.file || 'SHAR.wav', {vol: Number(cap.vol || 0.1), fadeOutMs: Number(cap.fade_s || 2.0)*1000});
         }
       }
 
@@ -205,7 +260,8 @@
 
     for (const c of list) {
       if (!c) continue;
-      const isAircraft = (c.type || "").toLowerCase() === "aircraft";
+      const kind = (c.class || c.category || "").toLowerCase();
+      const isAircraft = (kind === 'aircraft' || kind === 'helicopter');
       if (!isAircraft) continue;
       const d = typeof c.range_nm === "number" ? c.range_nm : Number(c.range_nm);
       if (!isFinite(d)) continue;

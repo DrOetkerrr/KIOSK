@@ -66,7 +66,10 @@
       "messages": {
         "fox2": "Fox Two!",
         "splash": "Splash one bandit.",
-        "miss": "Missile missed."
+        "miss": "Missile missed.",
+        "request": "Contact ahead {range_nm} nm. Request permission to engage.",
+        "cleared": "Cleared hot.",
+        "hold": "Negative, hold fire."
       }
     }
   }

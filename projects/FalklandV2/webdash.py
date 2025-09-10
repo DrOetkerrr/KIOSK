@@ -38,6 +38,7 @@ except Exception:
 
 # ---- third-party ----
 from flask import Flask, jsonify, render_template, request, send_from_directory  # type: ignore
+import requests
 
 # ---- engine import (absolute) ----
 from projects.falklands.core.engine import Engine
@@ -91,11 +92,14 @@ STATE_LOCK = threading.Lock()
 
 # CAP subsystem (Hermes CAP). Will be initialized after DATA_DIR is set below.
 CAP: HermesCAP | None = None
+# CAP mission meta (runtime-only): origin_xy at launch, and permission flags
+CAP_META: Dict[int, Dict[str, Any]] = {}
 
 # Pending delayed events (e.g., shot results); each item:
 # { 'due': float_ts, 'kind': 'resolve_shot', 'weapon': str, 'target_id': int,
 #   'target_name': str, 'target_class': str, 'range_nm': float }
 PENDING_EVENTS: list[Dict[str, Any]] = []
+ATTACK_STATE: Dict[int, float] = {}
 
 def _sound_key_for_weapon(name: str) -> str:
     s = (name or "").lower()
@@ -269,6 +273,31 @@ def _process_due_events() -> None:
                         AUDIO_STATE['last_result'] = {'event': 'miss', 'ts': now}
             except Exception:
                 pass
+        elif float(ev.get('due', 0.0)) <= now and ev.get('kind') == 'hostile_attack':
+            try:
+                w = str(ev.get('weapon','attack'))
+                base = float(ev.get('base', 0.3))
+                # Simple hit roll
+                import random as _r
+                hit = (_r.random() < base)
+                # On hit, decrement health
+                if hit:
+                    h = _load_health()
+                    tgt = str(ev.get('target','HMS Sheffield'))
+                    if 'hermes' in tgt.lower():
+                        h['hermes_lives'] = max(0, int(h.get('hermes_lives',3)) - 1)
+                    else:
+                        h['lives'] = max(0, int(h.get('lives',3)) - 1)
+                    _save_health(h)
+                    officer_say('Engineering','damage', {'system':'Hull'})
+                    with STATE_LOCK:
+                        AUDIO_STATE['last_result'] = {'event': 'hit', 'ts': now}
+                else:
+                    record_officer('Fire Control', 'Incoming attack missed.')
+                    with STATE_LOCK:
+                        AUDIO_STATE['last_result'] = {'event': 'miss', 'ts': now}
+            except Exception:
+                pass
         else:
             remaining.append(ev)
     # swap
@@ -304,8 +333,14 @@ def _process_radio_queue() -> None:
     except Exception:
         words = 6
     dur = max(0.8, min(8.0, 0.6 + 0.4 * words))
+    # Try synthesize TTS (cached) if key present; keep duration estimate
+    file_url = None
+    try:
+        file_url = _tts_synthesize(text, role)
+    except Exception:
+        file_url = None
     with STATE_LOCK:
-        AUDIO_STATE['radio'] = {'role': role, 'text': text, 'ts': now, 'dur': dur}
+        AUDIO_STATE['radio'] = {'role': role, 'text': text, 'ts': now, 'dur': dur, **({'file': file_url} if file_url else {})}
     try:
         record_flight({'route': '/radio.officer', 'method': 'INT', 'status': 200, 'duration_ms': 0,
                        'request': {}, 'response': {'role': role, 'text': text}})
@@ -353,7 +388,7 @@ def engine_thread() -> None:
             # Advance radar with own ship position
             try:
                 st = ENG.public_state() if hasattr(ENG, "public_state") else {}
-                own_x, own_y = get_own_xy(st)
+                own_x, own_y = radar_xy_from_state(st)
                 RADAR.tick(dt, own_x, own_y)
             except Exception:
                 pass
@@ -475,11 +510,138 @@ def engine_thread() -> None:
                                             PENDING_EVENTS.append({'due': due, 'kind': 'cap_resolve', 'hit': bool(res.get('hit', False)), 'target_id': int(res.get('target_id', 0)), 'target_name': tname})
                             except Exception:
                                 continue
+                        # En-route detection: ask permission when a target appears within 15 nm ahead
+                        try:
+                            ahead_nm = 15.0
+                            airborne = [m for m in (CAP.missions or []) if getattr(m, 'status', '') == 'airborne' and getattr(m, 'missiles_left', 0) > 0]
+                        except Exception:
+                            airborne = []
+                        for m in airborne:
+                            try:
+                                mid = int(getattr(m, 'id', 0))
+                                meta = CAP_META.get(mid) or {}
+                                asked = bool(meta.get('asked', False))
+                                sx, sy = cell_to_world(str(getattr(m,'target_cell','') or ''))
+                                ts = getattr(m, 'ts', None) or getattr(m, 'timestamps', {})
+                                t_launch = float(ts.get('launch', 0.0)) if isinstance(ts, dict) else 0.0
+                                deck = float(getattr(m,'deck_cycle_s', 180))
+                                outb = float(getattr(m,'outbound_s', 60))
+                                prog = 0.0
+                                try:
+                                    prog = max(0.0, min(1.0, (time.time() - (t_launch + deck)) / max(1.0, outb)))
+                                except Exception:
+                                    prog = 0.0
+                                ox, oy = meta.get('origin_xy', radar_xy_from_state(ENG.public_state() if hasattr(ENG,'public_state') else {}))
+                                nx = float(ox) + (sx - float(ox)) * prog
+                                ny = float(oy) + (sy - float(oy)) * prog
+                                host = [c for c in RADAR.contacts if str(getattr(c,'allegiance','')).lower()=='hostile']
+                                if not host:
+                                    continue
+                                def dnm_c(c):
+                                    dx = float(getattr(c,'x',0.0)) - nx
+                                    dy = float(getattr(c,'y',0.0)) - ny
+                                    return (dx*dx + dy*dy) ** 0.5
+                                nearest = min(host, key=dnm_c)
+                                dist = dnm_c(nearest)
+                                if dist <= ahead_nm and not asked:
+                                    officer_say('Pilot','request', {'range_nm': round(dist,1)}, fallback=f"Contact ahead {dist:.1f} nm. Request permission to engage.")
+                                    meta['asked'] = True; CAP_META[mid] = meta
+                            except Exception:
+                                continue
             except Exception:
                 pass
             # process any due engagement events (hit/miss radio + sounds)
             try:
                 _process_due_events()
+            except Exception:
+                pass
+            # Hostile attack loop (minimal threat model)
+            try:
+                st2 = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+                own_x, own_y = radar_xy_from_state(st2)
+                now_t = time.time()
+                hostiles = [c for c in RADAR.contacts if str(getattr(c,'allegiance','')).lower()=='hostile']
+                for c in hostiles:
+                    try:
+                        cid = int(getattr(c,'id',-1))
+                        last = float(ATTACK_STATE.get(cid, 0.0))
+                        if (now_t - last) < 12.0:
+                            continue
+                        cap = getattr(c,'meta',{}).get('cap',{})
+                        pt = cap.get('primary_target')
+                        if pt not in (None,'', 'ship') and not (isinstance(pt, list) and 'ship' in [str(x).lower() for x in pt]):
+                            continue
+                        # Choose target: default ship; prefer own or Hermes randomly when 'ship'
+                        target_label = 'HMS Sheffield'
+                        tx, ty = own_x, own_y
+                        try:
+                            if pt == 'ship' or (isinstance(pt, list) and 'ship' in [str(x).lower() for x in pt]):
+                                # Compute Hermes world from convoy offsets
+                                stship = ENG.public_state() if hasattr(ENG,'public_state') else {}
+                                own_cell = ship_cell_from_state(stship)
+                                # Parse indices
+                                j=0
+                                while j < len(own_cell) and own_cell[j].isalpha(): j+=1
+                                cletters = own_cell[:j] or 'A'; rstr = own_cell[j:] or '1'
+                                ci=0
+                                for ch in cletters: ci=ci*26+(ord(ch)-ord('A')+1)
+                                ri=int(rstr)
+                                convoy = _load_json(DATA_DIR / 'convoy.json', {})
+                                escorts = convoy.get('escorts', []) if isinstance(convoy, dict) else []
+                                hermes = next((e for e in escorts if str(e.get('name','')).lower().find('hermes')>=0), None)
+                                if hermes:
+                                    dx_cells, dy_cells = int(hermes.get('offset_cells',[ -2,3])[0]), int(hermes.get('offset_cells',[-2,3])[1])
+                                    hermes_cell = board_to_cell(int(clamp(ri+dy_cells,1,BOARD_N)), int(clamp(ci+dx_cells,1,BOARD_N)))
+                                    hx, hy = cell_to_world(hermes_cell)
+                                    # Random pick between own and Hermes
+                                    if random.random() < 0.5:
+                                        target_label, tx, ty = 'HMS Hermes', hx, hy
+                        except Exception:
+                            pass
+                        dx = float(getattr(c,'x',0.0)) - float(tx)
+                        dy = float(getattr(c,'y',0.0)) - float(ty)
+                        rng = (dx*dx + dy*dy) ** 0.5
+                        rmin = cap.get('min_range_nm'); rmax = cap.get('max_range_nm')
+                        try:
+                            rminf = float(rmin) if rmin is not None else 0.0
+                            rmaxf = float(rmax) if rmax is not None else 9999.0
+                        except Exception:
+                            rminf, rmaxf = 0.0, 9999.0
+                        if not (rminf <= rng <= rmaxf):
+                            continue
+                        # Schedule hostile attack
+                        w = str(cap.get('primary_weapon') or '').lower()
+                        if 'exocet' in w:
+                            travel = 4.0 + 6.0 * rng; base = 0.7
+                            kind = 'exocet'
+                        elif 'bomb' in w:
+                            travel = max(1.0, 2.0 * rng); base = 0.4
+                            kind = 'bombs'
+                        elif 'rocket' in w:
+                            travel = max(1.0, 1.5 * rng); base = 0.3
+                            kind = 'rockets'
+                        elif '6-inch' in w or 'gun' in w:
+                            travel = max(1.0, 1.2 * rng); base = 0.25
+                            kind = 'gun'
+                        else:
+                            travel = max(1.0, 1.5 * rng); base = 0.3
+                            kind = 'attack'
+                        with STATE_LOCK:
+                            PENDING_EVENTS.append({'due': now_t + travel, 'kind': 'hostile_attack', 'contact_id': cid,
+                                                   'contact_name': str(getattr(c,'name','Hostile')),
+                                                   'weapon': kind, 'base': base, 'range_nm': rng, 'target': target_label})
+                        ATTACK_STATE[cid] = now_t
+                        # Immediate warning + red alert if impact very soon or very close
+                        try:
+                            officer_say('Fire Control', 'locked', {'name': str(getattr(c,'name','Hostile')), 'id': cid, 'range_nm': round(rng,1)},
+                                        fallback=f"Incoming {kind} at {rng:.1f} nm.")
+                        except Exception:
+                            pass
+                        if (travel <= 12.0) or (rng <= 1.2):
+                            trigger_alarm('red-alert.wav', message=f"Red alert, incoming {kind}!", role='Fire Control')
+                        # Optional pre-call can be added later
+                    except Exception:
+                        continue
             except Exception:
                 pass
             try:
@@ -506,6 +668,9 @@ WEAP_CATALOG_PATH = DATA_DIR / "weapons_catalog.json"
 CONTACTS_PATH = DATA_DIR / "contacts.json"
 CREW_PATH = DATA_DIR / "crew.json"
 ALARM_CFG_PATH = DATA_DIR / "alarms.json"
+HEALTH_PATH = STATE_DIR / "health.json"
+TTS_DIR = STATE_DIR / "tts"
+TTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Initialize CAP now that DATA_DIR is available
 try:
@@ -568,6 +733,25 @@ def ship_cell_from_state(state: Dict[str, Any]) -> str:
         except Exception:
             pass
     return cell_for_world(row, col)
+
+def radar_xy_from_state(state: Dict[str, Any]) -> tuple[float, float]:
+    """Return own ship (x,y) in Radar's world units.
+    Converts legacy 0..100 coordinates to 0..WORLD_N when detected.
+    """
+    try:
+        x, y = get_own_xy(state)
+        xf, yf = float(x), float(y)
+    except Exception:
+        xf, yf = 0.0, 0.0
+    if xf > float(WORLD_N) or yf > float(WORLD_N):
+        # Legacy scale → rescale into Radar world
+        try:
+            legacy_span = 100.0
+            xf = (xf / legacy_span) * float(WORLD_N)
+            yf = (yf / legacy_span) * float(WORLD_N)
+        except Exception:
+            pass
+    return (xf, yf)
 
 def cell_to_world(cell: str) -> tuple[float, float]:
     """Convert a board cell like 'K13' to world (x,y) coordinates (nm), centered board.
@@ -692,6 +876,30 @@ def _load_json(path: Path, default):
         return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return default
+
+def _load_health() -> Dict[str, Any]:
+    try:
+        obj = _load_json(HEALTH_PATH, {})
+        if not isinstance(obj, dict):
+            obj = {}
+    except Exception:
+        obj = {}
+    # defaults
+    if 'max_lives' not in obj: obj['max_lives'] = 3
+    if 'lives' not in obj: obj['lives'] = obj['max_lives']
+    if 'hermes_max_lives' not in obj: obj['hermes_max_lives'] = 3
+    if 'hermes_lives' not in obj: obj['hermes_lives'] = obj['hermes_max_lives']
+    try:
+        _save_json(HEALTH_PATH, obj)
+    except Exception:
+        pass
+    return obj
+
+def _save_health(obj: Dict[str, Any]) -> None:
+    try:
+        _save_json(HEALTH_PATH, obj)
+    except Exception:
+        pass
     except Exception:
         return default
 
@@ -1016,6 +1224,12 @@ def _ownfleet_snapshot(state: Dict[str, Any]) -> list[Dict[str, Any]]:
     if hermes:
         dx, dy = hermes.get('offset_cells', [-2,3])
         hermes_cell = _escort_cell(int(dx), int(dy))
+        # Health overlay for Hermes
+        try:
+            hl = _load_health(); hm = int(hl.get('hermes_max_lives',3)); hlv = int(hl.get('hermes_lives',hm));
+            hermes_hp = int(round(100.0 * (hlv / max(1, hm))))
+        except Exception:
+            hermes_hp = 100
         out.append({
             'id':'hermes',
             'name': hermes.get('name'),
@@ -1023,7 +1237,7 @@ def _ownfleet_snapshot(state: Dict[str, Any]) -> list[Dict[str, Any]]:
             'cell': hermes_cell,
             'speed': eff_speed,
             'heading': eff_course,
-            'status': {'health_pct': 100},
+            'status': {'health_pct': hermes_hp},
         })
     else:
         out.append({
@@ -1127,7 +1341,7 @@ def _file_info(p: Path) -> Dict[str, Any]:
                 "size": len(b),
                 "sha1": hashlib.sha1(b).hexdigest(),
             })
-        return info
+    return info
     except Exception:
         return {"path": str(p), "exists": False}
 
@@ -1160,6 +1374,48 @@ def record_officer(role: str, text: str) -> None:
     prio = (role_str in ("Fire Control",)) or any(w in low for w in ("priority", "threat", "hit", "miss", "locked", "destroyed"))
     with STATE_LOCK:
         RADIO_QUEUE.append({"role": role_str, "text": msg, "prio": bool(prio), "enq_ts": time.time()})
+
+def _crew_voice(role: str) -> str:
+    try:
+        r = (CREW.get('roles') or {}).get(role)
+        v = (r or {}).get('voice')
+        return str(v) if v else os.environ.get('OPENAI_TTS_VOICE', 'ash')
+    except Exception:
+        return os.environ.get('OPENAI_TTS_VOICE', 'ash')
+
+def _tts_synthesize(text: str, role: str) -> str | None:
+    """Synthesize text to speech via OpenAI if key present.
+    Returns relative URL path "/data/tts/<file>" or None on failure.
+    Caches by (model,voice,text) hash.
+    """
+    key = os.environ.get('OPENAI_API_KEY')
+    if not key:
+        return None
+    model = os.environ.get('OPENAI_TTS_MODEL', 'gpt-4o-mini-tts')
+    voice = _crew_voice(role)
+    txt = (text or '').strip()
+    if not txt:
+        return None
+    # Hash filename for cache
+    h = hashlib.sha1(f"{model}|{voice}|{txt}".encode('utf-8')).hexdigest()[:20]
+    fname = f"{h}.mp3"
+    fpath = TTS_DIR / fname
+    if fpath.exists():
+        return f"/data/tts/{fname}"
+    url = "https://api.openai.com/v1/audio/speech"
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    payload = {"model": model, "input": txt, "voice": voice, "format": "mp3"}
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=20)
+        if r.status_code == 200:
+            fpath.write_bytes(r.content)
+            return f"/data/tts/{fname}"
+        else:
+            logging.warning("TTS failed %s: %s", r.status_code, r.text[:200])
+            return None
+    except Exception as e:
+        logging.warning("TTS error: %s", e)
+        return None
 
 # (moved earlier) crew helpers defined above
 
@@ -1234,7 +1490,7 @@ def _ai_exec(actions: list[dict]) -> list[str]:
     msgs: list[str] = []
     try:
         st = ENG.public_state() if hasattr(ENG, 'public_state') else {}
-        own_x, own_y = get_own_xy(st)
+        own_x, own_y = radar_xy_from_state(st)
     except Exception:
         own_x, own_y = (0.0, 0.0)
     for a in actions:
@@ -1590,6 +1846,49 @@ def alarm_trigger():
                        "request": {}, "response": payload})
         return jsonify(payload), 500
 
+@app.get("/cap/roe")
+def cap_roe():
+    try:
+        # Return minimal per-mission auth/asked flags
+        info = {int(k): {"asked": bool(v.get('asked', False)), "authorized": bool(v.get('authorized', False))} for k,v in CAP_META.items()}
+        return jsonify({"ok": True, "missions": info})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.post("/cap/authorize")
+def cap_authorize():
+    from flask import request
+    t0 = time.time(); route = "/cap/authorize"
+    try:
+        data = request.get_json(silent=True) or {}
+        mid = int(data.get('id', 0))
+        auth = bool(data.get('authorize', True))
+        if mid <= 0 or mid not in CAP_META:
+            payload = {"ok": False, "error": "unknown mission id"}
+            record_flight({"route": route, "method": request.method, "status": 400,
+                           "duration_ms": int((time.time()-t0)*1000),
+                           "request": data, "response": payload})
+            return jsonify(payload), 400
+        CAP_META[mid]['authorized'] = auth
+        CAP_META[mid]['asked'] = False
+        # Radio feedback
+        if auth:
+            officer_say('Pilot','cleared', {})
+        else:
+            officer_say('Pilot','hold', {})
+        payload = {"ok": True, "id": mid, "authorized": auth}
+        record_flight({"route": route, "method": request.method, "status": 200,
+                       "duration_ms": int((time.time()-t0)*1000),
+                       "request": data, "response": payload})
+        return jsonify(payload)
+    except Exception as e:
+        logging.exception("/cap/authorize error: %s", e)
+        payload = {"ok": False, "error": str(e)}
+        record_flight({"route": route, "method": request.method, "status": 500,
+                       "duration_ms": int((time.time()-t0)*1000),
+                       "request": {}, "response": payload})
+        return jsonify(payload), 500
+
 @app.post("/alarm/clear")
 def alarm_clear():
     t0 = time.time(); route = "/alarm/clear"
@@ -1624,18 +1923,42 @@ def api_status():
             payload["hud"] = ENG.hud_line() if hasattr(ENG, "hud_line") else "OK"
         # Own fleet snapshot (own ship + escorts)
         try:
-            payload['ownfleet'] = _ownfleet_snapshot(payload.get('state', {}))
+            # Overlay health into state so Own Fleet shows damage
+            st_state = dict(payload.get('state', {})) if isinstance(payload.get('state', {}), dict) else {}
+            hlth = _load_health()
+            st_state['lives'] = int(hlth.get('lives', 3))
+            st_state['max_lives'] = int(hlth.get('max_lives', 3))
+            payload['ownfleet'] = _ownfleet_snapshot(st_state)
         except Exception:
             payload['ownfleet'] = []
         # Build contacts: radar first
         try:
             st = payload.get("state") or (ENG.public_state() if hasattr(ENG, "public_state") else {})
-            own_xy = get_own_xy(st)
+            own_xy = radar_xy_from_state(st)
             radar_list = [contact_to_ui(c, own_xy) for c in RADAR.contacts]
             # Ensure cell comes from shared world_to_cell(x, y)
             for d, c in zip(radar_list, RADAR.contacts):
                 try:
                     d['cell'] = world_to_cell(c.x, c.y)
+                except Exception:
+                    pass
+                # Include target class (Aircraft, Ship, Helicopter) for UI and audio cues
+                try:
+                    nm = str(d.get('name',''))
+                    cls = TARGET_CLASS_BY_NAME.get(nm)
+                    if cls:
+                        d['class'] = cls
+                except Exception:
+                    pass
+                # Include capability summary from contact meta (primary weapon + range)
+                try:
+                    cap = getattr(c, 'meta', {}).get('cap', {})
+                    pw = cap.get('primary_weapon')
+                    rmin = cap.get('min_range_nm')
+                    rmax = cap.get('max_range_nm')
+                    if pw: d['primary_weapon'] = pw
+                    if rmin is not None: d['min_nm'] = rmin
+                    if rmax is not None: d['max_nm'] = rmax
                 except Exception:
                     pass
         except Exception:
@@ -1787,7 +2110,7 @@ def cap_request():
             return jsonify(payload), 400
         # Compute distance and target cell
         st = ENG.public_state() if hasattr(ENG, "public_state") else {}
-        own_x, own_y = get_own_xy(st)
+        own_x, own_y = radar_xy_from_state(st)
         dx = float(getattr(tgt, 'x', 0.0)) - float(own_x)
         dy = float(getattr(tgt, 'y', 0.0)) - float(own_y)
         rng_nm = (dx*dx + dy*dy) ** 0.5
@@ -1802,6 +2125,14 @@ def cap_request():
         if res.get('ok'):
             try:
                 stamp_cap_launch()
+            except Exception:
+                pass
+            # Seed CAP_META for en-route detection/permission
+            try:
+                mid = int((res.get('mission') or {}).get('id'))
+                st2 = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+                ox, oy = radar_xy_from_state(st2)
+                CAP_META[mid] = {"origin_xy": (ox, oy), "asked": False, "authorized": False}
             except Exception:
                 pass
         record_flight({"route": route, "method": request.method, "status": status,
@@ -1837,7 +2168,7 @@ def cap_launch_to():
             return jsonify(payload), 400
         # Compute distance from own ship to requested cell center
         st = ENG.public_state() if hasattr(ENG, "public_state") else {}
-        own_x, own_y = get_own_xy(st)
+        own_x, own_y = radar_xy_from_state(st)
         tx, ty = cell_to_world(cell)
         dx, dy = float(tx) - float(own_x), float(ty) - float(own_y)
         rng_nm = (dx*dx + dy*dy) ** 0.5
@@ -1857,6 +2188,11 @@ def cap_launch_to():
         if res.get('ok'):
             try:
                 stamp_cap_launch()
+            except Exception:
+                pass
+            try:
+                mid = int((res.get('mission') or {}).get('id'))
+                CAP_META[mid] = {"origin_xy": (own_x, own_y), "asked": False, "authorized": False}
             except Exception:
                 pass
         record_flight({"route": route, "method": request.method, "status": status,
@@ -1928,7 +2264,7 @@ def api_command():
             return jsonify(payload), 200
         elif s.lower().startswith("/radar lock"):
             parts = s.split()
-            cid = parts[-1] if len(parts) >= 3 else ""
+            arg = parts[-1] if len(parts) >= 3 else ""
             # helper to find by id
             def _radar_find_by_id(cid_val):
                 try:
@@ -1939,9 +2275,18 @@ def api_command():
                     if int(getattr(c, "id", -1)) == cid_i:
                         return c
                 return None
-            target = _radar_find_by_id(cid)
+            # allow '/radar lock nearest' or 'primary'
+            if str(arg).lower() in ("nearest","primary"):
+                tid = getattr(RADAR, 'priority_id', None)
+                target = next((c for c in RADAR.contacts if int(getattr(c,'id',-1)) == int(tid)), None) if tid is not None else None
+            else:
+                target = _radar_find_by_id(arg)
             if target is None:
-                payload = {"ok": False, "error": "contact not found"}
+                try:
+                    avail = [int(getattr(c,'id',-1)) for c in RADAR.contacts]
+                except Exception:
+                    avail = []
+                payload = {"ok": False, "error": "contact not found", "available_ids": avail[:10]}
                 record_flight({
                     "route": route, "method": request.method, "status": 404,
                     "duration_ms": int((time.time()-t0)*1000),
@@ -1980,7 +2325,7 @@ def api_command():
         elif s.lower().startswith("/radar scan"):
             # compute own_xy
             st = ENG.public_state() if hasattr(ENG, "public_state") else {}
-            own_x, own_y = get_own_xy(st)
+            own_x, own_y = radar_xy_from_state(st)
             # Radio: confirmation + summary
             try:
                 officer_say('Radar', 'scanning', {})
@@ -2402,6 +2747,27 @@ try:
 except Exception:
     pass
 
+# Seed a few friendly contacts at startup so the world isn't empty
+def _spawn_initial_friendlies() -> None:
+    try:
+        st = ENG.public_state() if hasattr(ENG, "public_state") else {}
+        own_x, own_y = radar_xy_from_state(st)
+        # Only seed if radar list is currently empty to avoid duplicates on hot-reload
+        if getattr(RADAR, 'contacts', None):
+            return
+        # Three bearings around the ship; moderate ranges
+        bearings = [45.0, 135.0, 315.0]
+        for b in bearings:
+            try:
+                r = random.uniform(6.0, 12.0)
+                RADAR.force_spawn(own_x, own_y, 'Friendly', bearing_deg=b, range_nm=r)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+_spawn_initial_friendlies()
+
 # ---- Radar demo helpers ----
 def _weighted_hostile_pick(rng: random.Random) -> tuple[str, float]:
     total = float(sum(w for _n, _s, w in HOSTILES))
@@ -2466,7 +2832,7 @@ def debug_cellmap():
     except Exception:
         # Fallback to public_state if ENG.state not available
         st = ENG.public_state() if hasattr(ENG, "public_state") else {}
-        own_x, own_y = get_own_xy(st)
+        own_x, own_y = radar_xy_from_state(st)
     out = []
     try:
         for c in RADAR.contacts[:n]:
@@ -2488,7 +2854,7 @@ def radar_force_spawn():
     route = "/radar/force_spawn"
     try:
         st = ENG.public_state() if hasattr(ENG, "public_state") else {}
-        own_x, own_y = get_own_xy(st)
+        own_x, own_y = radar_xy_from_state(st)
         # Back-compat demo spawn — use Hostile via RADAR
         c = RADAR.force_spawn(own_x, own_y, "Hostile", bearing_deg=315.0, range_nm=random.uniform(8.0, 14.0))
         ui = contact_to_ui(c, (own_x, own_y))
