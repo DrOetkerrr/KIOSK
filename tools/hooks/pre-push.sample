@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Optional pre-push hook (copy or symlink to .git/hooks/pre-push)
+#
+# - Runs make check (compile + size guard)
+# - Optionally runs verify suite if a local server is already running
+
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$ROOT"
+
+echo "[pre-push] make check"
+make -s check || { echo "[pre-push] FAIL (check)"; exit 1; }
+
+PORT="${PORT:-5055}"
+echo "[pre-push] probing http://127.0.0.1:${PORT}/health"
+if curl -sS -m 0.5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/health" | grep -q '^200$'; then
+  echo "[pre-push] server detected; running verify"
+  PORT="$PORT" bash tools/verify_suite.sh >/dev/null || {
+    echo "[pre-push] verify had issues (see logs/verify_*.md). Continue? (Ctrl+C to abort)";
+  }
+else
+  echo "[pre-push] server not running; skipping verify"
+fi
+
+exit 0
+

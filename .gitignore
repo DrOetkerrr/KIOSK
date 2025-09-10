@@ -12,6 +12,7 @@ env/
 # --- Secrets & local state ---
 .env
 *.log
+logs/
 falklands_state.json
 
 # --- macOS crumbs ---

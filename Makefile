@@ -1,6 +1,6 @@
 PORT ?= 5055
 
-.PHONY: start verify open tail smoke
+.PHONY: start verify open tail smoke check
 
 start:
 	@echo "→ Starting Falkland V2 on http://127.0.0.1:$(PORT)"
@@ -23,3 +23,7 @@ tail:
 smoke:
 	@echo "→ Running smoke checks against http://127.0.0.1:$(PORT)"
 	@PORT=$(PORT) bash ./tools/smoke_check.sh
+
+check:
+	@echo "→ Static checks (compile + size guard + route summary)"
+	@python3 ./tools/check_repo.py
