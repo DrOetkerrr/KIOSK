@@ -65,8 +65,9 @@
     else stopBridge();
   });
 
-  // ---- Weapon launch playback (edge-trigger on audio.last_launch) ----
+  // ---- Weapon launch/result playback (edge-trigger) ----
   let lastStamp = null;
+  let lastResult = null;
 
   async function pollLaunchAndPlay() {
     try {
@@ -84,7 +85,21 @@
         }
       }
 
-      // 2) Fly-by trigger (any aircraft within 0.3 nm crossing inward)
+      // 2) Result cues (hit/miss)
+      const res = j?.audio?.last_result;
+      if (res) {
+        const evt = res.event || "";
+        const ts2 = res.ts || 0;
+        if (!lastResult || lastResult.ts !== ts2 || lastResult.event !== evt) {
+          lastResult = { event: evt, ts: ts2 };
+          if (unlocked) {
+            if (evt === 'hit') playOne(SOUND_MAP.hit);
+            else if (evt === 'miss') playOne(SOUND_MAP.miss);
+          }
+        }
+      }
+
+      // 3) Fly-by trigger (any aircraft within 0.3 nm crossing inward)
       updateFlyby(j);
     } catch (_) {
       // never break the UI

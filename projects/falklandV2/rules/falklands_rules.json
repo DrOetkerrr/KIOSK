@@ -1,0 +1,124 @@
+{
+  "attack_types": [
+    {
+      "id": "bomb_lowlevel",
+      "name": "Low-level bomb run (A-4 / Dagger / Mirage)",
+      "base_hit": 0.4,
+      "range_hint_nm": [0.5, 1.0],
+      "defences": [
+        {"id": "sea_dart_this_window", "label": "Sea Dart fired this window", "delta": -0.2},
+        {"id": "ciws_close", "label": "20mm/GAM-BO1 effective at ≤1 nm", "delta": -0.1, "range_le_nm": 1.0},
+        {"id": "gun_barrage", "label": "4.5\" barrage", "delta": -0.1},
+        {"id": "hard_turn_flank", "label": "Hard turn + flank speed", "delta": -0.1}
+      ],
+      "damage_profile": {"Light": 0.333, "Moderate": 0.333, "Severe": 0.167, "Critical": 0.167}
+    },
+    {
+      "id": "rocket_strafe",
+      "name": "Rocket/cannon strafing (Pucará / Mirage)",
+      "base_hit": 0.3,
+      "range_hint_nm": [0.2, 2.0],
+      "defences": [
+        {"id": "ciws_close_heavy", "label": "20mm/GAM-BO1 at ≤1 nm (heavy)", "delta": -0.2, "range_le_nm": 1.0},
+        {"id": "ciws_mid", "label": "20mm/GAM-BO1 at ≤2 nm", "delta": -0.1, "range_le_nm": 2.0},
+        {"id": "gun_barrage", "label": "4.5\" barrage", "delta": -0.1},
+        {"id": "hard_turn_flank", "label": "Hard turn + flank speed", "delta": -0.1}
+      ],
+      "damage_profile": {"Light": 0.5, "Moderate": 0.333, "Severe": 0.167, "Critical": 0.0}
+    },
+    {
+      "id": "bomb_altitude",
+      "name": "High/medium-altitude bombs (Canberra)",
+      "base_hit": 0.3,
+      "range_hint_nm": [1.0, 2.0],
+      "defences": [
+        {"id": "gun_barrage", "label": "4.5\" barrage", "delta": -0.1},
+        {"id": "sea_dart_snapshot", "label": "Sea Dart snapshot", "delta": -0.1},
+        {"id": "hard_turn_speed", "label": "Hard turn + speed", "delta": -0.1}
+      ],
+      "damage_profile": {"Light": 0.333, "Moderate": 0.333, "Severe": 0.167, "Critical": 0.167}
+    },
+    {
+      "id": "missile_seaskimmer",
+      "name": "Sea-skimming missile (Exocet class)",
+      "base_hit": 0.5,
+      "range_hint_nm": [3.0, 22.0],
+      "defences": [
+        {"id": "ciws_very_close", "label": "20mm/GAM-BO1 at ≤1 nm", "delta": -0.1, "range_le_nm": 1.0},
+        {"id": "hard_turn_speed", "label": "Hard turn + speed", "delta": -0.1}
+      ],
+      "damage_profile": {"Light": 0.111, "Moderate": 0.333, "Severe": 0.25, "Critical": 0.306},
+      "prerequisite_decoy": {
+        "id": "chaff",
+        "label": "Chaff seduction before hit roll",
+        "Pc_default": 0.5,
+        "Pc_with_active_cloud": 0.6
+      }
+    },
+    {
+      "id": "surface_gunnery_6in",
+      "name": "Surface gunnery (6\" battery, e.g., Belgrano)",
+      "base_hit": 0.5,
+      "range_hint_nm": [8.0, 15.0],
+      "defences": [
+        {"id": "hard_turn_speed", "label": "Hard turn + speed", "delta": -0.1}
+      ],
+      "damage_profile": {"Light": 0.333, "Moderate": 0.333, "Severe": 0.167, "Critical": 0.167}
+    }
+  ],
+  "global_rules": {
+    "min_hit_floor": 0.05,
+    "critical_system_selection": {
+      "mode": "uniform",
+      "systems": [
+        {"id": "radar", "label": "Radar (air/surface search)", "weight": 1},
+        {"id": "attack_radar", "label": "Attack radar / fire control", "weight": 1},
+        {"id": "engine", "label": "Engine/propulsion", "weight": 1},
+        {"id": "rudder", "label": "Rudder/steering", "weight": 1},
+        {"id": "hull", "label": "Hull breach", "weight": 1},
+        {"id": "fire", "label": "Fire", "weight": 1}
+      ]
+    },
+    "system_effects": {
+      "radar": {"degraded": {"defence_modifier_penalty": -0.05}, "offline": {"sea_dart_disabled": true}},
+      "attack_radar": {"degraded": {"barrage_penalty": -0.05}, "offline": {"barrage_unavailable": true}},
+      "engine": {"degraded": {"per_step_speed_loss_kts": 5}, "offline": {"dead_in_water": true}},
+      "rudder": {"degraded": {"remove_hard_turn_bonus": true}, "offline": {"course_changes_limited": true}},
+      "hull": {"degraded": {"speed_cap_kts": 15}, "severe": {"flooding_active": true}},
+      "fire": {"active": {"defence_modifiers_extra_penalty": -0.05}}
+    }
+  },
+  "cap_config": {
+    "aircraft_type": "Sea Harrier FRS.1",
+    "cruise_speed_kts": 420,
+    "min_launch_interval_s": 30,
+    "deck_cycle_per_pair_s": 180,
+    "max_ready_pairs": 2,
+    "airframe_pool_total": 8,
+    "pair_rearm_refuel_min": 25,
+    "scramble_cooldown_min": 10,
+    "default_pair_size": 2,
+    "default_onstation_min": 20,
+    "bingo_rtb_buffer_min": 4,
+    "station_radius_nm": 5,
+    "effects": {
+      "spawn_weight_multiplier": {
+        "A-4 Skyhawk": 0.6,
+        "Dagger (Mirage V)": 0.6,
+        "Mirage III": 0.7,
+        "Pucará": 0.5,
+        "Super Étendard": 0.8,
+        "Canberra bomber": 0.8
+      },
+      "intercept_prob_pre_release": {
+        "A-4 Skyhawk": 0.5,
+        "Dagger (Mirage V)": 0.5,
+        "Mirage III": 0.45,
+        "Pucará": 0.7,
+        "Super Étendard": 0.3,
+        "Canberra bomber": 0.4
+      },
+      "defence_bonus_if_not_intercepted": 0.1
+    }
+  }
+}

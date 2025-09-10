@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Falklands V2 — Golden v1</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    :root{--ok:#19c37d;--err:#ff4d4f;--fg:#111;--muted:#667085;--bg:#f6f7f9;--card:#fff;--br:#e5e7eb;--link:#0b72ff}
+    *{box-sizing:border-box}
+    html,body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
+    header{display:flex;align-items:center;gap:.75rem;padding:12px 16px;border-bottom:1px solid var(--br);background:var(--card);position:sticky;top:0;z-index:10}
+    h1{margin:0;font-size:16px;font-weight:650;letter-spacing:.2px}
+    .dot{width:10px;height:10px;border-radius:50%}
+    .ok{background:var(--ok)} .bad{background:var(--err)}
+    .muted{color:var(--muted)}
+    main{max-width:1150px;margin:0 auto;padding:16px;display:grid;gap:12px}
+    .card{background:var(--card);border:1px solid var(--br);border-radius:12px;padding:12px 14px}
+    .title{font-weight:650;margin:0 0 8px 0}
+    .hud{font-size:16px;font-weight:650}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:7px 9px;border-bottom:1px solid var(--br);text-align:left;font-size:14px;vertical-align:top}
+    th{font-weight:650}
+    .btns{display:flex;flex-wrap:wrap;gap:8px}
+    button{border:1px solid var(--br);background:var(--card);padding:6px 10px;border-radius:8px;cursor:pointer}
+    button:disabled{opacity:.6;cursor:not-allowed}
+    pre{margin:0;background:#0e0e12;color:#e7e7e7;border-radius:8px;padding:10px;max-height:32vh;overflow:auto;font-size:12px}
+    .err{padding:10px;border-left:4px solid var(--err);background:#fff6f6;color:#a30006;white-space:pre-wrap;border-radius:8px}
+    a{color:var(--link);text-decoration:none}
+    .row{display:grid;gap:12px;grid-template-columns:2fr 1fr}
+  </style>
+</head>
+<body>
+  <header>
+    <div id="statusDot" class="dot bad" title="disconnected"></div>
+    <h1>Falklands V2 — Golden v1</h1>
+    <div style="margin-left:auto;display:flex;gap:14px;align-items:center">
+      <span id="tickInfo" class="muted">Polling /api/status…</span>
+      <a href="/flight/tail?n=20" target="_blank" rel="noreferrer">Flight (tail)</a>
+    </div>
+  </header>
+
+  <main>
+    <div id="errors" class="err" style="display:none"></div>
+    <div id="hud" class="card hud">—</div>
+
+    <div class="row">
+      <section class="card">
+        <div class="title">Contacts</div>
+        <table id="contactsTbl">
+          <thead><tr><th>#</th><th>Cell</th><th>Name</th><th>Type</th><th>Range</th><th>Course</th><th>Speed</th><th>ID</th><th>Action</th></tr></thead>
+        <tbody><tr><td colspan="9" class="muted">No contacts.</td></tr></tbody>
+        </table>
+      </section>
+
+      <section class="card">
+        <div class="title">Primary target</div>
+        <div id="primary">—</div>
+      </section>
+    </div>
+
+    <section class="card">
+      <div class="title">Commands</div>
+      <div class="btns">
+        <button data-cmd="/radar scan">Scan now</button>
+        <button data-cmd="/radar unlock">Unlock</button>
+        <button data-cmd="/weap arm seadart">Arm Sea Dart</button>
+        <button data-cmd="/weap fire seadart">Fire Sea Dart</button>
+        <button data-cmd="/gun test">Gun Test Fire</button>
+        <button data-cmd="/decoy chaff">Deploy Chaff</button>
+        <button data-cmd="/cap request">Request CAP</button>
+      </div>
+      <div class="muted" style="margin-top:6px">Console (last 10):</div>
+      <pre id="console"></pre>
+    </section>
+  </main>
+
+  <audio id="beep" preload="auto" src="/static/squelch.m4a"></audio>
+
+  <script>
+  (function(){
+    const dot = document.getElementById('statusDot');
+    const tickInfo = document.getElementById('tickInfo');
+    const hud = document.getElementById('hud');
+    const errs = document.getElementById('errors');
+    const tblBody = document.getElementById('contactsTbl').querySelector('tbody');
+    const primary = document.getElementById('primary');
+    const con = document.getElementById('console');
+    const beep = document.getElementById('beep');
+    let lines = [], lastOK = 0;
+
+    function setStatus(ok,msg){
+      if(ok){ dot.classList.remove('bad'); dot.classList.add('ok'); errs.style.display='none'; errs.textContent=''; }
+      else { dot.classList.remove('ok'); dot.classList.add('bad'); if(msg){ errs.style.display='block'; errs.textContent=String(msg); } }
+    }
+
+    function hudFrom(data){
+      if(data && typeof data.hud==='string' && data.hud.trim()) return data.hud;
+      const s=data?.state?.ship; if(!s) return '—';
+      const col=s.col??'—', row=s.row??'—', hdg=s.heading??'—', spd=s.speed??'—';
+      return `Ship ${col}-${row} | hdg ${hdg}\u00B0 spd ${spd} kn`;
+    }
+
+    function renderContacts(list){
+      tblBody.innerHTML='';
+      if(!Array.isArray(list) || list.length===0){
+        const tr=document.createElement('tr'); const td=document.createElement('td');
+        td.colSpan=9; td.className='muted'; td.textContent='No contacts.'; tr.appendChild(td); tblBody.appendChild(tr); return;
+      }
+      list.slice(0,10).forEach((c,i)=>{
+        const tr=document.createElement('tr');
+        const cell = c.cell ?? `${c.col??'—'}-${c.row??'—'}`;
+        const name = c.name ?? c.Name ?? '—';
+        const type = c.type ?? c.class ?? '—';
+        const rng  = c.range_nm ?? c.range ?? '—';
+        const crs  = c.course ?? c.crs ?? '—';
+        const spd  = c.speed ?? '—';
+        const id   = c.id ?? c.ID ?? '—';
+        tr.innerHTML = `<td>${i+1}</td><td>${cell}</td><td>${name}</td><td>${type}</td><td>${rng}</td><td>${crs}</td><td>${spd}</td><td>${id}</td>`;
+        const tdAct=document.createElement('td'); const b=document.createElement('button'); b.textContent='Lock';
+        const idOrIndex = c.id ?? String(i);
+        b.onclick = ()=> sendCmd(`/radar lock ${idOrIndex}`);
+        tdAct.appendChild(b); tr.appendChild(tdAct); tblBody.appendChild(tr);
+      });
+    }
+
+    function renderPrimary(obj){
+      if(!obj){ primary.textContent='—'; return; }
+      const cell = obj.cell ?? `${obj.col??'—'}-${obj.row??'—'}`;
+      const name = obj.name ?? obj.Name ?? '—';
+      const type = obj.type ?? obj.class ?? '—';
+      const r = obj.range_nm ?? obj.range ?? '—';
+      const crs = obj.course ?? obj.crs ?? '—';
+      const spd = obj.speed ?? '—';
+      primary.textContent = `${cell} · ${name} (${type}) · R ${r} · CRS ${crs} · SPD ${spd}`;
+    }
+
+    function logLine(s){
+      const ts=new Date().toLocaleTimeString();
+      lines.unshift(`[${ts}] ${s}`); lines = lines.slice(0,10);
+      con.textContent = lines.join('\n');
+    }
+
+    async function poll(){
+      const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),1500);
+      try{
+        const t0=performance.now();
+        const res=await fetch('/api/status',{signal:ctrl.signal,cache:'no-store'});
+        if(!res.ok){ setStatus(false, `HTTP ${res.status} on /api/status`); return; }
+        const data=await res.json();
+        const dt=Math.round(performance.now()-t0);
+        tickInfo.textContent=`/api/status OK · ${dt} ms`;
+        lastOK=Date.now(); setStatus(true);
+
+        hud.textContent = hudFrom(data);
+        renderContacts(data?.contacts ?? []);
+        renderPrimary(data?.primary ?? data?.priority ?? null);
+      }catch(e){
+        setStatus(false, e?.name==='AbortError' ? 'Timeout 1.5s on /api/status' : `Fetch error: ${e}`);
+        tickInfo.textContent='Polling /api/status…';
+      }finally{ clearTimeout(t); }
+    }
+
+    async function sendCmd(cmd){
+      try{
+        const url=`/api/command?cmd=${encodeURIComponent(cmd)}`;
+        const res=await fetch(url,{cache:'no-store'});
+        const text=await res.text();
+        logLine(`${cmd} -> ${res.status} ${text}`);
+        if(res.ok){ try{ beep.play().catch(()=>{});}catch(_){ } }
+      }catch(e){
+        logLine(`${cmd} -> ERROR ${e}`);
+      }
+    }
+
+    document.querySelectorAll('button[data-cmd]').forEach(b=>{
+      b.addEventListener('click', ()=> sendCmd(b.getAttribute('data-cmd')));
+    });
+
+    poll(); setInterval(poll,2000);
+    setTimeout(()=>{ if(Date.now()-lastOK>5000) setStatus(false,'No successful /api/status yet'); }, 5000);
+  })();
+  </script>
+</body>
+</html>

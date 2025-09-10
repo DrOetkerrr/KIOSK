@@ -17,11 +17,11 @@
       ]
     },
     "seacat": {
-      "name": "GWS-24 Seacat SAM (quad)",
-      "rounds": 29,
+      "name": "Sea Dart SAM",
+      "rounds": 26,
       "range_nm": [
-        1.0,
-        3.0
+        2.0,
+        35.0
       ],
       "valid_targets": [
         "Aircraft",

@@ -1,0 +1,50 @@
+[
+  {
+    "name": "MM38 Exocet",
+    "class": "Missile",
+    "min_nm": 8.0,
+    "max_nm": 22.0,
+    "supports": ["Ship"],
+    "notes": "Surface-to-surface anti-ship missile"
+  },
+  {
+    "name": "Sea Dart SAM",
+    "class": "SAM",
+    "min_nm": 2.0,
+    "max_nm": 35.0,
+    "supports": ["Aircraft"],
+    "notes": "Long-range area air-defence (Type 42)"
+  },
+  {
+    "name": "4.5 inch Mk.8 gun",
+    "class": "Gun",
+    "min_nm": 1.0,
+    "max_nm": 8.0,
+    "supports": ["Ship", "Shore"],
+    "notes": "Naval gunfire support and surface targets"
+  },
+  {
+    "name": "20mm Oerlikon",
+    "class": "Gun",
+    "min_nm": 0.25,
+    "max_nm": 0.5,
+    "supports": ["Aircraft", "SmallCraft"],
+    "notes": "CIWS/light AA"
+  },
+  {
+    "name": "20mm GAM-BO1 (twin)",
+    "class": "Gun",
+    "min_nm": 0.3,
+    "max_nm": 2.5,
+    "supports": ["Aircraft", "SmallCraft"],
+    "notes": "Light AA mount"
+  },
+  {
+    "name": "Corvus chaff",
+    "class": "Decoy",
+    "min_nm": 0.0,
+    "max_nm": 1.0,
+    "supports": ["Aircraft"],
+    "notes": "Chaff decoy deployment"
+  }
+]

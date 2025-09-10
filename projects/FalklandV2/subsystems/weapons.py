@@ -47,7 +47,7 @@ def _fmt_range(r):
 def weapons_status(ship_cfg: Dict[str, Any]) -> str:
     """
     Returns a single-line concise status like:
-    'WEAPONS: 4.5in HE=550 ILLUM=100 (≤8.0 nm) | Sea Cat ROUNDS=35 (≥1.0–≤3.0 nm) | Exocet ROUNDS=4 (≥3.0–≤22.0 nm) | Corvus CHAFF=15 | 20mm Oerlikon ROUNDS=5000 (≥0.3–≤0.5 nm)'
+    'WEAPONS: 4.5in HE=550 ILLUM=100 (≤8.0 nm) | Sea Dart ROUNDS=26 (≥2.0–≤35.0 nm) | Exocet ROUNDS=4 (≥3.0–≤22.0 nm) | Corvus CHAFF=15 | 20mm Oerlikon ROUNDS=5000 (≥0.3–≤0.5 nm)'
     """
     w = ship_cfg.get("weapons", {})
     chunks = []
@@ -59,12 +59,12 @@ def weapons_status(ship_cfg: Dict[str, Any]) -> str:
         chunks.append(f"4.5in HE={g.get('ammo_he',0)} ILLUM={g.get('ammo_illum',0)} ({rng})" if rng else
                       f"4.5in HE={g.get('ammo_he',0)} ILLUM={g.get('ammo_illum',0)}")
 
-    # Sea Cat
+    # Sea Dart (legacy key 'seacat')
     if "seacat" in w:
         sc = w["seacat"]
         rng = _fmt_range(sc.get("range_nm"))
-        chunks.append(f"Sea Cat ROUNDS={sc.get('rounds',0)} ({rng})" if rng else
-                      f"Sea Cat ROUNDS={sc.get('rounds',0)}")
+        chunks.append(f"Sea Dart ROUNDS={sc.get('rounds',0)} ({rng})" if rng else
+                      f"Sea Dart ROUNDS={sc.get('rounds',0)}")
 
     # Oerlikon 20mm
     if "oerlikon_20mm" in w:

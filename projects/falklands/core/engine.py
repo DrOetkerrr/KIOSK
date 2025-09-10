@@ -33,6 +33,7 @@ class Engine:
     autosave: bool = True
 
     st: FalklandsState = field(init=False)
+    systems: Dict[str, Any] = field(init=False)
 
     _nav: Optional[NavSystem] = field(default=None, init=False)
     _radar: Optional[Any] = field(default=None, init=False)  # RadarSystem or None
@@ -51,6 +52,16 @@ class Engine:
         else:
             data = {}
         self.st = FalklandsState(data=data)
+
+        # Initialize systems defaults (radar online by default)
+        systems = self.st.data.setdefault("systems", {})
+        radar_state = systems.get("radar")
+        if not isinstance(radar_state, dict):
+            systems["radar"] = {"online": True, "degraded": False}
+        else:
+            radar_state.setdefault("online", True)
+            radar_state.setdefault("degraded", False)
+        self.systems = systems
 
         # Register subsystems
         self._register_systems()
@@ -167,6 +178,27 @@ class Engine:
 
         return f"ERR: unknown command '{topic} {args}'."
 
+    # ---------- persistence ----------
+    def save(self) -> None:
+        """Persist current state to JSON at state_path."""
+        try:
+            # Ensure directory exists
+            if self.state_path:
+                self.state_path.parent.mkdir(parents=True, exist_ok=True)
+                self.state_path.write_text(json.dumps(self.st.data, indent=2) + "\n", encoding="utf-8")
+        except Exception:
+            # Non-fatal: persistence should not crash the engine
+            pass
+
+    def _save_if_enabled(self) -> None:
+        """Call save() only when autosave is enabled and state_path is set."""
+        try:
+            if bool(getattr(self, "autosave", False)) and getattr(self, "state_path", None):
+                self.save()
+        except Exception:
+            # Never raise from autosave guard
+            pass
+
     # ---------- helpers ----------
     def _parse_kv(self, s: str) -> Dict[str, str]:
         kv: Dict[str, str] = {}
@@ -203,19 +235,22 @@ class Engine:
 
     # /radar ...
     def _cmd_radar(self, args: str) -> str:
-        if not self._radar:
-            return "ERR: radar system unavailable"
+        # Respect explicit offline state only
+        rs = self.systems.get("radar", {})
+        if not bool(rs.get("online", True)):
+            return "ERR: radar offline"
 
         if args.startswith("scan"):
-            try:
-                return self._radar.scan()
-            except Exception:
-                return "RADAR: sweep done"
+            return self.radar_scan()
 
         if args.startswith("list"):
             try:
-                items = self._radar.list_contacts()
-                return f"RADAR: {len(items)} contact(s)"
+                if self._radar and hasattr(self._radar, "list_contacts"):
+                    items = self._radar.list_contacts()
+                    return f"RADAR: {len(items)} contact(s)"
+                contacts = self.st.data.get("contacts", {})
+                n = len(contacts) if isinstance(contacts, dict) else 0
+                return f"RADAR: {n} contact(s)"
             except Exception:
                 return "RADAR: list unavailable"
 
@@ -224,9 +259,51 @@ class Engine:
             if len(parts) >= 2:
                 tid = parts[1]
                 try:
-                    return self._radar.set_primary(tid)
+                    if self._radar and hasattr(self._radar, "set_primary"):
+                        return self._radar.set_primary(tid)
                 except Exception:
-                    return "RADAR: set_primary unavailable"
+                    pass
+                return "RADAR: set_primary unavailable"
             return "ERR: /radar primary <id>"
 
         return "ERR: unknown /radar command"
+
+    # Headless radar scan wrapper
+    def _headless_radar_scan(self) -> str:
+        contacts = self.st.data.get("contacts", {})
+        n = len(contacts) if isinstance(contacts, dict) else 0
+        return f"RADAR: scanned, {n} contact(s)"
+
+    def radar_scan(self) -> str:
+        """Perform a radar sweep even in headless mode; never 'unavailable'."""
+        rs = self.systems.get("radar", {})
+        if not bool(rs.get("online", True)):
+            return "ERR: radar offline"
+
+        if self._radar and hasattr(self._radar, "scan"):
+            try:
+                out = self._radar.scan()
+            except Exception:
+                out = None
+
+            n = None
+            if self._radar and hasattr(self._radar, "list_contacts"):
+                try:
+                    n = len(self._radar.list_contacts())
+                except Exception:
+                    n = None
+
+            if isinstance(out, str) and out.strip():
+                s = out.strip()
+                if s.lower().startswith("radar:"):
+                    return s
+                if n is not None:
+                    return f"RADAR: scanned, {n} contact(s)"
+                return "RADAR: scanned"
+
+            if n is not None:
+                return f"RADAR: scanned, {n} contact(s)"
+            return "RADAR: scanned"
+
+        # No hardware radar bound: headless path
+        return self._headless_radar_scan()

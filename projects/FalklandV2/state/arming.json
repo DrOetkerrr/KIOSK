@@ -1,7 +1,17 @@
 {
-  "weapons": {
-    "seacat": {
-      "armed": false
-    }
-  }
+  "MM38 Exocet": {
+    "armed": true,
+    "arming_until": 0
+  },
+  "4.5 inch Mk.8 gun": "Safe",
+  "Sea Dart SAM": {
+    "armed": true,
+    "arming_until": 0
+  },
+  "20mm Oerlikon": "Armed",
+  "20mm GAM-BO1 (twin)": {
+    "armed": true,
+    "arming_until": 0
+  },
+  "Corvus chaff": "Safe"
 }

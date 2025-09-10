@@ -1,329 +1,489 @@
+<!-- FALKLANDS DASH LAYOUT SENTINEL v1: zones/IDs fixed; modify contents only -->
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <title>Falklands V2 — Web Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Falklands V2 — Dashboard</title>
   <style>
     :root{
-      --fg:#111; --muted:#666; --line:#eaeaea; --chip:#f6f6f6;
-      --ok-bg:#dff5e1; --ok-fg:#186a3b;
-      --out-bg:#fde2e0; --out-fg:#92332a;
-      --na-bg:#eee; --na-fg:#555;
-      --hostile:#ffefef; --hostile-fg:#a61313;
-      --friendly:#eef4ff; --friendly-fg:#224b9b;
-      --neutral:#f1f1f1; --neutral-fg:#666;
+      --bg:#0b1220; --panel:#10192b; --border:#21324f; --muted:#8aa0c2;
+      --text:#e8f0ff; --ok:#2ecc71; --warn:#f1c40f; --err:#e74c3c; --accent:#3b82f6;
+      --pill:#14233d; --shadow:0 6px 18px rgba(0,0,0,0.25);
     }
     *{box-sizing:border-box}
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:16px;color:var(--fg)}
-    h1{margin:0 0 10px}
-    .row{display:flex;gap:14px;flex-wrap:wrap}
-    .card{border:1px solid var(--line);border-radius:12px;padding:12px 14px;box-shadow:0 1px 3px rgba(0,0,0,.05);background:#fff}
-    .card h2{margin:0 0 10px;font-size:16px}
-    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-    .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:var(--chip)}
-    .pill.hostile{background:var(--hostile);color:var(--hostile-fg);border:1px solid #f2c5c5}
-    .pill.friendly{background:var(--friendly);color:var(--friendly-fg);border:1px solid #c9d7ff}
-    .pill.neutral{background:var(--neutral);color:var(--neutral-fg);border:1px solid #ddd}
-    .badge{padding:2px 8px;border-radius:999px;font-size:12px;display:inline-block}
-    .badge.ready{background:var(--ok-bg);color:var(--ok-fg);border:1px solid #c2e6c6}
-    .badge.out{background:var(--out-bg);color:var(--out-fg);border:1px solid #f3b1ab}
-    .badge.na{background:var(--na-bg);color:var(--na-fg);border:1px solid #ddd}
-    table{border-collapse:collapse;width:100%}
-    th,td{border-bottom:1px solid var(--line);text-align:left;padding:6px 8px}
-    th{font-weight:600}
-    input[type=number],input[type=text]{width:86px;padding:4px 6px}
-    button{padding:4px 10px;border:1px solid #ccc;border-radius:8px;background:#fafafa;cursor:pointer}
-    button:disabled{opacity:.55;cursor:not-allowed}
-    .tiny{font-size:12px;color:var(--muted)}
-    #debug{margin-top:10px;color:#a13;font-size:12px}
+    html,body{height:100%}
+    body{margin:0;background:linear-gradient(180deg,#08101f,#0b1220);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial}
+    a{color:var(--accent);text-decoration:none}
+    .wrap{max-width:1200px;margin:0 auto;padding:16px;display:grid;gap:16px}
+
+    /* Top bar */
+    #Z-HUD{
+      display:flex;align-items:center;justify-content:space-between;
+      padding:10px 14px;background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow)
+    }
+    #Z-HUD .left{display:flex;gap:12px;align-items:center}
+    .dot{width:10px;height:10px;border-radius:50%;background:var(--err)}
+    .dot.ok{background:var(--ok)}
+    .hud-badge{padding:4px 8px;border:1px solid var(--border);border-radius:999px;background:#0d1730;color:var(--muted)}
+    .hud-title{font-weight:600;color:#bfd6ff}
+    .hud-mono{font-variant-numeric:tabular-nums}
+
+    /* Grid layout (desktop) */
+    .grid{display:grid;gap:16px}
+    .grid.cols-2{grid-template-columns:1fr 1fr}
+    .grid.cols-2-66{grid-template-columns:1fr 1fr}
+    .full{grid-column:1 / -1}
+
+    /* Cards */
+    .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:12px 12px 10px;box-shadow:var(--shadow)}
+    .card h3{margin:0 0 10px;font-size:15px;color:#cae1ff;display:flex;align-items:center;gap:8px}
+    .card .placeholder{color:var(--muted);padding:10px;border:1px dashed var(--border);border-radius:10px;background:#0c152b}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .kvs{display:grid;grid-template-columns:auto 1fr;gap:6px 12px}
+    .pill{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;background:var(--pill);border:1px solid var(--border);color:#c0d6ff}
+    .btn{padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:#0e1a34;color:var(--text);cursor:pointer}
+    .btn[disabled]{opacity:.45;cursor:not-allowed}
+    .btn.primary{background:var(--accent);border-color:#2f69c6}
+    .btn.warn{background:#2a1f00;border-color:#6b4e00;color:#ffdf8a}
+    .btn.danger{background:#2a0f12;border-color:#6b1f27;color:#ffb4b4}
+    .badge{padding:2px 6px;border-radius:6px;border:1px solid var(--border);background:#0e1a34;color:#cfe1ff}
+    .badge.ok{background:#092716;border-color:#1a5a36;color:#a8f3c5}
+    .badge.err{background:#2a1212;border-color:#6b1f1f;color:#ffb4b4}
+    .badge.warn{background:#2a220c;border-color:#6b5d1a;color:#ffe7a8}
+    table{width:100%;border-collapse:separate;border-spacing:0 6px}
+    th,td{padding:8px 10px;vertical-align:middle}
+    th{font-weight:600;color:#c0d6ff;text-align:left;font-size:12px}
+    tbody tr{background:#0e1a34;border:1px solid var(--border)}
+    tbody tr td:first-child{border-top-left-radius:8px;border-bottom-left-radius:8px}
+    tbody tr td:last-child{border-top-right-radius:8px;border-bottom-right-radius:8px}
+    .num{font-variant-numeric:tabular-nums;text-align:right}
+    .muted{color:var(--muted)}
+    .ok{color:var(--ok)} .err{color:var(--err)} .warn{color:var(--warn)} .accent{color:var(--accent)}
+    .mono{font-family:ui-monospace,SFMono-Regular,Consolas,Menlo,monospace;font-variant-numeric:tabular-nums}
+    .scroll{max-height:260px;overflow:auto;padding-right:4px}
+
+    /* Layout order: HUD → two boxes → weapons (full) → two boxes → radar → commands */
+    @media (max-width:1100px){
+      .grid.cols-2, .grid.cols-2-66{grid-template-columns:1fr}
+    }
+
+    /* Safeguard: DO NOT REMOVE these IDs */
+    /* CARD-OWNFLEET, CARD-PRIMARY, CARD-WEAPONS, CARD-CAP, CARD-RADIO, CARD-RADAR, CARD-CMDS */
   </style>
 </head>
 <body>
-  <h1>Falklands V2 — Web Dashboard</h1>
+  <div class="wrap">
+    <!-- Z-HUD -->
+    <section id="Z-HUD" aria-label="HUD">
+      <div class="left">
+        <div id="hud-dot" class="dot" title="status"></div>
+        <div class="hud-title">Falklands V2</div>
+        <div id="hud-ship" class="hud-badge mono">Ship —</div>
+        <div id="hud-hdg" class="hud-badge mono">hdg —°</div>
+        <div id="hud-spd" class="hud-badge mono">spd — kn</div>
+      </div>
+      <div class="right">
+        <span id="hud-poll" class="muted mono">poll: — ms</span>
+        <span class="hud-badge"><a href="/flight/tail?n=20" target="_blank">flight log »</a></span>
+      </div>
+    </section>
 
-  <!-- HUD row -->
-  <div class="row">
-    <div class="card" style="flex:2 1 520px;">
-      <h2>HUD</h2>
-      <div class="mono" id="hud_line">loading…</div>
-      <div class="tiny" id="hud_escorts">Escorts: —</div>
+    <!-- Two boxes: Left (own fleet) & Right (primary) -->
+    <div class="grid cols-2">
+      <section id="CARD-OWNFLEET" class="card" aria-label="Own Fleet">
+        <h3>Own Fleet</h3>
+        <div id="ownfleet"></div>
+        <div id="ownfleet-empty" class="placeholder" hidden>— No fleet data.</div>
+        <div class="row" style="margin-top:8px">
+          <label for="own-speed" class="mono muted">Speed</label>
+          <input id="own-speed" class="mono" inputmode="numeric" style="width:80px;padding:6px;border-radius:8px;border:1px solid var(--border);background:#0c152b;color:var(--text)"/>
+          <label for="own-course" class="mono muted">Course</label>
+          <input id="own-course" class="mono" inputmode="numeric" style="width:80px;padding:6px;border-radius:8px;border:1px solid var(--border);background:#0c152b;color:var(--text)"/>
+          <button id="own-apply" class="btn">Apply</button>
+        </div>
+      </section>
+
+      <section id="CARD-PRIMARY" class="card" aria-label="Primary Target">
+        <h3>Primary Target</h3>
+        <div class="row" style="margin-bottom:8px">
+          <label class="mono muted">Target ID:</label>
+          <input id="lock-id" class="mono" inputmode="numeric" style="width:90px;padding:6px;border-radius:8px;border:1px solid var(--border);background:#0c152b;color:var(--text)"/>
+          <button id="btn-scan" class="btn">Scan</button>
+          <button id="btn-lock" class="btn primary" disabled>Lock</button>
+          <button id="btn-unlock" class="btn" disabled>Unlock</button>
+        </div>
+        <div id="primary-kvs" class="kvs"></div>
+        <div id="primary-empty" class="placeholder">— No target locked.</div>
+      </section>
     </div>
 
-    <div class="card" style="flex:1 1 360px;">
-      <h2>Own Ship</h2>
-      <div>Cell: <span id="ship_cell" class="pill">—</span></div>
-      <div>Course: <span id="ship_course" class="mono">—</span>°</div>
-      <div>Speed: <span id="ship_speed" class="mono">—</span> kts</div>
-      <div style="margin-top:8px">
-        <label>Set course <input id="set_course" type="number" min="0" max="359" step="1"></label>
-        <label style="margin-left:8px;">Set speed <input id="set_speed" type="number" min="0" step="1"></label>
-        <button onclick="helm()">Apply</button>
-        <button onclick="resetGame()">Reset</button>
-        <button id="pauseBtn" onclick="togglePause()">Pause</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Primary Target + Radar -->
-  <div class="row" style="margin-top:14px;">
-    <div class="card" style="flex:2 1 520px;">
-      <h2>Primary Target</h2>
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
-        <label>Target ID <input id="lock_id" type="number" min="1" step="1" class="mono" style="width:90px"></label>
-        <button onclick="lock()">Lock</button>
-        <button onclick="unlock()">Unlock</button>
-      </div>
-      <div class="mono tiny" id="primary_lock_line">LOCKED: —</div>
-      <div style="margin-top:8px;overflow-x:auto">
+    <!-- Full-width weapons -->
+    <section id="CARD-WEAPONS" class="card full" aria-label="Weapons">
+      <h3>Weapons</h3>
+      <div class="scroll">
         <table>
-          <thead><tr><th>CELL</th><th>TYPE</th><th>NAME</th><th>RANGE</th><th>CRS</th><th>SPD</th><th>ID</th></tr></thead>
-          <tbody id="primary_table_body"><tr><td colspan="7">No hostile contacts.</td></tr></tbody>
+          <thead>
+            <tr>
+              <th>Weapon</th><th class="num">Ammo</th><th class="num">Range (nm)</th>
+              <th>Status</th><th>Arming</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="weapons-body"></tbody>
         </table>
       </div>
+      <div id="weapons-empty" class="placeholder" hidden>— No weapons data.</div>
+    </section>
+
+    <!-- Two boxes: CAP (left) & Radio (right) -->
+    <div class="grid cols-2">
+      <section id="CARD-CAP" class="card" aria-label="Hermes CAP">
+        <h3>Hermes CAP</h3>
+        <div id="cap-mini" class="row"></div>
+        <div class="scroll">
+          <table>
+            <thead><tr><th>#</th><th>Target cell</th><th class="num">Range</th><th>Status</th></tr></thead>
+            <tbody id="cap-body"></tbody>
+          </table>
+        </div>
+        <div id="cap-empty" class="placeholder" hidden>— CAP offline.</div>
+      </section>
+
+      <section id="CARD-RADIO" class="card" aria-label="Radio Messages">
+        <h3>Radio Messages</h3>
+        <div id="radio-list" class="scroll"></div>
+        <div id="radio-empty" class="placeholder" hidden>— No messages yet.</div>
+      </section>
     </div>
 
-    <div class="card" style="flex:1 1 360px;">
-      <h2>Radar</h2>
-      <div class="mono tiny" id="radar_line">loading…</div>
-      <div style="margin-top:8px;"><button onclick="scan()">Scan now</button></div>
-    </div>
+    <!-- Radar list -->
+    <section id="CARD-RADAR" class="card" aria-label="Radar — All Contacts">
+      <h3>Radar — All Contacts</h3>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th><th>Cell</th><th>Type</th><th>Name</th>
+              <th class="num">Range</th><th class="num">CRS</th><th class="num">SPD</th><th class="num">ID</th>
+            </tr>
+          </thead>
+          <tbody id="radar-body"></tbody>
+        </table>
+      </div>
+      <div id="radar-empty" class="placeholder" hidden>— No contacts.</div>
+    </section>
+
+    <!-- Commands & Console -->
+    <section id="CARD-CMDS" class="card" aria-label="Commands">
+      <h3>Commands & Console</h3>
+      <div class="row" style="margin-bottom:10px">
+        <button id="cmd-scan" class="btn">Scan now</button>
+        <button id="cmd-unlock" class="btn" disabled>Unlock</button>
+        <button class="btn warn" disabled>Deploy Chaff</button>
+        <button class="btn" disabled>Request CAP</button>
+        <button id="btn-spawn-air" class="btn">Spawn Near Aircraft</button>
+        <button id="btn-spawn-ship" class="btn">Spawn Near Ship</button>
+      </div>
+      <div id="console" class="scroll mono muted"></div>
+    </section>
   </div>
 
-  <!-- Weapons -->
-  <div class="card" style="margin-top:14px;">
-    <h2>Weapons</h2>
-    <div class="mono tiny" id="weapons_ship">—</div>
-    <div style="margin-top:8px;overflow-x:auto">
-      <table>
-        <thead>
-          <tr><th>Weapon</th><th>Ammo</th><th>Range</th><th>Status</th><th>Arming</th><th>Action</th></tr>
-        </thead>
-        <tbody id="weapons_tbl"><tr><td colspan="6">loading…</td></tr></tbody>
-      </table>
-    </div>
-    <div class="tiny mono" style="margin-top:6px;">Arm first (5s), then Fire. Test mode ignores lock/range but still requires arming.</div>
-  </div>
-
-  <!-- Hermes CAP -->
-  <div class="card" style="margin-top:14px;">
-    <h2>Hermes CAP</h2>
-    <div class="mono tiny" id="cap_head">loading…</div>
-    <div style="margin:6px 0;">
-      <button onclick="capRequest()">Request CAP to locked</button>
-      <button onclick="capRefresh()">Refresh</button>
-      <label style="margin-left:8px"><input id="cap_test_sound" type="checkbox"> sound on</label>
-    </div>
-    <div style="overflow-x:auto">
-      <table>
-        <thead><tr><th>#</th><th>Target cell</th><th>Status</th><th>Notes</th></tr></thead>
-        <tbody id="cap_table"><tr><td colspan="4">—</td></tr></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- Nearest Contacts (ALL) -->
-  <div class="card" style="margin-top:14px;">
-    <h2>Nearest Contacts (top 10)</h2>
-    <div style="overflow-x:auto">
-      <table>
-        <thead><tr><th>CELL</th><th>TYPE</th><th>NAME</th><th>RANGE</th><th>CRS</th><th>SPD</th><th>ID</th></tr></thead>
-        <tbody id="contacts_body"><tr><td colspan="7">loading…</td></tr></tbody>
-      </table>
-    </div>
-  </div>
-
-  <div id="debug" class="mono"></div>
-
-<script defer>
-const $ = id => document.getElementById(id);
-const fmt = n => (typeof n === 'number' && isFinite(n)) ? n.toFixed(2) : (n ?? '—');
-const safe = f => { try{ f(); } catch(e){ const d=$('debug'); d.textContent = String(e); console.error(e); } };
-
-async function load() {
-  let j=null;
-  try {
-    const r = await fetch('/api/status', {cache:'no-store'});
-    j = await r.json();
-  } catch(e){
-    $('debug').textContent = 'Failed to fetch /api/status';
-    return;
-  }
-
-  // HUD + escort line
-  safe(()=>{ $('hud_line').textContent = j.hud ?? '—'; });
-  safe(()=>{ $('ship_cell').textContent = j.ship?.cell ?? '—'; });
-  safe(()=>{ $('ship_course').textContent = j.ship?.course_deg ?? '—'; });
-  safe(()=>{ $('ship_speed').textContent = j.ship?.speed_kts ?? '—'; });
-  safe(()=>{ $('pauseBtn').textContent = j.paused ? 'Resume' : 'Pause'; });
-  safe(()=>{
-    const esc = (j.hud_escorts || j.escorts || j.convoy_text || '').trim();
-    $('hud_escorts').textContent = esc ? esc : 'Escorts: —';
-  });
-
-  // Radar
-  safe(()=>{ $('radar_line').textContent = (j.radar && j.radar.status_line) ? j.radar.status_line : '—'; });
-
-  // Locked line
-  safe(()=>{
-    const lk = j.radar?.locked_contact || null;
-    $('primary_lock_line').textContent = lk
-      ? `LOCKED: #${lk.id} ${lk.name} ${lk.type} ${lk.allegiance} at ${lk.cell}, ${fmt(lk.range_nm)} nm`
-      : 'LOCKED: —';
-  });
-
-  // Primary = hostiles only
-  safe(()=>{
-    const ptb = $('primary_table_body'); ptb.innerHTML='';
-    const all = Array.isArray(j.contacts) ? j.contacts : [];
-    const hostiles = all.filter(c => (c.allegiance||'').toLowerCase()==='hostile')
-                        .sort((a,b)=> (a.range_nm??1e9) - (b.range_nm??1e9))
-                        .slice(0,5);
-    if (!hostiles.length){ ptb.innerHTML='<tr><td colspan="7">No hostile contacts.</td></tr>'; return; }
-    for (const c of hostiles){
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td class="mono">${c.cell??'—'}</td>
-        <td>${c.type??'—'}</td>
-        <td>${c.name??'—'} ${pillFor(c.allegiance)}</td>
-        <td class="mono">${fmt(c.range_nm)} nm</td>
-        <td class="mono">${c.course_deg??'—'}°</td>
-        <td class="mono">${c.speed_kts??'—'}</td>
-        <td class="mono">#${String(c.id??'').padStart(2,'0')}</td>`;
-      ptb.appendChild(tr);
+  <script>
+    // ---------- Helpers ----------
+    const $ = (sel)=>document.querySelector(sel);
+    const $$ = (sel)=>document.querySelectorAll(sel);
+    const fmt = (v, d=0)=> (v===undefined||v===null) ? '—' : Number(v).toFixed(d);
+    const text = (el, s)=>{ el.textContent = s; };
+    function rowEl(cells){
+      const tr=document.createElement('tr');
+      cells.forEach(c=>{
+        const td=document.createElement('td');
+        if (c && c.el){
+          td.appendChild(c.el);
+        } else if (c && typeof c === 'object' && ('text' in c)){
+          td.textContent = (c.text ?? '—');
+        } else {
+          td.textContent = (c ?? '—');
+        }
+        td.className = (c && c.cls)||'';
+        tr.appendChild(td);
+      });
+      return tr;
     }
-  });
+    function badge(txt, cls='badge'){ const span=document.createElement('span'); span.className=cls; span.textContent=txt; return span;}
 
-  // Weapons
-  safe(()=> renderWeapons(j));
+    let lastOK=false, lastPoll=0, pendingLockId=null;
 
-  // CAP
-  safe(()=> renderCAP(j));
-
-  // All contacts
-  safe(()=>{
-    const tb = $('contacts_body'); tb.innerHTML='';
-    const list = Array.isArray(j.contacts) ? j.contacts : [];
-    if (!list.length){ tb.innerHTML='<tr><td colspan="7">No contacts.</td></tr>'; return; }
-    for (const c of list){
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td class="mono">${c.cell??'—'}</td>
-        <td>${c.type??'—'}</td>
-        <td>${c.name??'—'} ${pillFor(c.allegiance)}</td>
-        <td class="mono">${fmt(c.range_nm)} nm</td>
-        <td class="mono">${c.course_deg??'—'}°</td>
-        <td class="mono">${c.speed_kts??'—'}</td>
-        <td class="mono">#${String(c.id??'').padStart(2,'0')}</td>`;
-      tb.appendChild(tr);
+    // ---------- Poll status ----------
+    async function getJSON(url){
+      const t0=performance.now();
+      const r = await fetch(url, {cache:'no-store'});
+      lastPoll = Math.round(performance.now()-t0);
+      if(!r.ok) throw new Error(r.status+' '+url);
+      return await r.json();
     }
-  });
-}
 
-function pillFor(a){
-  const t = String(a||'').toLowerCase();
-  if (t==='hostile') return '<span class="pill hostile">Hostile</span>';
-  if (t==='friendly') return '<span class="pill friendly">Friendly</span>';
-  return '<span class="pill neutral">Neutral</span>';
-}
+    function setHUD(j){
+      $('#hud-dot').classList.toggle('ok', !!j.ok);
+      text($('#hud-poll'), `poll: ${lastPoll} ms`);
+      const ship = j.state?.ship || {};
+      text($('#hud-ship'), `Ship ${j.ship_cell||'—'}`);
+      text($('#hud-hdg'), `hdg ${fmt(ship.heading) }°`);
+      text($('#hud-spd'), `spd ${fmt(ship.speed)} kn`);
+    }
 
-function statusBadge(r){
-  if (r.ready === true)  return '<span class="badge ready">READY</span>';
-  if (r.ready === false) return '<span class="badge out">OUT</span>';
-  return '<span class="badge na">N/A</span>';
-}
+    function renderOwnFleet(arr){
+      const box = $('#ownfleet'); const empty=$('#ownfleet-empty');
+      box.innerHTML='';
+      if(!arr || !arr.length){ empty.hidden=false; return; }
+      empty.hidden=true;
+      arr.slice(0,3).forEach(u=>{
+        const line=document.createElement('div'); line.className='mono';
+        const hp = (u.status&&u.status.health_pct!=null)? String(u.status.health_pct)+'%':'—%';
+        line.textContent = `${u.name||'Unit'}: ${u.cell||'—'}  spd ${fmt(u.speed)}  hdg ${fmt(u.heading)}  ${hp}`;
+        box.appendChild(line);
+        if((u.id||'')==='own'){
+          const sp = $('#own-speed'); const cr = $('#own-course');
+          if(sp && (sp.value||'')==='') sp.value = String(u.speed||'');
+          if(cr && (cr.value||'')==='') cr.value = String(u.heading||'');
+        }
+      });
+    }
 
-function renderWeapons(j){
-  const tb = $('weapons_tbl'); tb.innerHTML='';
-  const W = j.weapons || {};
-  // accept either new rows[] or legacy table[]
-  const rows = Array.isArray(W.rows) ? W.rows :
-               Array.isArray(W.table) ? W.table.map(w=>({
-                 key:w.key||w.name, name:w.name, ammo_text:w.ammo, range_text:w.range,
-                 ready:(w.ready===true || w.status==='READY'),
-                 reason:w.reason||''
-               })) : [];
-  if (!rows.length){ tb.innerHTML='<tr><td colspan="6">No weapons data.</td></tr>'; return; }
-  for (const r of rows){
-    const key = r.key || r.name || '';
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${r.name||r.key||'—'}</td>
-      <td class="mono">${r.ammo_text||r.ammo||'—'}</td>
-      <td class="mono">${r.range_text||r.range||'—'}</td>
-      <td>${statusBadge(r)} <span class="tiny mono">${r.reason||''}</span></td>
-      <td id="arm_${cssSafe(key)}" class="mono tiny">${r.armed ? 'Armed' : 'Safe'}</td>
-      <td>
-        <button ${!key?'disabled':''} onclick="arm('${jsSafe(key)}')">Arm</button>
-        <button ${!key?'disabled':''} onclick="fire('${jsSafe(key)}','fire')">Fire</button>
-        <button ${!key?'disabled':''} onclick="fire('${jsSafe(key)}','test')">Test</button>
-      </td>`;
-    tb.appendChild(tr);
-  }
-}
-function cssSafe(s){ return String(s).replace(/[^a-zA-Z0-9_-]/g,'_'); }
-function jsSafe(s){ return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
+    function renderPrimary(p){
+      const kv=$('#primary-kvs'); const empty=$('#primary-empty');
+      const btnLock=$('#btn-lock'), btnUnlock=$('#btn-unlock'), cmdUnlock=$('#cmd-unlock');
+      kv.innerHTML='';
+      if(!p){ empty.hidden=false; btnUnlock.disabled=true; cmdUnlock.disabled=true; return; }
+      empty.hidden=true; btnUnlock.disabled=false; cmdUnlock.disabled=false;
+      const add=(k,v)=>{ const kEl=badge(k,'badge'); const vEl=document.createElement('div'); vEl.className='mono'; vEl.textContent=v; kv.append(kEl,vEl); };
+      add('LOCKED', `${p.name||'—'}`);
+      add('Cell', p.cell||'—');
+      add('Range', fmt(p.range_nm,2)+' nm');
+      add('Course', fmt(p.course)+'°');
+      add('Speed', fmt(p.speed)+' kn');
+    }
 
-// controls
-async function scan(){ await fetch('/api/scan',{method:'POST'}); await load(); }
-async function unlock(){ await fetch('/api/unlock',{method:'POST'}); await load(); }
-async function lock(){
-  const id = parseInt($('lock_id').value); if (!id) return;
-  await fetch('/api/lock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
-  await load();
-}
-async function helm(){
-  const c=$('set_course').value, s=$('set_speed').value;
-  const p={}; if(c!=='') p.course_deg=parseFloat(c); if(s!=='') p.speed_kts=parseFloat(s);
-  if(!Object.keys(p).length) return;
-  await fetch('/api/helm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
-  await load();
-}
-async function resetGame(){ if(!confirm('Reset game to fresh state?')) return; await fetch('/api/reset',{method:'POST'}); await load(); }
-async function togglePause(){ const r=await fetch('/api/pause',{method:'POST'}); const j=await r.json(); $('pauseBtn').textContent=j.paused?'Resume':'Pause'; }
+    function renderWeapons(arr){
+      const body=$('#weapons-body'); const empty=$('#weapons-empty');
+      body.innerHTML='';
+      if(!arr || !arr.length){ empty.hidden=false; return; }
+      empty.hidden=true;
+      arr.forEach(w=>{
+        const inRange = !!w.in_range;
+        const state = (w.armed||'Safe');
+        const armed = state==='Armed';
+        const arming = state==='Arming';
+        const ammo = Number(w.ammo ?? 0);
+        const rangeEl = badge(`${fmt(w.min_nm)}–${fmt(w.max_nm)} nm`, 'badge '+(inRange?'ok': ''));
+        const statusEl = arming? badge('Arming','badge warn') : (armed? badge('Armed','badge ok') : badge('Safe','badge'));
+        const armBtn = Object.assign(document.createElement('button'), {className:'btn', textContent: (armed||arming)?'Safe':'Arm'});
+        armBtn.onclick = ()=> toggleArm(w.name, (armed||arming)? 'Safe':'Armed');
+        const testBtn = Object.assign(document.createElement('button'), {className:'btn', textContent:'Test Fire', disabled: false});
+        testBtn.onclick = ()=> fireWeapon(w.name, 'test');
+        const fireBtn = Object.assign(document.createElement('button'), {className:'btn danger', textContent:'Fire',
+                           disabled: (!armed || !inRange || ammo<=0)});
+        fireBtn.onclick = ()=> fireWeapon(w.name, 'real');
 
-// weapon actions
-async function arm(key){
-  try{
-    await fetch('/api/arm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weapon:key})});
-  }catch(e){ $('debug').textContent='Arm failed'; }
-}
-async function fire(key,mode){
-  try{
-    await fetch('/api/fire',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weapon:key,mode})});
-  }catch(e){ $('debug').textContent='Fire failed'; }
-}
+        const actions = document.createElement('div'); actions.className='row';
+        actions.append(armBtn, testBtn, fireBtn);
 
-// CAP
-async function capRequest(){
-  try{
-    const r=await fetch('/api/cap/request',{method:'POST'});
-    if(!r.ok){ $('debug').textContent='CAP request rejected (likely no lock or not ready).'; }
-    await load();
-  }catch(e){ $('debug').textContent='CAP request failed.'; }
-}
-async function capRefresh(){ await load(); }
-function renderCAP(j){
-  const hdr = j.cap?.readiness || j.cap_readiness || j.hermes?.readiness || null;
-  $('cap_head').textContent = hdr
-    ? `${hdr.available ? 'READY' : 'NOT READY'} | pairs ${hdr.ready_pairs} | airframes ${hdr.airframes} | cooldown ${hdr.cooldown_s}s | station ~${hdr.station_radius_nm||5} nm`
-    : '—';
-  const tb = $('cap_table'); tb.innerHTML='';
-  const missions = (j.cap?.missions || j.hermes?.missions || []);
-  if(!missions.length){ tb.innerHTML='<tr><td colspan="4">—</td></tr>'; return; }
-  for(const m of missions){
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td class="mono">#${m.id}</td>
-      <td class="mono">${m.target_cell||'?'}</td>
-      <td>${m.status||'?'}</td>
-      <td class="mono tiny">${m.timestamps?.eta_onstation ? ('ETA OS: ' + new Date(m.timestamps.eta_onstation*1000).toLocaleTimeString()) : ''}</td>`;
-    tb.appendChild(tr);
-  }
-}
+        body.appendChild(rowEl([
+          w.name || '—',
+          {cls:'num', el: badge(String(ammo), ammo>0?'badge':'badge warn')},
+          {cls:'num', el: rangeEl},
+          {el: statusEl},
+          arming? '—' : '—', // keep column alignment (legacy "Status" vs "Arming")
+          {el: actions}
+        ]));
+      });
+    }
 
-load();
-setInterval(load, 1000);
-</script>
+    function renderCAP(cap){
+      const mini=$('#cap-mini'); const body=$('#cap-body'); const empty=$('#cap-empty');
+      mini.innerHTML=''; body.innerHTML='';
+      if(!cap){ empty.hidden=false; return;}
+      empty.hidden=true;
+      mini.append(
+        badge(cap.ready?'READY':'NOT READY', cap.ready?'badge ok':'badge warn'),
+        badge(`pairs ${cap.pairs??0}`), badge(`airframes ${cap.airframes??0}`),
+        badge(`cooldown ${cap.cooldown_s??0}s`), badge(`committed ${cap.committed??0}`)
+      );
+      (cap.tasks||[]).forEach(t=>{
+        body.appendChild(rowEl([
+          String(t.n||'—'), t.target_cell||'—',
+          {cls:'num', text: t.range_nm? fmt(t.range_nm,1):'—'},
+          t.engaged? 'Engaged':'—'
+        ]));
+      });
+    }
+
+    function renderRadio(lines){
+      const box=$('#radio-list'); const empty=$('#radio-empty');
+      box.innerHTML='';
+      if(!lines || !lines.length){ empty.hidden=false; return; }
+      empty.hidden=true;
+      lines.slice(0,4).forEach(l=>{
+        const row=document.createElement('div'); row.className='row';
+        row.append(badge(l.ts||'--:--:--','badge muted'), badge(l.kind||'EVT','badge'),
+                   document.createTextNode(l.text||''));
+        box.append(row);
+      });
+    }
+
+    function renderRadar(arr){
+      const body=$('#radar-body'); const empty=$('#radar-empty');
+      body.innerHTML='';
+      if(!arr || !arr.length){ empty.hidden=false; return; }
+      empty.hidden=true;
+      arr.forEach((c,idx)=>{
+        const link=document.createElement('button');
+        link.className='btn'; link.textContent='select';
+        link.onclick=()=>{ pendingLockId=c.id; $('#lock-id').value=c.id; $('#btn-lock').disabled=false; };
+        body.appendChild(rowEl([
+          String(idx+1),
+          c.cell||'—',
+          c.type||'—',
+          c.name||'—',
+          {cls:'num', text: fmt(c.range_nm,2)},
+          {cls:'num', text: fmt(c.course)},
+          {cls:'num', text: fmt(c.speed)},
+          {cls:'num', text: String(c.id||'—')}
+        ]));
+      });
+    }
+
+    function appendConsole(line){ const el=$('#console'); const div=document.createElement('div'); div.textContent=line; el.prepend(div); }
+
+    // ---------- Actions ----------
+    async function doGET(url){ const r=await fetch(url); return r.json(); }
+    async function doPOST(url){ const r=await fetch(url,{method:'POST'}); return r.json(); }
+
+    async function scanNow(){
+      try{ const j=await doGET('/api/command?cmd=/radar%20scan'); appendConsole(`[scan] ${j.ok?'OK':'ERR'} ${j.result||''}`);}
+      catch(e){ appendConsole(`[scan] ERR ${e}`); }
+    }
+    async function lockNow(){
+      const id = ($('#lock-id').value||'').trim();
+      if(!id) return;
+      try{ const j=await doGET(`/api/command?cmd=/radar%20lock%20${encodeURIComponent(id)}`);
+        appendConsole(`[lock ${id}] ${j.ok?'OK':'ERR'}`); $('#btn-lock').disabled=true; }
+      catch(e){ appendConsole(`[lock ${id}] ERR ${e}`); }
+    }
+    async function unlockNow(){
+      try{ const j=await doGET('/api/command?cmd=/radar%20unlock');
+        appendConsole(`[unlock] ${j.ok?'OK':'ERR'}`); $('#btn-lock').disabled=false; }
+      catch(e){ appendConsole(`[unlock] ERR ${e}`); }
+    }
+    async function toggleArm(name, state){
+      try{ const j=await doPOST(`/weapons/arm?name=${encodeURIComponent(name)}&state=${encodeURIComponent(state)}`);
+        appendConsole(`[arm] ${name} → ${state} ${j.ok?'OK':'ERR'}`);
+      }catch(e){ appendConsole(`[arm] ${name} ERR ${e}`); }
+    }
+    async function fireWeapon(name, mode){
+      try{ const j=await doPOST(`/weapons/fire?name=${encodeURIComponent(name)}&mode=${encodeURIComponent(mode)}`);
+        appendConsole(`[fire:${mode}] ${name} ${j.ok?'OK':'ERR'} ${j.result||j.err||''}`);
+      }catch(e){ appendConsole(`[fire:${mode}] ${name} ERR ${e}`); }
+    }
+
+    // Wire buttons
+    $('#btn-scan').onclick = scanNow;
+    $('#cmd-scan').onclick = scanNow;
+    $('#btn-lock').onclick = lockNow;
+    $('#btn-unlock').onclick = unlockNow;
+    $('#cmd-unlock').onclick = unlockNow;
+    // Force-spawn helpers (nearby targets for weapons testing)
+    async function spawnNear(kind){
+      try{
+        if(kind==='Aircraft'){
+          const j=await doGET('/radar/force_spawn_near?class=Aircraft&range=2.5');
+          appendConsole(`[spawn] Aircraft ${j.ok?'OK':'ERR'} ${j.added?.name||''} ${j.added?.cell||''}`);
+        }else{
+          const j=await doGET('/radar/force_spawn_near?class=Ship&range=4');
+          appendConsole(`[spawn] Ship ${j.ok?'OK':'ERR'} ${j.added?.name||''} ${j.added?.cell||''}`);
+        }
+      }catch(e){ appendConsole(`[spawn:${kind}] ERR ${e}`); }
+    }
+    $('#btn-spawn-air').onclick = ()=> spawnNear('Aircraft');
+    $('#btn-spawn-ship').onclick = ()=> spawnNear('Ship');
+    $('#own-apply').onclick = async ()=>{
+      const sp = Number(($('#own-speed').value||'').trim());
+      const cr = Number(($('#own-course').value||'').trim());
+      const parts=[];
+      if(!Number.isNaN(cr)) parts.push(`heading=${encodeURIComponent(cr)}`);
+      if(!Number.isNaN(sp)) parts.push(`speed=${encodeURIComponent(sp)}`);
+      if(!parts.length){ appendConsole('[nav] ERR missing values'); return; }
+      try{
+        const cmd = `/nav set ${parts.join(' ')}`;
+        const j = await doGET(`/api/command?cmd=${encodeURIComponent(cmd)}`);
+        appendConsole(`[nav] ${j.ok?'OK':'ERR'} ${j.result||''}`);
+      }catch(e){ appendConsole(`[nav] ERR ${e}`); }
+    };
+    // Enable Lock button when an ID is typed
+    $('#lock-id').addEventListener('input', ()=>{
+      const v = ($('#lock-id').value||'').trim();
+      $('#btn-lock').disabled = !v;
+    });
+    $('#lock-id').addEventListener('keydown', (e)=>{
+      if(e.key === 'Enter'){
+        e.preventDefault();
+        lockNow();
+      }
+    });
+
+    // ---------- Radio source fallback ----------
+    async function loadRadio(){
+      try{
+        const j = await getJSON('/flight/tail?n=20');
+        const lines = (j.lines||[]).map(x=>{
+          // Try to classify
+          const route = x.route||'';
+          if(route==='/radio.msg'){
+            return {ts:(x.ts||'').slice(11,19), kind:(x.response?.kind||'EVT'), text:(x.response?.text||'')};
+          }
+          if(route.startsWith('/api/command')){
+            const cmd = x.request?.cmd || '';
+            if(cmd.includes('/radar lock')) return {ts:(x.ts||'').slice(11,19), kind:'LOCK', text: cmd };
+            if(cmd.includes('/radar unlock')) return {ts:(x.ts||'').slice(11,19), kind:'UNLOCK', text:'Target unlock'};
+            if(cmd.includes('/radar scan')) return {ts:(x.ts||'').slice(11,19), kind:'SCAN', text:(x.response?.result||'scan')};
+          }
+          if(route.includes('/weapons')) return {ts:(x.ts||'').slice(11,19), kind:'FIRE', text: JSON.stringify(x.response||{}) };
+          if((x.hud||'').includes('alarm')) return {ts:(x.ts||'').slice(11,19), kind:'ALARM', text:x.hud};
+          return null;
+        }).filter(Boolean);
+        return lines;
+      }catch{ return []; }
+    }
+
+    // ---------- Main poll ----------
+    async function poll(){
+      try{
+        const j = await getJSON('/api/status');
+        lastOK = !!j.ok;
+        setHUD(j);
+        renderOwnFleet(j.ownfleet);
+        renderPrimary(j.primary);
+        renderWeapons(j.weapons);
+        renderCAP(j.cap);
+
+        // radio: prefer status.radio; else from recorder
+        if (Array.isArray(j.radio) && j.radio.length){
+          renderRadio(j.radio);
+        } else {
+          const r = await loadRadio();
+          renderRadio(r);
+        }
+
+        renderRadar(j.contacts);
+
+      }catch(e){
+        lastOK=false;
+        $('#hud-dot').classList.remove('ok');
+      }
+    }
+    poll();
+    setInterval(poll, 1500);
+  </script>
+  <script src="/static/sound.js"></script>
 </body>
 </html>

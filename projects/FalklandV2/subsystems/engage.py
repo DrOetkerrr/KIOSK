@@ -12,7 +12,7 @@ Target classes:
 
 Validity matrix (design-intent):
   4.5in gun        → surface only
-  Seacat SAM       → air only
+  Sea Dart SAM     → air only
   Oerlikon 20mm    → air only (very short)
   GAM-BO1 20mm     → air only (short)
   Exocet MM38      → surface only
@@ -29,7 +29,7 @@ import time
 def _target_class(ttype: Optional[str]) -> str:
     t = (ttype or "").strip().lower()
     if not t:
-        return "surface"  # be conservative (only Seacat will then show invalid)
+        return "surface"  # be conservative (only Sea Dart will then show invalid)
     if "air" in t or "helicopter" in t or t == "helo":
         return "air"
     return "surface"
@@ -134,7 +134,7 @@ def summarize(ship_cfg: Dict[str, Any], target: Optional[Dict[str, Any]]) -> Lis
         wdef = weapons[key]
         name = wdef.get("name") or {
             "gun_4_5in":"4.5in Mk.8",
-            "seacat":"GWS-24 Seacat SAM (quad)",
+            "seacat":"Sea Dart SAM",
             "oerlikon_20mm":"20mm Oerlikon",
             "gam_bo1_20mm":"20mm GAM-BO1 (twin)",
             "exocet_mm38":"MM38 Exocet",

@@ -1,0 +1,236 @@
+[
+  {
+    "path": "falklands_state.json",
+    "format": "json",
+    "size": 90,
+    "matches": [
+      "radar"
+    ],
+    "sample": []
+  },
+  {
+    "path": "projects/falklandV2/state/runtime.json",
+    "format": "json",
+    "size": 2434,
+    "matches": [
+      "aircraft",
+      "friendly",
+      "hostile",
+      "radar",
+      "ship"
+    ],
+    "sample": []
+  },
+  {
+    "path": "projects/falklandV2/state/ammo.json",
+    "format": "json",
+    "size": 64,
+    "matches": [
+      "weapon",
+      "weapons"
+    ],
+    "sample": []
+  },
+  {
+    "path": "projects/falklandV2/state/arming.json",
+    "format": "json",
+    "size": 66,
+    "matches": [
+      "weapon",
+      "weapons"
+    ],
+    "sample": []
+  },
+  {
+    "path": "projects/falklandV2/rules/falklands_rules.json",
+    "format": "json",
+    "size": 4926,
+    "matches": [
+      "aircraft",
+      "radar"
+    ],
+    "sample": []
+  },
+  {
+    "path": "projects/falklandV2/.vscode/tasks.json",
+    "format": "json",
+    "size": 1121,
+    "matches": [
+      "radar"
+    ],
+    "sample": []
+  },
+  {
+    "path": "projects/falklandV2/characters/ensign.json",
+    "format": "json",
+    "size": 866,
+    "matches": [
+      "enemy",
+      "weapon",
+      "weapons"
+    ]
+  },
+  {
+    "path": "projects/falklandV2/data/game.json",
+    "format": "json",
+    "size": 234,
+    "matches": [
+      "radar",
+      "ship"
+    ],
+    "sample": []
+  },
+  {
+    "path": "projects/falklandV2/data/convoy.json",
+    "format": "json",
+    "size": 740,
+    "matches": [
+      "friendly",
+      "ship",
+      "unit",
+      "units"
+    ],
+    "sample": []
+  },
+  {
+    "path": "projects/falklandV2/data/cap_config.json",
+    "format": "json",
+    "size": 1243,
+    "matches": [
+      "aircraft",
+      "weapon",
+      "weapons"
+    ]
+  },
+  {
+    "path": "projects/falklandV2/data/ship.json",
+    "format": "json",
+    "size": 2007,
+    "matches": [
+      "aircraft",
+      "helicopter",
+      "radar",
+      "ship",
+      "weapon",
+      "weapons"
+    ],
+    "sample": []
+  },
+  {
+    "path": "projects/falklandV2/data/audio_config.json",
+    "format": "json",
+    "size": 687,
+    "matches": [
+      "weapon"
+    ],
+    "sample": []
+  },
+  {
+    "path": "projects/falklandV2/data/contacts.json",
+    "format": "json",
+    "size": 3403,
+    "matches": [
+      "aircraft",
+      "friendly",
+      "helicopter",
+      "hostile",
+      "ship",
+      "weapon"
+    ],
+    "sample": [
+      {
+        "name": "A-4 Skyhawk",
+        "allegiance": "Hostile",
+        "speed_kts": 385,
+        "weight": 5,
+        "class": "Aircraft"
+      },
+      {
+        "name": "Dagger (Mirage V)",
+        "allegiance": "Hostile",
+        "speed_kts": 420,
+        "weight": 4,
+        "class": "Aircraft"
+      },
+      {
+        "name": "Mirage III",
+        "allegiance": "Hostile",
+        "speed_kts": 455,
+        "weight": 3,
+        "class": "Aircraft"
+      },
+      {
+        "name": "Pucará",
+        "allegiance": "Hostile",
+        "speed_kts": 196,
+        "weight": 2,
+        "class": "Aircraft"
+      },
+      {
+        "name": "Super Étendard",
+        "allegiance": "Hostile",
+        "speed_kts": 434,
+        "weight": 1,
+        "class": "Aircraft"
+      }
+    ]
+  },
+  {
+    "path": "projects/falklands/state.json",
+    "format": "json",
+    "size": 18757,
+    "matches": [
+      "aircraft",
+      "friendly",
+      "inventory",
+      "radar",
+      "ship",
+      "unit",
+      "weapon",
+      "weapons"
+    ],
+    "sample": []
+  },
+  {
+    "path": "_backup_20250903_172837/falklands/state.json",
+    "format": "json",
+    "size": 18757,
+    "matches": [
+      "aircraft",
+      "friendly",
+      "inventory",
+      "radar",
+      "ship",
+      "unit",
+      "weapon",
+      "weapons"
+    ],
+    "sample": []
+  },
+  {
+    "path": "_backup_20250903_172837/falklands/data/weapons_db.json",
+    "format": "json",
+    "size": 1206,
+    "matches": [
+      "loadout",
+      "ship"
+    ],
+    "sample": [
+      {
+        "name": "4.5-inch gun"
+      },
+      {
+        "name": "20 mm cannon"
+      },
+      {
+        "name": "Seacat SAM"
+      },
+      {
+        "name": "Exocet anti-ship missile launcher"
+      },
+      {
+        "name": "STWS system with Mk 46 Torpedoes"
+      }
+    ]
+  }
+]

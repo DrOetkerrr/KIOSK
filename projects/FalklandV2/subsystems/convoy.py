@@ -13,7 +13,7 @@ Public surface
 """
 
 from __future__ import annotations
-import json, math, time
+import json, math, time, random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -53,6 +53,7 @@ class Convoy:
         self._last_course: float = 0.0
         self._last_speed: float = 0.0
         self._last_set: float = 0.0
+        self._delay_s: float = 30.0
         self._init = False
 
     @classmethod
@@ -92,14 +93,16 @@ class Convoy:
             self._last_course = course_deg
             self._last_speed = speed_kts
             self._last_set = now
+            self._delay_s = random.uniform(30.0, 50.0)
             self._init = True
             return self._last_course, self._last_speed
 
         changed = (abs((course_deg - self._last_course) % 360.0) > 0.1) or (abs(speed_kts - self._last_speed) > 0.1)
-        if changed and (now - self._last_set) >= DELAY_S:
+        if changed and (now - self._last_set) >= self._delay_s:
             self._last_course = course_deg % 360.0
             self._last_speed = max(0.0, speed_kts)
             self._last_set = now
+            self._delay_s = random.uniform(30.0, 50.0)
 
         return self._last_course, self._last_speed
 

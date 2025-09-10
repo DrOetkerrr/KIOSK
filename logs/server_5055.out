@@ -1,0 +1,6 @@
+ * Tip: There are .env files present. Install python-dotenv to use them.
+[webdash] templates -> /Users/willem-jan/Documents/kiosk/projects/falklandV2/templates | index -> /Users/willem-jan/Documents/kiosk/projects/falklandV2/templates/index.html | sha1=3028a7ad2fcaf4cd5c298a62b669219c682561a3
+ * Serving Flask app 'webdash'
+ * Debug mode: off
+Address already in use
+Port 5055 is in use by another program. Either identify and stop that program, or start the server with a different port.

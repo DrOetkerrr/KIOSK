@@ -79,11 +79,11 @@ def weapons_snapshot(data_path: Path, locked_range_nm: Optional[float]) -> Dict[
             ready = _in_range(rdef, locked_range_nm)
             table.append({"name": "4.5in Mk.8", "ammo": ammo, "range": _rng_text(rdef), "ready": (ready and ammo > 0)})
 
-        # Sea Cat
+        # Sea Dart (legacy key 'seacat')
         if "seacat" in w:
             sc = w["seacat"]; rounds = int(sc.get("rounds", 0)); rdef = sc.get("range_nm")
             ready = _in_range(rdef, locked_range_nm)
-            table.append({"name": "Sea Cat", "ammo": rounds, "range": _rng_text(rdef), "ready": (ready and rounds > 0)})
+            table.append({"name": "Sea Dart", "ammo": rounds, "range": _rng_text(rdef), "ready": (ready and rounds > 0)})
 
         # 20mm
         if "oerlikon_20mm" in w:
