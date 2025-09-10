@@ -78,3 +78,12 @@ def reset():
     """Reset runtime.json and hot-swap Engine/CAP/Convoy inside runtime."""
     try:
         fresh = rt.fresh_state()
+        # Persist new runtime and rebuild live instances under lock
+        with rt.ENG_LOCK:
+            _write_json(rt.RUNTIME, fresh)
+            rt.ENG = Engine()
+            rt.CAP = HermesCAP(rt.DATA)
+            rt.CONVOY = Convoy.load(rt.DATA)
+        return jsonify({"ok": True, "reset": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500

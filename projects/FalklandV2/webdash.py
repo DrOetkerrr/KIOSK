@@ -3835,7 +3835,10 @@ def radar_force_spawn_friendly():
             ui['cell'] = world_to_cell(c.x, c.y)
         except Exception:
             pass
-        officer_say('Radar','contact',{'type': ui.get('type'), 'bearing': round((315.0)%360), 'range_nm': ui.get('range_nm'), 'speed': ui.get('speed')})
+        try:
+            officer_say('Radar','contact',{'type': ui.get('type'), 'bearing': round((315.0)%360), 'range_nm': ui.get('range_nm'), 'speed': ui.get('speed')})
+        except Exception:
+            pass
         payload = {"ok": True, "added": ui, "count": len(RADAR.contacts)}
         record_flight({"route": route, "method": "GET", "status": 200,
                        "duration_ms": int((time.time()-t0)*1000),

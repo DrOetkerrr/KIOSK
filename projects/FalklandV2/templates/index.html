@@ -538,17 +538,17 @@
         }
       }catch(e){ appendConsole(`[spawn:${kind}] ERR ${e}`); }
     }
-    $('#btn-spawn-air').onclick = ()=> spawnNear('Aircraft');
-    $('#btn-spawn-ship').onclick = ()=> spawnNear('Ship');
-    $('#skirmish-start').onclick = skirmishStart;
-    $('#skirmish-stop').onclick = skirmishStop;
-    $('#skirmish-review').onclick = skirmishReview;
-    $('#skirmish-quick').onclick = skirmishQuick;
-    $('#nav-hermes-in').onclick = navHermesClose;
-    $('#nav-hermes-off').onclick = navHermesStand;
-    $('#nsk-create').onclick = createSkirmishFromForm;
+    const btnSpawnAir = $('#btn-spawn-air'); if (btnSpawnAir) btnSpawnAir.onclick = ()=> spawnNear('Aircraft');
+    const btnSpawnShip = $('#btn-spawn-ship'); if (btnSpawnShip) btnSpawnShip.onclick = ()=> spawnNear('Ship');
+    const skStart = $('#skirmish-start'); if (skStart) skStart.onclick = skirmishStart;
+    const skStop = $('#skirmish-stop'); if (skStop) skStop.onclick = skirmishStop;
+    const skReview = $('#skirmish-review'); if (skReview) skReview.onclick = skirmishReview;
+    const skQuick = $('#skirmish-quick'); if (skQuick) skQuick.onclick = skirmishQuick;
+    const navIn = $('#nav-hermes-in'); if (navIn) navIn.onclick = navHermesClose;
+    const navOff = $('#nav-hermes-off'); if (navOff) navOff.onclick = navHermesStand;
+    const nskCreate = $('#nsk-create'); if (nskCreate) nskCreate.onclick = createSkirmishFromForm;
     loadHostiles();
-    $('#own-apply').onclick = async ()=>{
+    const ownApply = $('#own-apply'); if (ownApply) ownApply.onclick = async ()=>{
       const sp = Number(($('#own-speed').value||'').trim());
       const cr = Number(($('#own-course').value||'').trim());
       const parts=[];
@@ -562,16 +562,19 @@
       }catch(e){ appendConsole(`[nav] ERR ${e}`); }
     };
         // Enable Lock button when an ID is typed; lock nearest when none typed
-        $('#lock-id').addEventListener('input', ()=>{
-          const v = ($('#lock-id').value||'').trim();
-          $('#btn-lock').disabled = !v;
-        });
-    $('#lock-id').addEventListener('keydown', (e)=>{
-      if(e.key === 'Enter'){
-        e.preventDefault();
-        lockNow();
-      }
-    });
+        const lockIdEl = $('#lock-id');
+        if (lockIdEl) {
+          lockIdEl.addEventListener('input', ()=>{
+            const v = (lockIdEl.value||'').trim();
+            const btnLock = $('#btn-lock'); if (btnLock) btnLock.disabled = !v;
+          });
+          lockIdEl.addEventListener('keydown', (e)=>{
+            if(e.key === 'Enter'){
+              e.preventDefault();
+              lockNow();
+            }
+          });
+        }
 
     // ---------- Radio source fallback ----------
     async function loadRadio(){
