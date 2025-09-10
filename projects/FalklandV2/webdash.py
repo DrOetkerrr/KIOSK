@@ -66,6 +66,12 @@ except Exception:
     # Keep server working even if blueprint import fails
     pass
 
+# Quiet favicon errors in dev
+@app.get('/favicon.ico')
+def favicon():
+    # Return 204 No Content to satisfy browser, avoiding 404 noise
+    return ('', 204)
+
 
 # ---- Engine instance and helpers ----
 ENG = Engine(state_path=Path.home() / "Documents" / "kiosk" / "falklands_state.json")

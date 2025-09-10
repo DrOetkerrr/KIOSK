@@ -240,6 +240,60 @@ async function spawnNear(kind){
 }
 const btnSpawnAir = $('#btn-spawn-air'); if (btnSpawnAir) btnSpawnAir.onclick = ()=> spawnNear('Aircraft');
 const btnSpawnShip = $('#btn-spawn-ship'); if (btnSpawnShip) btnSpawnShip.onclick = ()=> spawnNear('Ship');
+// ---- Skirmish helpers ----
+async function skirmishStart(){
+  const id = Number(($('#skirmish-id').value||'').trim());
+  if(!id){ appendConsole('[skirmish] ERR missing id'); return; }
+  try{
+    const r=await fetch('/skirmish/start',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})});
+    const j=await r.json();
+    appendConsole(`[skirmish] start ${j.ok?'OK':'ERR'} id=${id}`);
+  }catch(e){ appendConsole(`[skirmish] start ERR ${e}`); }
+}
+async function skirmishStop(){
+  const idStr = ($('#skirmish-id').value||'').trim();
+  const id = idStr? Number(idStr) : undefined;
+  try{
+    const r=await fetch(id?`/skirmish/stop?id=${encodeURIComponent(id)}`:'/skirmish/stop',{method:'POST'});
+    const j=await r.json();
+    appendConsole(`[skirmish] stop ${j.ok?'OK':'ERR'} ${(j.summary&&JSON.stringify(j.summary))||''}`);
+  }catch(e){ appendConsole(`[skirmish] stop ERR ${e}`); }
+}
+async function skirmishReview(){ window.location.href = '/skirmish'; }
+async function skirmishQuick(){
+  try{
+    const r=await fetch('/skirmish/create',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
+    const j=await r.json();
+    if(j.ok){ $('#skirmish-id').value=String(j.id); appendConsole(`[skirmish] created id=${j.id}`);} else { appendConsole(`[skirmish] create ERR`);} 
+  }catch(e){ appendConsole(`[skirmish] create ERR ${e}`); }
+}
+// NAV Hermes helpers
+async function navHermesClose(){ try{ const j=await doGET('/nav/hermes/close_in'); appendConsole(`[nav] hermes close_in ${j.ok?'OK':'ERR'}`);}catch(e){ appendConsole(`[nav] hermes close_in ERR ${e}`);} }
+async function navHermesStand(){ try{ const j=await doGET('/nav/hermes/stand_off'); appendConsole(`[nav] hermes stand_off ${j.ok?'OK':'ERR'}`);}catch(e){ appendConsole(`[nav] hermes stand_off ERR ${e}`);} }
+// Populate hostile targets for new skirmish
+async function loadHostiles(){
+  try{ const j = await getJSON('/contacts/catalog?hostile=1'); const items = j.items||[];
+    const ids=['nsk-tgt1-name','nsk-tgt2-name','nsk-tgt3-name'];
+    ids.forEach(id=>{ const sel=$('#'+id); if(!sel) return; sel.innerHTML=''; const opt=document.createElement('option'); opt.value=''; opt.textContent='(none)'; sel.appendChild(opt);
+      items.forEach(it=>{ const o=document.createElement('option'); o.value=it.name; o.textContent=it.name; sel.appendChild(o); }); });
+  }catch(e){ appendConsole(`[catalog] ERR ${e}`); }
+}
+async function createSkirmishFromForm(){
+  const name = ($('#nsk-name').value||'').trim();
+  const notes = ($('#nsk-notes').value||'').trim();
+  const picks = [];
+  for(const i of [1,2,3]){
+    const n = ($('#nsk-tgt'+i+'-name')?.value||'').trim();
+    const c = ($('#nsk-tgt'+i+'-cell')?.value||'').trim().toUpperCase();
+    if(n && c) picks.push({name:n, cell:c});
+  }
+  if(picks.length===0){ appendConsole('[skirmish] ERR add at least one target'); return; }
+  const body = { name, notes, config: { hostiles: picks } };
+  try{
+    const r=await fetch('/skirmish/create',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j=await r.json(); if(j.ok){ $('#skirmish-id').value=String(j.id); appendConsole(`[skirmish] created id=${j.id}`);} else { appendConsole(`[skirmish] create ERR`); }
+  }catch(e){ appendConsole(`[skirmish] create ERR ${e}`); }
+}
 const skStart = $('#skirmish-start'); if (skStart) skStart.onclick = skirmishStart;
 const skStop = $('#skirmish-stop'); if (skStop) skStop.onclick = skirmishStop;
 const skReview = $('#skirmish-review'); if (skReview) skReview.onclick = skirmishReview;
@@ -332,4 +386,3 @@ async function poll(){
 }
 poll();
 setInterval(poll, 1500);
-
