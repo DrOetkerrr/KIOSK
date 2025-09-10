@@ -60,6 +60,8 @@ try:
     app.register_blueprint(command_bp)
     from projects.falklandV2.routes.radar import bp as radar_bp
     app.register_blueprint(radar_bp)
+    from projects.falklandV2.routes.weapons import bp as weapons_bp
+    app.register_blueprint(weapons_bp)
 except Exception:
     # Keep server working even if blueprint import fails
     pass
@@ -2977,7 +2979,7 @@ def cap_launch_to():
 
 """/api/command moved to blueprint in routes/command.py"""
 
-@app.get("/weapons/catalog")
+@app.get("/__old/weapons/catalog")
 def weapons_catalog():
     t0 = time.time(); route = "/weapons/catalog"
     try:
@@ -3004,7 +3006,7 @@ def _arg_or_json(request, key: str, default: str | None = None) -> str | None:
             v = None
     return v if v is not None else default
 
-@app.post("/weapons/arm")
+@app.post("/__old/weapons/arm")
 def weapons_arm():
     from flask import request
     t0 = time.time(); route = "/weapons/arm"
@@ -3053,7 +3055,7 @@ def weapons_arm():
                        'request': {}, 'response': payload})
         return jsonify(payload), 500
 
-@app.post("/weapons/fire")
+@app.post("/__old/weapons/fire")
 def weapons_fire():
     from flask import request
     t0 = time.time(); route = "/weapons/fire"
