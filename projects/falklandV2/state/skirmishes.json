@@ -1,0 +1,282 @@
+{
+  "items": {
+    "1": {
+      "name": "Skirmish 1",
+      "created_ts": "2025-09-10T15:55:59.190874+00:00",
+      "config": {
+        "own": {
+          "heading_deg": 120.0,
+          "speed_kts": 32.0
+        },
+        "arm": {
+          "Sea Dart SAM": "Armed",
+          "20mm GAM-BO1 (twin)": "Armed",
+          "20mm Oerlikon": "Armed"
+        },
+        "hostiles": [
+          {
+            "name": "Super Étendard",
+            "range_nm": 12.0,
+            "bearing_deg": 315.0
+          }
+        ]
+      },
+      "status": "ready",
+      "outcomes": [],
+      "run": null
+    },
+    "2": {
+      "name": "Skirmish 2",
+      "created_ts": "2025-09-10T15:55:59.219680+00:00",
+      "config": {
+        "own": {
+          "heading_deg": 120.0,
+          "speed_kts": 32.0
+        },
+        "arm": {
+          "Sea Dart SAM": "Armed",
+          "20mm GAM-BO1 (twin)": "Armed",
+          "20mm Oerlikon": "Armed"
+        },
+        "hostiles": [
+          {
+            "name": "Super Étendard",
+            "range_nm": 12.0,
+            "bearing_deg": 315.0
+          }
+        ]
+      },
+      "status": "stopped",
+      "outcomes": [
+        {
+          "started_ts": "2025-09-10T15:55:59.272485+00:00",
+          "stopped_ts": "2025-09-10T15:56:01.360838+00:00",
+          "summary": {
+            "missiles": {
+              "spawned": 1,
+              "resolved": 0,
+              "hits": 0,
+              "misses": 0,
+              "sea_dart": 0,
+              "guns": 0
+            }
+          }
+        }
+      ],
+      "run": {
+        "started_ts": "2025-09-10T15:55:59.272485+00:00",
+        "started_epoch": 1757519759.272483,
+        "stopped_ts": "2025-09-10T15:56:01.360838+00:00",
+        "stopped_epoch": 1757519761.360831
+      }
+    },
+    "3": {
+      "name": "UI Test",
+      "notes": "demo",
+      "created_ts": "2025-09-10T16:07:09.335971+00:00",
+      "config": {
+        "hostiles": [
+          {
+            "name": "A-4 Skyhawk",
+            "cell": "Z26"
+          }
+        ]
+      },
+      "status": "ready",
+      "outcomes": [],
+      "run": null
+    },
+    "4": {
+      "name": "Exocet test",
+      "notes": "Test run and test fire Exocet and practising defense",
+      "created_ts": "2025-09-10T17:07:36.857562+00:00",
+      "config": {
+        "hostiles": [
+          {
+            "name": "Super Étendard",
+            "cell": "S14"
+          }
+        ]
+      },
+      "status": "ready",
+      "outcomes": [],
+      "run": null
+    },
+    "5": {
+      "name": "Exocet test",
+      "notes": "Test run and test fire Exocet and practising defense",
+      "created_ts": "2025-09-10T17:07:38.510379+00:00",
+      "config": {
+        "hostiles": [
+          {
+            "name": "Super Étendard",
+            "cell": "S14"
+          }
+        ]
+      },
+      "status": "ready",
+      "outcomes": [],
+      "run": null
+    },
+    "6": {
+      "name": "Exocet test",
+      "notes": "Test run and test fire Exocet and practising defense",
+      "created_ts": "2025-09-10T17:07:40.048736+00:00",
+      "config": {
+        "hostiles": [
+          {
+            "name": "Super Étendard",
+            "cell": "S14"
+          }
+        ]
+      },
+      "status": "ready",
+      "outcomes": [],
+      "run": null
+    },
+    "7": {
+      "name": "Exocet test",
+      "notes": "Test run and test fire Exocet and practising defense",
+      "created_ts": "2025-09-10T17:07:43.251760+00:00",
+      "config": {
+        "hostiles": [
+          {
+            "name": "Super Étendard",
+            "cell": "S14"
+          }
+        ]
+      },
+      "status": "ready",
+      "outcomes": [],
+      "run": null
+    },
+    "8": {
+      "name": "Exocet test",
+      "notes": "Test run and test fire Exocet and practising defense",
+      "created_ts": "2025-09-10T17:07:43.707076+00:00",
+      "config": {
+        "hostiles": [
+          {
+            "name": "Super Étendard",
+            "cell": "S14"
+          }
+        ]
+      },
+      "status": "ready",
+      "outcomes": [],
+      "run": null
+    },
+    "9": {
+      "name": "Exocet test",
+      "notes": "Test run and test fire Exocet and practising defense",
+      "created_ts": "2025-09-10T17:07:44.036929+00:00",
+      "config": {
+        "hostiles": [
+          {
+            "name": "Super Étendard",
+            "cell": "S14"
+          }
+        ]
+      },
+      "status": "ready",
+      "outcomes": [],
+      "run": null
+    },
+    "10": {
+      "name": "Exocet test",
+      "notes": "Test run and test fire Exocet and practising defense",
+      "created_ts": "2025-09-10T17:07:44.298343+00:00",
+      "config": {
+        "hostiles": [
+          {
+            "name": "Super Étendard",
+            "cell": "S14"
+          }
+        ]
+      },
+      "status": "ready",
+      "outcomes": [],
+      "run": null
+    },
+    "11": {
+      "name": "Exocet test",
+      "notes": "Test run and test fire Exocet and practising defense",
+      "created_ts": "2025-09-10T17:07:44.540489+00:00",
+      "config": {
+        "hostiles": [
+          {
+            "name": "Super Étendard",
+            "cell": "S14"
+          }
+        ]
+      },
+      "status": "ready",
+      "outcomes": [],
+      "run": null
+    },
+    "12": {
+      "name": "Exocet test",
+      "notes": "Test run and test fire Exocet and practising defense",
+      "created_ts": "2025-09-10T17:07:44.800178+00:00",
+      "config": {
+        "hostiles": [
+          {
+            "name": "Super Étendard",
+            "cell": "S14"
+          }
+        ]
+      },
+      "status": "ready",
+      "outcomes": [],
+      "run": null
+    },
+    "13": {
+      "name": "Exocet test",
+      "notes": "Test run and test fire Exocet and practising defense",
+      "created_ts": "2025-09-10T17:07:44.996745+00:00",
+      "config": {
+        "hostiles": [
+          {
+            "name": "Super Étendard",
+            "cell": "S14"
+          }
+        ]
+      },
+      "status": "ready",
+      "outcomes": [],
+      "run": null
+    },
+    "14": {
+      "name": "Exocet test",
+      "notes": "Test run and test fire Exocet and practising defense",
+      "created_ts": "2025-09-10T17:07:45.215764+00:00",
+      "config": {
+        "hostiles": [
+          {
+            "name": "Super Étendard",
+            "cell": "S14"
+          }
+        ]
+      },
+      "status": "ready",
+      "outcomes": [],
+      "run": null
+    },
+    "15": {
+      "name": "Exocet test",
+      "notes": "Test run and test fire Exocet and practising defense",
+      "created_ts": "2025-09-10T17:07:45.416327+00:00",
+      "config": {
+        "hostiles": [
+          {
+            "name": "Super Étendard",
+            "cell": "S14"
+          }
+        ]
+      },
+      "status": "ready",
+      "outcomes": [],
+      "run": null
+    }
+  }
+}

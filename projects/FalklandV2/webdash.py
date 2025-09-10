@@ -42,7 +42,7 @@ import requests
 
 # ---- engine import (absolute) ----
 from projects.falklands.core.engine import Engine
-from projects.falklandV2.radar import Radar, Contact, HOSTILES, WORLD_N
+from projects.falklandV2.radar import Radar, Contact, HOSTILES, WORLD_N, HOSTILE_SPEED_SCALE
 from projects.falklandV2.subsystems.hermes_cap import HermesCAP
 # Prefer relative import; fallback to absolute when executed as a script
 try:
@@ -86,6 +86,11 @@ def _convoy_lagged(course_deg: float, speed_kts: float) -> tuple[float, float]:
 # ---- Lightweight audio + event scheduler ----
 # Frontend polls /api/status.audio; sound.js plays files for last_launch/last_result and alarm
 AUDIO_STATE: Dict[str, Any] = {"last_launch": None, "last_result": None, "radio": None, "alarm": None, "cap_launch": None}
+# Defense + motion runtime state
+DEFENSE_STATE: Dict[str, Any] = {"chaff_until": 0.0, "turn_until": 0.0}
+MOTION_STATE: Dict[str, Any] = {"last_heading": None, "last_ts": 0.0}
+SKIRMISH_ACTIVE: Dict[str, Any] = {"id": None, "started_ts": None}
+NAV_STATE: Dict[str, Any] = {"last_cell": None, "turn_target": None, "turn_hold_since": 0.0, "boundary_cooldown_until": 0.0}
 RADIO_QUEUE: list[Dict[str, Any]] = []  # items: {role, text, prio, enq_ts}
 RADIO_STATE: Dict[str, Any] = {"busy_until": 0.0}
 STATE_LOCK = threading.Lock()
@@ -100,6 +105,61 @@ CAP_META: Dict[int, Dict[str, Any]] = {}
 #   'target_name': str, 'target_class': str, 'range_nm': float }
 PENDING_EVENTS: list[Dict[str, Any]] = []
 ATTACK_STATE: Dict[int, float] = {}
+
+# ---- Skirmish storage helpers ----
+def _load_skirmishes() -> Dict[str, Any]:
+    try:
+        obj = _load_json(SKIRMISHES_PATH, {})
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+def _save_skirmishes(obj: Dict[str, Any]) -> None:
+    try:
+        _save_json(SKIRMISHES_PATH, obj)
+    except Exception:
+        pass
+
+def _skirmish_next_id(db: Dict[str, Any]) -> int:
+    try:
+        items = db.get('items') or {}
+        ids = [int(k) for k in items.keys()]
+        return (max(ids) + 1) if ids else 1
+    except Exception:
+        return 1
+
+def _skirmish_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+# ---- Roadmap storage helpers ----
+def _load_roadmap() -> Dict[str, Any]:
+    try:
+        obj = _load_json(ROADMAP_PATH, {})
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+def _save_roadmap(obj: Dict[str, Any]) -> None:
+    try:
+        _save_json(ROADMAP_PATH, obj)
+    except Exception:
+        pass
+
+def _init_roadmap_if_missing() -> None:
+    db = _load_roadmap()
+    if db.get('items'):
+        return
+    items = [
+        {"id": 1, "title": "Radio Framework V2 for all stations", "desc": "Extend events→role→intent→hint across Nav, Radar, Fire Control, Weapons, Engineering.", "status": "pending", "order": 1},
+        {"id": 2, "title": "Damage model + Repair Teams + Win Conditions", "desc": "Lives, hit effects, repair teams, win/loss.", "status": "pending", "order": 2},
+        {"id": 3, "title": "Skirmish/Mission Editor foundation", "desc": "Evolve skirmish into mission editor light.", "status": "pending", "order": 3},
+        {"id": 4, "title": "Radio content refinement", "desc": "More human, context-rich lines.", "status": "pending", "order": 4},
+        {"id": 5, "title": "Voice commands MVP", "desc": "Speak key commands, reduce buttons.", "status": "pending", "order": 5},
+        {"id": 6, "title": "Atmosphere & polish", "desc": "Small touches that add immersion.", "status": "pending", "order": 6},
+        {"id": 7, "title": "Coordinated enemy attacks", "desc": "Pre-planned waves via mission editor light.", "status": "pending", "order": 7},
+        {"id": 8, "title": "Raspberry Pi Kiosk", "desc": "Package for standalone device.", "status": "pending", "order": 8},
+    ]
+    _save_roadmap({"items": items, "updated": _skirmish_now_iso()})
 
 def _sound_key_for_weapon(name: str) -> str:
     s = (name or "").lower()
@@ -230,6 +290,12 @@ def _process_due_events() -> None:
                 rng = float(ev.get('range_nm', 0.0))
                 # Locate target
                 tgt = next((c for c in RADAR.contacts if int(getattr(c, 'id', -1)) == wid), None)
+                tcell = None
+                try:
+                    if tgt is not None:
+                        tcell = world_to_cell(float(getattr(tgt, 'x', 0.0)), float(getattr(tgt, 'y', 0.0)))
+                except Exception:
+                    tcell = None
                 pk = _hit_probability(wname, tclass, rng)
                 hit = (random.random() < pk)
                 if hit and tgt is not None:
@@ -245,6 +311,29 @@ def _process_due_events() -> None:
                     officer_say('Fire Control', 'miss', {'name': tname, 'id': wid})
                     with STATE_LOCK:
                         AUDIO_STATE['last_result'] = {'event': 'miss', 'ts': now}
+                # Record engagement result with attacker/target context
+                try:
+                    ship_cell = ship_cell_from_state(ENG.public_state() if hasattr(ENG, 'public_state') else {})
+                except Exception:
+                    ship_cell = None
+                try:
+                    record_flight({
+                        'route': '/engagement.result', 'method': 'INT', 'status': 200, 'duration_ms': 0,
+                        'request': {},
+                        'response': {
+                            'result': ('hit' if hit else 'miss'),
+                            'attacker_id': 'own',
+                            'attacker_name': 'HMS Sheffield',
+                            'attacker_cell': ship_cell,
+                            'weapon': wname,
+                            'range_nm': rng,
+                            'target_id': wid,
+                            'target_name': tname,
+                            'target_cell': tcell,
+                        }
+                    })
+                except Exception:
+                    pass
             except Exception:
                 continue
         elif float(ev.get('due', 0.0)) <= now and ev.get('kind') == 'arming_ready':
@@ -258,19 +347,44 @@ def _process_due_events() -> None:
                 hit = bool(ev.get('hit'))
                 tid = int(ev.get('target_id', 0))
                 tname = str(ev.get('target_name', 'Target'))
+                rng = None
+                try:
+                    rng = float(ev.get('range_nm')) if ev.get('range_nm') is not None else None
+                except Exception:
+                    rng = None
+                wname = str(ev.get('weapon') or 'AIM-9 Sidewinder')
                 if hit:
                     # Remove target if still present
                     try:
                         RADAR.contacts = [c for c in RADAR.contacts if int(getattr(c,'id',-1)) != tid]
                     except Exception:
                         pass
-                    officer_say('Pilot','splash', {'name': tname}, fallback='Splash one bandit.')
+                    voice_emit('pilot.splash', {'name': tname}, fallback='Splash one bandit.', role='Pilot')
                     with STATE_LOCK:
                         AUDIO_STATE['last_result'] = {'event': 'hit', 'ts': now}
                 else:
-                    officer_say('Pilot','miss', {'name': tname}, fallback='Missile missed.')
+                    voice_emit('pilot.miss', {'name': tname}, fallback='Missile missed.', role='Pilot')
                     with STATE_LOCK:
                         AUDIO_STATE['last_result'] = {'event': 'miss', 'ts': now}
+                # Record CAP engagement result
+                try:
+                    record_flight({
+                        'route': '/engagement.result', 'method': 'INT', 'status': 200, 'duration_ms': 0,
+                        'request': {},
+                        'response': {
+                            'result': ('hit' if hit else 'miss'),
+                            'attacker_id': 'cap',
+                            'attacker_name': 'CAP',
+                            'attacker_cell': None,
+                            'weapon': wname,
+                            'range_nm': rng,
+                            'target_id': tid,
+                            'target_name': tname,
+                            'target_cell': None,
+                        }
+                    })
+                except Exception:
+                    pass
             except Exception:
                 pass
         elif float(ev.get('due', 0.0)) <= now and ev.get('kind') == 'hostile_attack':
@@ -279,7 +393,78 @@ def _process_due_events() -> None:
                 base = float(ev.get('base', 0.3))
                 # Simple hit roll
                 import random as _r
-                hit = (_r.random() < base)
+                # Apply defense rules for Exocet missiles
+                intercepted = False
+                defense = {}
+                if 'exocet' in w:
+                    # Record baseline
+                    defense['base'] = round(base, 3)
+                    # Gather context
+                    now_ts = time.time()
+                    with STATE_LOCK:
+                        chaff_active = (now_ts <= float(DEFENSE_STATE.get('chaff_until', 0.0)))
+                        hard_turn = (now_ts <= float(DEFENSE_STATE.get('turn_until', 0.0)))
+                    # Determine current range from missile contact (if available)
+                    cur_rng = float(ev.get('range_nm', 0.0))
+                    try:
+                        mid = ev.get('missile_id')
+                        if mid is not None:
+                            mc = next((c for c in RADAR.contacts if int(getattr(c,'id',-1)) == int(mid)), None)
+                            if mc is not None:
+                                stship = ENG.public_state() if hasattr(ENG,'public_state') else {}
+                                ox, oy = radar_xy_from_state(stship)
+                                dx = float(getattr(mc,'x',0.0)) - float(ox)
+                                dy = float(getattr(mc,'y',0.0)) - float(oy)
+                                cur_rng = (dx*dx + dy*dy) ** 0.5
+                    except Exception:
+                        pass
+                    # Load weapon states
+                    arming = {}
+                    ammo = {}
+                    try:
+                        arming = load_arming(); ammo = load_ammo()
+                    except Exception:
+                        arming, ammo = {}, {}
+                    # Sea Dart intercept up to 20%
+                    try:
+                        sd_armed = (arming.get('Sea Dart SAM') == 'Armed')
+                        sd_ammo = int(ammo.get('Sea Dart SAM', 0)) > 0
+                    except Exception:
+                        sd_armed = False; sd_ammo = False
+                    if sd_armed and sd_ammo:
+                        if _r.random() < 0.20:
+                            intercepted = True
+                            defense['sea_dart'] = 'intercept'
+                        else:
+                            defense['sea_dart'] = 'no_effect'
+                    # Guns intercept up to 30% (close-in)
+                    try:
+                        g1_armed = (arming.get('20mm GAM-BO1 (twin)') == 'Armed') and (int(ammo.get('20mm GAM-BO1 (twin)', 0)) > 0)
+                        g2_armed = (arming.get('20mm Oerlikon') == 'Armed') and (int(ammo.get('20mm Oerlikon', 0)) > 0)
+                    except Exception:
+                        g1_armed = g2_armed = False
+                    if not intercepted and (g1_armed or g2_armed):
+                        # Prefer effectiveness when very close; do not require explicit range sensing for simplicity
+                        if _r.random() < 0.30:
+                            intercepted = True
+                            defense['guns'] = 'intercept'
+                        else:
+                            defense['guns'] = 'no_effect'
+                    # Chaff increases miss by 60% (reduce hit prob)
+                    if chaff_active:
+                        base = max(0.0, base - 0.60)
+                        defense['chaff'] = True
+                    else:
+                        defense['chaff'] = False
+                    # Hard 90° turn at ≥90% speed adds 25% miss chance (reduce hit prob)
+                    if hard_turn:
+                        base = max(0.0, base - 0.25)
+                        defense['maneuver'] = True
+                    else:
+                        defense['maneuver'] = False
+                    defense['final_base'] = round(base, 3)
+                # Final hit after defenses
+                hit = (False if intercepted else (_r.random() < base))
                 # On hit, decrement health
                 if hit:
                     h = _load_health()
@@ -296,6 +481,81 @@ def _process_due_events() -> None:
                     record_officer('Fire Control', 'Incoming attack missed.')
                     with STATE_LOCK:
                         AUDIO_STATE['last_result'] = {'event': 'miss', 'ts': now}
+                # Record hostile attack resolution with context
+                try:
+                    aid = int(ev.get('contact_id', 0))
+                    aname = str(ev.get('contact_name', 'Hostile'))
+                    rng = float(ev.get('range_nm', 0.0))
+                    tlabel = str(ev.get('target', 'HMS Sheffield'))
+                    missile_id = ev.get('missile_id')
+                    # Attacker cell if still tracked
+                    acell = None
+                    try:
+                        c = next((c for c in RADAR.contacts if int(getattr(c,'id',-1)) == aid), None)
+                        if c is not None:
+                            acell = world_to_cell(float(getattr(c,'x',0.0)), float(getattr(c,'y',0.0)))
+                    except Exception:
+                        acell = None
+                    # Target cell: derive from current state
+                    try:
+                        stship = ENG.public_state() if hasattr(ENG,'public_state') else {}
+                        own_cell = ship_cell_from_state(stship)
+                    except Exception:
+                        own_cell = None
+                    tcell = own_cell
+                    try:
+                        if 'hermes' in tlabel.lower() and own_cell is not None:
+                            # Estimate Hermes cell using convoy offsets
+                            i = 0
+                            while i < len(own_cell) and own_cell[i].isalpha():
+                                i += 1
+                            col_letters = own_cell[:i] or 'A'
+                            row_str = own_cell[i:] or '1'
+                            cc = 0
+                            for ch in col_letters:
+                                cc = cc*26 + (ord(ch) - ord('A') + 1)
+                            rr = int(row_str)
+                            convoy = _load_json(DATA_DIR / 'convoy.json', {})
+                            escorts = convoy.get('escorts', []) if isinstance(convoy, dict) else []
+                            herm = next((e for e in escorts if str(e.get('name','')).lower().find('hermes')>=0), None)
+                            if herm:
+                                dx, dy = herm.get('offset_cells', [-2,3])
+                                tcell = board_to_cell(int(clamp(rr+int(dy),1,BOARD_N)), int(clamp(cc+int(dx),1,BOARD_N)))
+                    except Exception:
+                        pass
+                    rec_resp = {
+                        'route': '/engagement.result', 'method': 'INT', 'status': 200, 'duration_ms': 0,
+                        'request': {},
+                        'response': {
+                            'result': ('hit' if hit else 'miss'),
+                            'attacker_id': aid,
+                            'attacker_name': aname,
+                            'attacker_cell': acell,
+                            'weapon': w,
+                            'range_nm': rng,
+                            'target_name': tlabel,
+                            'target_cell': tcell,
+                        }
+                    }
+                    if 'defense' in locals() and defense:
+                        try:
+                            rec_resp['response']['defense'] = defense  # type: ignore[index]
+                        except Exception:
+                            pass
+                    record_flight(rec_resp)
+                    # Remove missile contact if we created one
+                    try:
+                        mid = int(missile_id) if missile_id is not None else None
+                    except Exception:
+                        mid = None
+                    if mid is not None:
+                        try:
+                            RADAR.contacts = [c for c in RADAR.contacts if int(getattr(c,'id',-1)) != mid]
+                            RADAR.rec.log('missile.resolved', {'id': mid, 'result': ('hit' if hit else 'miss'), 'target': tlabel})
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
             except Exception:
                 pass
         else:
@@ -389,6 +649,120 @@ def engine_thread() -> None:
             try:
                 st = ENG.public_state() if hasattr(ENG, "public_state") else {}
                 own_x, own_y = radar_xy_from_state(st)
+                # NAV: grid enter + turn complete
+                try:
+                    cell = ship_cell_from_state(st)
+                    with STATE_LOCK:
+                        last_cell = NAV_STATE.get('last_cell')
+                        NAV_STATE['last_cell'] = cell
+                    if cell and cell != last_cell:
+                        try:
+                            voice_emit('nav.grid.enter', {'cell': cell}, fallback=f'Captain, entering grid {cell}.', role='Navigation')
+                        except Exception:
+                            pass
+                    # Boundary warning: within 1 cell of board edge
+                    try:
+                        # parse cell into row, col indices
+                        j=0
+                        while j < len(cell) and cell[j].isalpha(): j+=1
+                        letters = cell[:j] or 'A'; row_s = cell[j:] or '1'
+                        col_i=0
+                        for ch in letters: col_i = col_i*26 + (ord(ch)-ord('A')+1)
+                        row_i = int(row_s)
+                        # margin to edges (1..26)
+                        m_north = max(0, row_i-1)
+                        m_south = max(0, 26-row_i)
+                        m_west  = max(0, col_i-1)
+                        m_east  = max(0, 26-col_i)
+                        minm = min(m_north, m_south, m_west, m_east)
+                        nowb = time.time()
+                        with STATE_LOCK:
+                            bc = float(NAV_STATE.get('boundary_cooldown_until') or 0.0)
+                        if minm <= 1 and nowb >= bc:
+                            # pick cardinal and recommended course back toward center
+                            if minm == m_north: edge='north'
+                            elif minm == m_south: edge='south'
+                            elif minm == m_west: edge='west'
+                            else: edge='east'
+                            # recommended heading toward center (13,13) in board idx → world center
+                            def _letters_to_idx(s):
+                                k=0
+                                for ch in s: k=k*26+(ord(ch)-ord('A')+1)
+                                return k
+                            center_x = float(BOARD_MIN) + float(13-1)
+                            center_y = float(BOARD_MIN) + float(13-1)
+                            # own world
+                            owx, owy = radar_xy_from_state(st)
+                            import math as _m
+                            rec_hdg = int(round((_m.degrees(_m.atan2(center_x-owx, -(center_y-owy))) % 360.0)))
+                            try:
+                                voice_emit('nav.patrol.boundary.warn', {'edge_cardinal': edge, 'rec_hdg': rec_hdg}, fallback=f'Warning: leaving patrol area to the {edge}. Recommend course {rec_hdg}°.', role='Navigation')
+                            except Exception:
+                                pass
+                            with STATE_LOCK:
+                                NAV_STATE['boundary_cooldown_until'] = nowb + 60.0
+                    except Exception:
+                        pass
+                    # Turn complete: within ±2° of target for >=2s
+                    ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
+                    hdg = float(ship.get('heading', 0.0))
+                    now_ts = time.time()
+                    with STATE_LOCK:
+                        tgt = NAV_STATE.get('turn_target')
+                        hold = float(NAV_STATE.get('turn_hold_since') or 0.0)
+                    def _adiff(a,b):
+                        d=(a-b+540.0)%360.0-180.0; return abs(d)
+                    if isinstance(tgt, (int, float)):
+                        if _adiff(hdg, float(tgt)) <= 2.0:
+                            if hold <= 0:
+                                with STATE_LOCK:
+                                    NAV_STATE['turn_hold_since'] = now_ts
+                            elif (now_ts - hold) >= 2.0:
+                                # Announce once and clear target
+                                try:
+                                    voice_emit('nav.turn.complete', {'hdg': round(float(tgt))}, fallback=f'Steady on course {round(float(tgt))}°.', role='Navigation')
+                                except Exception:
+                                    pass
+                                with STATE_LOCK:
+                                    NAV_STATE['turn_target'] = None
+                                    NAV_STATE['turn_hold_since'] = 0.0
+                        else:
+                            with STATE_LOCK:
+                                NAV_STATE['turn_hold_since'] = 0.0
+                except Exception:
+                    pass
+                # Motion-derived defenses: detect hard 90° turn at ≥90% max speed
+                try:
+                    ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
+                    hdg = float(ship.get('heading', 0.0))
+                    spd = float(ship.get('speed', 0.0))
+                    now_ts = time.time()
+                    # Load max speed (cached via ship.json)
+                    try:
+                        ship_cfg = _load_json(DATA_DIR / 'ship.json', {})
+                        vmax = float((ship_cfg.get('speed_max_kts') or 32.0))
+                    except Exception:
+                        vmax = 32.0
+                    with STATE_LOCK:
+                        lh = MOTION_STATE.get('last_heading')
+                        lt = float(MOTION_STATE.get('last_ts') or 0.0)
+                        MOTION_STATE['last_heading'] = hdg
+                        MOTION_STATE['last_ts'] = now_ts
+                    def _angdiff(a: float, b: float) -> float:
+                        d = (a - b + 540.0) % 360.0 - 180.0
+                        return abs(d)
+                    if lh is not None and vmax > 0:
+                        ddeg = _angdiff(hdg, float(lh))
+                        dt_turn = max(0.001, now_ts - (lt or now_ts))
+                        if (ddeg >= 90.0 - 1e-6) and (spd >= 0.9 * vmax):
+                            with STATE_LOCK:
+                                DEFENSE_STATE['turn_until'] = now_ts + 20.0
+                            try:
+                                RADAR.rec.log('maneuver.hard_turn', {'deg': round(ddeg,1), 'speed_kts': spd})
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
                 RADAR.tick(dt, own_x, own_y)
             except Exception:
                 pass
@@ -396,6 +770,37 @@ def engine_thread() -> None:
             try:
                 if CAP is not None:
                     CAP.tick()
+                    # CAP mission status transitions + winchester calls
+                    try:
+                        for m in (CAP.missions or []):
+                            try:
+                                mid = int(getattr(m, 'id', 0))
+                                status = str(getattr(m, 'status', ''))
+                                meta = CAP_META.get(mid) or {}
+                                prev = meta.get('last_status')
+                                if status != prev:
+                                    if status == 'onstation':
+                                        cell = str(getattr(m, 'target_cell', '') or '')
+                                        voice_emit('pilot.station', {'cell': cell}, fallback='On station at %s.' % (cell,), role='Pilot')
+                                    elif status == 'rtb':
+                                        voice_emit('pilot.rtb', {}, fallback='Winchester, RTB.', role='Pilot')
+                                    elif status == 'recovering':
+                                        voice_emit('pilot.inbound', {}, fallback='Inbound for landing.', role='Pilot')
+                                    meta['last_status'] = status
+                                    CAP_META[mid] = meta
+                                # Winchester detection
+                                ml = int(getattr(m, 'missiles_left', 0) or 0)
+                                if ml <= 0 and not meta.get('winchester', False):
+                                    voice_emit('pilot.winchester', {}, fallback='Winchester. Out of Sidewinders.', role='Pilot')
+                                    # Encourage RTB (if not already transitioning)
+                                    if status not in ('rtb','recovering','complete'):
+                                        voice_emit('pilot.rtb', {}, fallback='Winchester, RTB.', role='Pilot')
+                                    meta['winchester'] = True
+                                    CAP_META[mid] = meta
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
                     # Determine locked target id and range using RADAR priority/PRIMARY_ID
                     tid = None
                     try:
@@ -440,9 +845,9 @@ def engine_thread() -> None:
                                 except Exception:
                                     shots = 1
                                 if shots >= 2:
-                                    officer_say('Pilot','fox2', {}, fallback='Fox Two, Fox Two!')
+                                    voice_emit('pilot.fox2', {}, fallback='Fox Two, Fox Two!', role='Pilot')
                                 else:
-                                    officer_say('Pilot','fox2', {})
+                                    voice_emit('pilot.fox2', {}, fallback='Fox Two!', role='Pilot')
                                 # Schedule result call (splash/miss) with small time-of-flight delay
                                 try:
                                     rng = float(res.get('range_nm', 0.0))
@@ -454,7 +859,7 @@ def engine_thread() -> None:
                                 except Exception:
                                     tname = 'Target'
                                 with STATE_LOCK:
-                                    PENDING_EVENTS.append({'due': due, 'kind': 'cap_resolve', 'hit': bool(res.get('hit', False)), 'target_id': int(res.get('target_id', 0)), 'target_name': tname})
+                                    PENDING_EVENTS.append({'due': due, 'kind': 'cap_resolve', 'hit': bool(res.get('hit', False)), 'target_id': int(res.get('target_id', 0)), 'target_name': tname, 'range_nm': rng, 'weapon': 'AIM-9 Sidewinder'})
                     else:
                         # No explicit lock: check each on-station mission and auto-engage nearest hostile in Sidewinder range
                         try:
@@ -496,9 +901,9 @@ def engine_thread() -> None:
                                         except Exception:
                                             shots = 1
                                         if shots >= 2:
-                                            officer_say('Pilot','fox2', {}, fallback='Fox Two, Fox Two!')
+                                            voice_emit('pilot.fox2', {}, fallback='Fox Two, Fox Two!', role='Pilot')
                                         else:
-                                            officer_say('Pilot','fox2', {})
+                                            voice_emit('pilot.fox2', {}, fallback='Fox Two!', role='Pilot')
                                         # Schedule splash/miss
                                         try:
                                             rng = float(res.get('range_nm', 0.0))
@@ -507,7 +912,7 @@ def engine_thread() -> None:
                                         due = time.time() + _cap_flight_time_seconds(rng)
                                         tname = str(getattr(nearest,'name','Target'))
                                         with STATE_LOCK:
-                                            PENDING_EVENTS.append({'due': due, 'kind': 'cap_resolve', 'hit': bool(res.get('hit', False)), 'target_id': int(res.get('target_id', 0)), 'target_name': tname})
+                                            PENDING_EVENTS.append({'due': due, 'kind': 'cap_resolve', 'hit': bool(res.get('hit', False)), 'target_id': int(res.get('target_id', 0)), 'target_name': tname, 'range_nm': rng, 'weapon': 'AIM-9 Sidewinder'})
                             except Exception:
                                 continue
                         # En-route detection: ask permission when a target appears within 15 nm ahead
@@ -544,7 +949,7 @@ def engine_thread() -> None:
                                 nearest = min(host, key=dnm_c)
                                 dist = dnm_c(nearest)
                                 if dist <= ahead_nm and not asked:
-                                    officer_say('Pilot','request', {'range_nm': round(dist,1)}, fallback=f"Contact ahead {dist:.1f} nm. Request permission to engage.")
+                                    voice_emit('pilot.request.engage', {'range_nm': round(dist,1)}, fallback='Contact ahead %.1f nm. Request permission to engage.' % (dist,), role='Pilot')
                                     meta['asked'] = True; CAP_META[mid] = meta
                             except Exception:
                                 continue
@@ -614,6 +1019,45 @@ def engine_thread() -> None:
                         if 'exocet' in w:
                             travel = 4.0 + 6.0 * rng; base = 0.7
                             kind = 'exocet'
+                            # Spawn a radar-visible missile contact that tracks to the target
+                            try:
+                                mx = float(getattr(c, 'x', 0.0)); my = float(getattr(c, 'y', 0.0))
+                                # Bearing from launch point to target
+                                import math as _m
+                                bdeg = (_m.degrees(_m.atan2(float(tx) - mx, -(float(ty) - my))) % 360.0) if (tx is not None and ty is not None) else float(getattr(c,'course_deg',0.0))
+                                # Speed chosen so that arrival ~= scheduled travel (accounting for HOSTILE_SPEED_SCALE)
+                                try:
+                                    ms_kts = (float(rng) * 3600.0) / max(1.0, float(travel)) / float(HOSTILE_SPEED_SCALE)
+                                except Exception:
+                                    ms_kts = 600.0
+                                mid = int(getattr(RADAR, '_next_id', 1))
+                                mcontact = Contact(
+                                    id=mid,
+                                    name='Exocet',
+                                    allegiance='Hostile',
+                                    x=mx, y=my,
+                                    course_deg=float(bdeg),
+                                    speed_kts=float(ms_kts),
+                                    threat='high',
+                                    meta={'kind': 'missile', 'parent_id': cid, 'weapon': 'Exocet AM39', 'target': target_label, 'target_xy': [float(tx), float(ty)] if (tx is not None and ty is not None) else None}
+                                )
+                                # Append to radar and increment id
+                                try:
+                                    RADAR.contacts.append(mcontact)
+                                    setattr(RADAR, '_next_id', mid + 1)
+                                except Exception:
+                                    pass
+                                # Log missile spawn for the recorder
+                                try:
+                                    RADAR.rec.log('missile.spawn', {
+                                        'id': mid, 'name': 'Exocet', 'from_contact_id': cid,
+                                        'world_xy': [round(mx,2), round(my,2)], 'course_deg': round(bdeg,1),
+                                        'speed_kts': round(ms_kts,1), 'target': target_label, 'range_nm': round(rng,2)
+                                    })
+                                except Exception:
+                                    pass
+                            except Exception:
+                                mid = None
                         elif 'bomb' in w:
                             travel = max(1.0, 2.0 * rng); base = 0.4
                             kind = 'bombs'
@@ -629,7 +1073,8 @@ def engine_thread() -> None:
                         with STATE_LOCK:
                             PENDING_EVENTS.append({'due': now_t + travel, 'kind': 'hostile_attack', 'contact_id': cid,
                                                    'contact_name': str(getattr(c,'name','Hostile')),
-                                                   'weapon': kind, 'base': base, 'range_nm': rng, 'target': target_label})
+                                                   'weapon': kind, 'base': base, 'range_nm': rng, 'target': target_label,
+                                                   **({'missile_id': mid} if (kind == 'exocet' and 'mid' in locals()) else {})})
                         ATTACK_STATE[cid] = now_t
                         # Immediate warning + red alert if impact very soon or very close
                         try:
@@ -671,6 +1116,11 @@ ALARM_CFG_PATH = DATA_DIR / "alarms.json"
 HEALTH_PATH = STATE_DIR / "health.json"
 TTS_DIR = STATE_DIR / "tts"
 TTS_DIR.mkdir(parents=True, exist_ok=True)
+VOICE_EVENTS_PATH = DATA_DIR / "voice_events.json"
+SKIRMISHES_PATH = STATE_DIR / "skirmishes.json"
+ROADMAP_PATH = STATE_DIR / "roadmap.json"
+VOICES_DIR = STATE_DIR / "voices"
+VOICES_DIR.mkdir(parents=True, exist_ok=True)
 
 # Initialize CAP now that DATA_DIR is available
 try:
@@ -826,8 +1276,80 @@ def _cap_ui_snapshot() -> Dict[str, Any]:
                         tos_s = max(0, int(etd_rtb - now))
                 except Exception:
                     tos_s = None
+                # Approximate current position cell
+                cur_cell = None
+                try:
+                    meta = CAP_META.get(cid, {})
+                    # Hermes origin fallback from convoy
+                    st_state = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+                    own_cell = ship_cell_from_state(st_state)
+                    # Hermes cell
+                    def _hermes_cell() -> str:
+                        try:
+                            # Parse own cell to indices
+                            i=0
+                            while i < len(own_cell) and own_cell[i].isalpha():
+                                i+=1
+                            col_letters=own_cell[:i] or 'A'; row_str=own_cell[i:] or '1'
+                            cc=0
+                            for ch in col_letters: cc=cc*26+(ord(ch)-ord('A')+1)
+                            rr=int(row_str)
+                            convoy = _load_json(DATA_DIR / 'convoy.json', {})
+                            escorts = convoy.get('escorts', []) if isinstance(convoy, dict) else []
+                            herm = next((e for e in escorts if str(e.get('name','')).lower().find('hermes')>=0), None)
+                            if herm:
+                                dx, dy = herm.get('offset_cells', [-2,3])
+                                return board_to_cell(int(clamp(rr+int(dy),1,BOARD_N)), int(clamp(cc+int(dx),1,BOARD_N)))
+                        except Exception:
+                            pass
+                        return own_cell
+                    if status in ('queued','recovering','complete'):
+                        cur_cell = _hermes_cell()
+                    elif status == 'onstation':
+                        cur_cell = cell or _hermes_cell()
+                    else:
+                        # In flight (airborne or rtb)
+                        # Determine origin world (Hermes or stored)
+                        try:
+                            ox, oy = meta.get('origin_xy', None) or (None, None)
+                        except Exception:
+                            ox, oy = (None, None)
+                        if ox is None or oy is None:
+                            hc = _hermes_cell(); hx, hy = cell_to_world(hc)
+                            ox, oy = hx, hy
+                        if tx is not None and ty is not None:
+                            if status == 'airborne':
+                                t_launch = float(ts.get('launch', 0.0)) if isinstance(ts, dict) else 0.0
+                                deck = int(m.get('deck_cycle_s') or 0)
+                                outb = int(m.get('outbound_s') or 1)
+                                prog = 0.0
+                                try:
+                                    prog = max(0.0, min(1.0, (now - (t_launch + deck)) / max(1.0, outb)))
+                                except Exception:
+                                    prog = 0.0
+                                cx = float(ox) + (float(tx) - float(ox)) * prog
+                                cy = float(oy) + (float(ty) - float(oy)) * prog
+                            elif status == 'rtb':
+                                t_rtb = float(ts.get('rtb', now))
+                                inb = int(m.get('inbound_s') or 1)
+                                prog = 0.0
+                                try:
+                                    prog = max(0.0, min(1.0, (now - t_rtb) / max(1.0, inb)))
+                                except Exception:
+                                    prog = 0.0
+                                cx = float(tx) + (float(ox) - float(tx)) * prog
+                                cy = float(ty) + (float(oy) - float(ty)) * prog
+                            else:
+                                cx, cy = float(ox), float(oy)
+                            try:
+                                cur_cell = world_to_cell(float(cx), float(cy))
+                            except Exception:
+                                cur_cell = None
+                except Exception:
+                    cur_cell = None
                 tasks.append({
                     "n": cid,
+                    "cur_cell": cur_cell or '—',
                     "target_cell": cell or '—',
                     "range_nm": (round(rng, 1) if isinstance(rng, (int, float)) else None),
                     "status": status,
@@ -1341,7 +1863,7 @@ def _file_info(p: Path) -> Dict[str, Any]:
                 "size": len(b),
                 "sha1": hashlib.sha1(b).hexdigest(),
             })
-    return info
+        return info
     except Exception:
         return {"path": str(p), "exists": False}
 
@@ -1379,24 +1901,161 @@ def _crew_voice(role: str) -> str:
     try:
         r = (CREW.get('roles') or {}).get(role)
         v = (r or {}).get('voice')
-        return str(v) if v else os.environ.get('OPENAI_TTS_VOICE', 'ash')
+        voice = (str(v) if v else os.environ.get('OPENAI_TTS_VOICE', 'alloy')).strip().lower()
+        # Map unsupported aliases to valid voices
+        if voice == 'ash':
+            voice = 'alloy'
+        return voice
     except Exception:
-        return os.environ.get('OPENAI_TTS_VOICE', 'ash')
+        return os.environ.get('OPENAI_TTS_VOICE', 'alloy')
+
+# ---- Voice events (catalog + emitter) ----
+VOICE_EVENTS_DEFAULT: Dict[str, Dict[str, Any]] = {
+    "pilot.intercept.launch": {
+        "role": "Pilot",
+        "intent": "Acknowledge Hermes for intercept",
+        "hint": "Hermes, intercept bogey, vector to {cell}."
+    },
+    "pilot.fox2": {"role":"Pilot","intent":"Missile fired","hint":"Fox Two!"},
+    "pilot.splash": {"role":"Pilot","intent":"Kill confirm","hint":"Splash one bandit."},
+    "radar.scan.start": {"role":"Radar","intent":"Acknowledge scanning","hint":"Captain, scanning radar."},
+    "radar.scan.complete": {"role":"Radar","intent":"Scan complete","hint":"Captain, radar scan complete: {contacts} contact(s); hostiles {hostiles}; friendlies {friendlies}."},
+    "hostile.attack.warn": {"role":"Fire Control","intent":"Inbound threat warning","hint":"Incoming {weapon} at {range_nm} nm."},
+    "engineering.damage": {"role":"Engineering","intent":"Damage acknowledged","hint":"Captain, hit on {system}. Damage control responding."},
+}
+
+def _load_voice_events() -> Dict[str, Dict[str, Any]]:
+    try:
+        if VOICE_EVENTS_PATH.exists():
+            data = _load_json(VOICE_EVENTS_PATH, [])
+            events: Dict[str, Dict[str, Any]] = {}
+            if isinstance(data, list):
+                for it in data:
+                    try:
+                        ev = str(it.get('event') or '').strip()
+                        if not ev:
+                            continue
+                        events[ev] = {
+                            'role': (it.get('role') or 'Ensign'),
+                            'intent': (it.get('intent') or ''),
+                            'hint': (it.get('hint') or ''),
+                        }
+                    except Exception:
+                        continue
+            return events or dict(VOICE_EVENTS_DEFAULT)
+    except Exception:
+        pass
+    return dict(VOICE_EVENTS_DEFAULT)
+
+VOICE_EVENTS: Dict[str, Dict[str, Any]] = _load_voice_events()
+
+def voice_emit(event_id: str, ctx: Dict[str, Any] | None = None, *, fallback: str | None = None, role: str | None = None) -> None:
+    ev = VOICE_EVENTS.get(str(event_id)) or {}
+    r = role or ev.get('role') or 'Ensign'
+    templ = ev.get('hint') or fallback or ''
+    if not templ:
+        return
+    try:
+        txt = _fmt_msg(templ, ctx or {})
+    except Exception:
+        txt = templ
+    if txt:
+        record_officer(str(r), txt)
 
 def _tts_synthesize(text: str, role: str) -> str | None:
-    """Synthesize text to speech via OpenAI if key present.
+    """Synthesize text to speech via selected provider and cache.
+    Provider selection: from crew voice "provider:voice" or TTS_PROVIDER env, default 'openai'.
     Returns relative URL path "/data/tts/<file>" or None on failure.
-    Caches by (model,voice,text) hash.
     """
+    txt = (text or '').strip()
+    if not txt:
+        return None
+    voice_spec = _crew_voice(role).strip()
+    provider_default = os.environ.get('TTS_PROVIDER', '').strip().lower() or 'openai'
+    if ':' in voice_spec:
+        provider, voice_id = voice_spec.split(':', 1)
+        provider = provider.strip().lower(); voice_id = voice_id.strip()
+    else:
+        provider, voice_id = provider_default, voice_spec
+
+    def _hash_name(ext: str) -> tuple[str, Path]:
+        h = hashlib.sha1(f"{provider}|{voice_id}|{txt}".encode('utf-8')).hexdigest()[:20]
+        fname = f"{h}.{ext}"
+        return fname, (TTS_DIR / fname)
+
+    # macOS provider using 'say' + afconvert (AAC)
+    if provider == 'macos':
+        try:
+            fname, aiff = _hash_name('aiff')
+            if (TTS_DIR / (fname[:-5] + 'm4a')).exists():
+                return f"/data/tts/{fname[:-5] + 'm4a'}"
+            if aiff.exists():
+                # Try convert only
+                pass
+            else:
+                import subprocess, shlex
+                cmd = ["say", "-v", voice_id or 'Daniel', "-o", str(aiff), txt]
+                subprocess.run(cmd, check=True, timeout=20)
+            # Convert to m4a if afconvert exists
+            m4a = TTS_DIR / (fname[:-5] + 'm4a')
+            try:
+                import subprocess
+                subprocess.run(["afconvert", str(aiff), str(m4a), "-f", "mp4f", "-d", "aac"], check=True, timeout=20)
+                return f"/data/tts/{m4a.name}"
+            except Exception:
+                # Fallback serve AIFF
+                return f"/data/tts/{fname}"
+        except Exception as e:
+            logging.warning("macOS TTS error: %s", e)
+            return None
+
+    # Piper provider
+    if provider == 'piper':
+        try:
+            piper_bin = os.environ.get('TTS_PIPER_BIN', 'piper')
+            model_dir = Path(os.environ.get('TTS_PIPER_MODEL_DIR', str(VOICES_DIR)))
+            model_path = Path(voice_id)
+            if not model_path.exists():
+                model_path = model_dir / (voice_id + ('' if voice_id.endswith('.onnx') else '.onnx'))
+            if not model_path.exists():
+                logging.warning("Piper model not found: %s", model_path)
+                return None
+            fname_wav, wav = _hash_name('wav')
+            if not wav.exists():
+                import subprocess
+                cmd = [piper_bin, "--model", str(model_path), "--output_file", str(wav), "--text", txt]
+                # Optional tuning
+                ls = os.environ.get('TTS_PIPER_LENGTH')
+                ns = os.environ.get('TTS_PIPER_NOISE')
+                nw = os.environ.get('TTS_PIPER_NOISEW')
+                if ls: cmd += ["--length_scale", str(ls)]
+                if ns: cmd += ["--noise_scale", str(ns)]
+                if nw: cmd += ["--noise_w", str(nw)]
+                subprocess.run(cmd, check=True, timeout=30)
+            # Convert to m4a if possible; else mp3 via ffmpeg; else serve wav
+            m4a = TTS_DIR / (fname_wav[:-3] + 'm4a')
+            try:
+                import subprocess
+                subprocess.run(["afconvert", str(wav), str(m4a), "-f", "mp4f", "-d", "aac"], check=True, timeout=20)
+                return f"/data/tts/{m4a.name}"
+            except Exception:
+                mp3 = TTS_DIR / (fname_wav[:-3] + 'mp3')
+                try:
+                    import subprocess
+                    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav), str(mp3)], check=True, timeout=20)
+                    return f"/data/tts/{mp3.name}"
+                except Exception:
+                    return f"/data/tts/{wav.name}"
+        except Exception as e:
+            logging.warning("Piper TTS error: %s", e)
+            return None
+
+    # Default: OpenAI provider
     key = os.environ.get('OPENAI_API_KEY')
     if not key:
         return None
     model = os.environ.get('OPENAI_TTS_MODEL', 'gpt-4o-mini-tts')
-    voice = _crew_voice(role)
-    txt = (text or '').strip()
-    if not txt:
-        return None
-    # Hash filename for cache
+    voice = voice_id or os.environ.get('OPENAI_TTS_VOICE', 'alloy')
     h = hashlib.sha1(f"{model}|{voice}|{txt}".encode('utf-8')).hexdigest()[:20]
     fname = f"{h}.mp3"
     fpath = TTS_DIR / fname
@@ -1411,10 +2070,10 @@ def _tts_synthesize(text: str, role: str) -> str | None:
             fpath.write_bytes(r.content)
             return f"/data/tts/{fname}"
         else:
-            logging.warning("TTS failed %s: %s", r.status_code, r.text[:200])
+            logging.warning("OpenAI TTS failed %s: %s", r.status_code, r.text[:200])
             return None
     except Exception as e:
-        logging.warning("TTS error: %s", e)
+        logging.warning("OpenAI TTS error: %s", e)
         return None
 
 # (moved earlier) crew helpers defined above
@@ -1821,6 +2480,16 @@ def data_sounds(filename: str):
         return jsonify({"ok": False, "error": str(e)}), 404
 
 
+@app.get("/data/tts/<path:filename>")
+def data_tts(filename: str):
+    try:
+        base = TTS_DIR
+        return send_from_directory(str(base), filename)
+    except Exception as e:
+        logging.exception("/data/tts error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 404
+
+
 @app.post("/alarm/trigger")
 def alarm_trigger():
     from flask import request
@@ -1950,6 +2619,12 @@ def api_status():
                         d['class'] = cls
                 except Exception:
                     pass
+                # Label missile contacts explicitly
+                try:
+                    if str(getattr(c, 'meta', {}).get('kind','')) == 'missile':
+                        d['class'] = 'Missile'
+                except Exception:
+                    pass
                 # Include capability summary from contact meta (primary weapon + range)
                 try:
                     cap = getattr(c, 'meta', {}).get('cap', {})
@@ -2076,6 +2751,82 @@ def cap_status():
         logging.exception("/cap/status error: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
 
+@app.get('/nav/hermes/close_in')
+def nav_hermes_close_in():
+    t0 = time.time(); route = '/nav/hermes/close_in'
+    try:
+        import math as _m
+        st = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+        own_cell = ship_cell_from_state(st)
+        j=0
+        while j < len(own_cell) and own_cell[j].isalpha(): j+=1
+        cletters = own_cell[:j] or 'A'; rstr = own_cell[j:] or '1'
+        ci=0
+        for ch in cletters: ci=ci*26+(ord(ch)-ord('A')+1)
+        ri=int(rstr)
+        convoy = _load_json(DATA_DIR / 'convoy.json', {})
+        escorts = convoy.get('escorts', []) if isinstance(convoy, dict) else []
+        hermes = next((e for e in escorts if str(e.get('name','')).lower().find('hermes')>=0), None)
+        if hermes:
+            dx_cells, dy_cells = int(hermes.get('offset_cells',[-2,3])[0]), int(hermes.get('offset_cells',[-2,3])[1])
+            hermes_cell = board_to_cell(int(clamp(ri+dy_cells,1,BOARD_N)), int(clamp(ci+dx_cells,1,BOARD_N)))
+        else:
+            hermes_cell = 'L17'
+        hx, hy = cell_to_world(hermes_cell)
+        ox, oy = radar_xy_from_state(st)
+        dx, dy = hx-ox, hy-oy
+        rng = (dx*dx+dy*dy)**0.5
+        brg = int(round((_m.degrees(_m.atan2(dx, -dy)) % 360.0)))
+        rec_hdg = brg
+        try:
+            voice_emit('nav.hermes.close_in.request', {'ref_brg': brg, 'ref_rng': round(rng,1), 'rec_hdg': rec_hdg}, fallback=f'Recommend closing on Hermes: bearing {brg}°, range {rng:.1f} nm. New course {rec_hdg}°.', role='Navigation')
+        except Exception:
+            pass
+        payload = {"ok": True, "bearing": brg, "range_nm": round(rng,1), "recommend_hdg": rec_hdg}
+        record_flight({"route": route, "method": "GET", "status": 200, "duration_ms": int((time.time()-t0)*1000), "request": {}, "response": payload})
+        return jsonify(payload)
+    except Exception as e:
+        logging.exception("/nav/hermes/close_in error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.get('/nav/hermes/stand_off')
+def nav_hermes_stand_off():
+    t0 = time.time(); route = '/nav/hermes/stand_off'
+    try:
+        import math as _m
+        st = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+        own_cell = ship_cell_from_state(st)
+        j=0
+        while j < len(own_cell) and own_cell[j].isalpha(): j+=1
+        cletters = own_cell[:j] or 'A'; rstr = own_cell[j:] or '1'
+        ci=0
+        for ch in cletters: ci=ci*26+(ord(ch)-ord('A')+1)
+        ri=int(rstr)
+        convoy = _load_json(DATA_DIR / 'convoy.json', {})
+        escorts = convoy.get('escorts', []) if isinstance(convoy, dict) else []
+        hermes = next((e for e in escorts if str(e.get('name','')).lower().find('hermes')>=0), None)
+        if hermes:
+            dx_cells, dy_cells = int(hermes.get('offset_cells',[-2,3])[0]), int(hermes.get('offset_cells',[-2,3])[1])
+            hermes_cell = board_to_cell(int(clamp(ri+dy_cells,1,BOARD_N)), int(clamp(ci+dx_cells,1,BOARD_N)))
+        else:
+            hermes_cell = 'L17'
+        hx, hy = cell_to_world(hermes_cell)
+        ox, oy = radar_xy_from_state(st)
+        dx, dy = hx-ox, hy-oy
+        rng = (dx*dx+dy*dy)**0.5
+        brg = int(round((_m.degrees(_m.atan2(dx, -dy)) % 360.0)))
+        standoff = 3
+        try:
+            voice_emit('nav.hermes.stand_off.request', {'ref_brg': brg, 'ref_rng': round(rng,1), 'standoff_nm': standoff}, fallback=f'Recommend Hermes stand-off {standoff} nm; current bearing {brg}°, range {rng:.1f} nm.', role='Navigation')
+        except Exception:
+            pass
+        payload = {"ok": True, "bearing": brg, "range_nm": round(rng,1), "standoff_nm": standoff}
+        record_flight({"route": route, "method": "GET", "status": 200, "duration_ms": int((time.time()-t0)*1000), "request": {}, "response": payload})
+        return jsonify(payload)
+    except Exception as e:
+        logging.exception("/nav/hermes/stand_off error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.post("/cap/request")
 def cap_request():
     from flask import request
@@ -2125,6 +2876,10 @@ def cap_request():
         if res.get('ok'):
             try:
                 stamp_cap_launch()
+            except Exception:
+                pass
+            try:
+                voice_emit('pilot.cap.launch', {'cell': cell}, fallback='Hermes, proceeding to CAP station at %s.' % (cell,), role='Pilot')
             except Exception:
                 pass
             # Seed CAP_META for en-route detection/permission
@@ -2191,6 +2946,10 @@ def cap_launch_to():
             except Exception:
                 pass
             try:
+                voice_emit('pilot.cap.launch', {'cell': cell}, fallback='Hermes, proceeding to CAP station at %s.' % (cell,), role='Pilot')
+            except Exception:
+                pass
+            try:
                 mid = int((res.get('mission') or {}).get('id'))
                 CAP_META[mid] = {"origin_xy": (own_x, own_y), "asked": False, "authorized": False}
             except Exception:
@@ -2237,6 +2996,103 @@ def api_command():
 
     try:
         s = cmd.strip()
+        # NAV set intercept: acknowledge course/speed and set turn target
+        if s.lower().startswith('/nav set'):
+            # naive kv parse
+            parts = s.split()
+            kv = {}
+            for p in parts[2:]:
+                if '=' in p:
+                    k,v = p.split('=',1)
+                    kv[k.strip().lower()] = v.strip()
+            # Execute command via engine
+            try:
+                result = ENG.exec_slash(cmd)  # type: ignore
+            except Exception as ee:
+                result = f"ERR: {ee}"
+            # Voice acks
+            try:
+                st2 = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+                ship = (st2 or {}).get('ship', {}) if isinstance(st2, dict) else {}
+                spd = float(ship.get('speed', 0.0))
+            except Exception:
+                spd = 0.0
+            if 'heading' in kv:
+                try:
+                    hdg = float(kv['heading'])
+                    with STATE_LOCK:
+                        NAV_STATE['turn_target'] = float(hdg)
+                        NAV_STATE['turn_hold_since'] = 0.0
+                    voice_emit('nav.set.course.ack', {'hdg': round(hdg), 'spd': round(spd)}, fallback=f'Course set {round(hdg)}°, making {round(spd)} knots.', role='Navigation')
+                except Exception:
+                    pass
+            if 'speed' in kv:
+                try:
+                    spd_new = float(kv['speed'])
+                    # get current heading for context
+                    st3 = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+                    ship3 = (st3 or {}).get('ship', {}) if isinstance(st3, dict) else {}
+                    hdg3 = float(ship3.get('heading', 0.0))
+                    voice_emit('nav.set.speed.ack', {'spd': round(spd_new), 'hdg': round(hdg3)}, fallback=f'Speed now {round(spd_new)} knots; heading {round(hdg3)}°.', role='Navigation')
+                except Exception:
+                    pass
+            payload = {"ok": True, "result": result}
+            record_flight({
+                "route": route, "method": request.method, "status": 200,
+                "duration_ms": int((time.time()-t0)*1000),
+                "request": {"cmd": cmd}, "response": payload,
+            })
+            return jsonify(payload)
+        # NAV Hermes helper commands: /nav hermes close_in | stand_off
+        if s.lower().startswith('/nav hermes'):
+            import math as _m
+            try:
+                st2 = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+                own_cell = ship_cell_from_state(st2)
+                j=0
+                while j < len(own_cell) and own_cell[j].isalpha(): j+=1
+                cletters = own_cell[:j] or 'A'; rstr = own_cell[j:] or '1'
+                ci=0
+                for ch in cletters: ci=ci*26+(ord(ch)-ord('A')+1)
+                ri=int(rstr)
+                convoy = _load_json(DATA_DIR / 'convoy.json', {})
+                escorts = convoy.get('escorts', []) if isinstance(convoy, dict) else []
+                hermes = next((e for e in escorts if str(e.get('name','')).lower().find('hermes')>=0), None)
+                if hermes:
+                    dx_cells, dy_cells = int(hermes.get('offset_cells',[-2,3])[0]), int(hermes.get('offset_cells',[-2,3])[1])
+                    hermes_cell = board_to_cell(int(clamp(ri+dy_cells,1,BOARD_N)), int(clamp(ci+dx_cells,1,BOARD_N)))
+                else:
+                    hermes_cell = 'L17'
+            except Exception:
+                hermes_cell = 'L17'
+            try:
+                hx, hy = cell_to_world(hermes_cell)
+                ox, oy = radar_xy_from_state(st2) if 'st2' in locals() else (0.0,0.0)
+                dx = hx-ox; dy = hy-oy
+                rng = (dx*dx+dy*dy)**0.5
+                brg = int(round((_m.degrees(_m.atan2(dx, -dy)) % 360.0)))
+            except Exception:
+                brg, rng = (0, 0.0)
+            if 'close' in s.lower():
+                rec_hdg = brg
+                try:
+                    voice_emit('nav.hermes.close_in.request', {'ref_brg': brg, 'ref_rng': round(rng,1), 'rec_hdg': rec_hdg}, fallback=f'Recommend closing on Hermes: bearing {brg}°, range {rng:.1f} nm. New course {rec_hdg}°.', role='Navigation')
+                except Exception:
+                    pass
+                payload = {"ok": True, "result": f"NAV: Hermes close-in suggested {brg}°/{rng:.1f} nm"}
+            else:
+                standoff = 3
+                try:
+                    voice_emit('nav.hermes.stand_off.request', {'ref_brg': brg, 'ref_rng': round(rng,1), 'standoff_nm': standoff}, fallback=f'Recommend Hermes stand-off {standoff} nm; current bearing {brg}°, range {rng:.1f} nm.', role='Navigation')
+                except Exception:
+                    pass
+                payload = {"ok": True, "result": f"NAV: Hermes stand-off suggested {brg}°/{rng:.1f} nm"}
+            record_flight({
+                "route": route, "method": request.method, "status": 200,
+                "duration_ms": int((time.time()-t0)*1000),
+                "request": {"cmd": cmd}, "response": payload,
+            })
+            return jsonify(payload)
         # Special-case radar commands handled locally
         if s.lower() == "/radar unlock":
             # Update module-level and RADAR priority for compatibility
@@ -2493,6 +3349,17 @@ def weapons_fire():
                     AUDIO_STATE['last_launch'] = {'weapon': _sound_key_for_weapon(name), 'ts': time.time()}
             except Exception:
                 pass
+            # Chaff effect window
+            try:
+                if _normalize_weapon_name(name) == 'Corvus chaff':
+                    with STATE_LOCK:
+                        DEFENSE_STATE['chaff_until'] = time.time() + 60.0
+                    try:
+                        RADAR.rec.log('defense.chaff', {'active_for_s': 60})
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             payload = {'ok': True, 'result': 'TEST FIRED', 'name': name, 'ammo': ammo[name]}
             record_flight({'route': route, 'method': 'POST', 'status': 200,
                            'duration_ms': int((time.time()-t0)*1000),
@@ -2563,6 +3430,17 @@ def weapons_fire():
         try:
             with STATE_LOCK:
                 AUDIO_STATE['last_launch'] = {'weapon': _sound_key_for_weapon(name), 'ts': time.time()}
+        except Exception:
+            pass
+        # Chaff effect window on real
+        try:
+            if _normalize_weapon_name(name) == 'Corvus chaff':
+                with STATE_LOCK:
+                    DEFENSE_STATE['chaff_until'] = time.time() + 60.0
+                try:
+                    RADAR.rec.log('defense.chaff', {'active_for_s': 60})
+                except Exception:
+                    pass
         except Exception:
             pass
         # Schedule outcome (hit/miss) at arrival time
@@ -2821,6 +3699,38 @@ def _radar_force_spawn(own_x: float, own_y: float) -> Contact:
         pass
     return c
 
+def _spawn_hostile_by_name(own_x: float, own_y: float, *, name: str, range_nm: float, bearing_deg: float) -> Contact:
+    rad = math.radians(float(bearing_deg))
+    dx = math.sin(rad) * float(range_nm)
+    dy = -math.cos(rad) * float(range_nm)
+    x = max(0.0, min(float(WORLD_N), own_x + dx))
+    y = max(0.0, min(float(WORLD_N), own_y + dy))
+    # Speed from contacts catalog if available
+    try:
+        data = _load_json(CONTACTS_PATH, [])
+        items = data.get('items') if isinstance(data, dict) else data
+        speed = next(float(it.get('speed_kts', 300.0)) for it in (items or []) if isinstance(it, dict) and str(it.get('name',''))==name)
+    except Exception:
+        speed = 300.0
+    next_id = getattr(RADAR, "_next_id", len(RADAR.contacts) + 1)
+    try:
+        det = RADAR.catalog.details(name)
+    except Exception:
+        det = {}
+    c = Contact(
+        id=int(next_id), name=str(name), allegiance="Hostile",
+        x=float(x), y=float(y), course_deg=(float(bearing_deg) + 180.0) % 360.0, speed_kts=float(speed),
+        threat="high",
+        meta={"spawn": {"bearing_deg": round(float(bearing_deg),1), "range_nm": round(float(range_nm),2), "forced": True},
+              "cap": det}
+    )
+    try:
+        RADAR._next_id = int(next_id) + 1  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    RADAR.contacts.append(c)
+    return c
+
 @app.get("/debug/cellmap")
 def debug_cellmap():
     try:
@@ -2862,8 +3772,11 @@ def radar_force_spawn():
             ui['cell'] = world_to_cell(c.x, c.y)
         except Exception:
             pass
-        # Officer radio (Radar)
-        officer_say('Radar','contact',{'type': ui.get('type'), 'bearing': round((315.0)%360), 'range_nm': ui.get('range_nm'), 'speed': ui.get('speed')})
+        # Officer radio (Radar) — best effort if function is available
+        try:
+            officer_say('Radar','contact',{'type': ui.get('type'), 'bearing': round((315.0)%360), 'range_nm': ui.get('range_nm'), 'speed': ui.get('speed')})
+        except Exception:
+            pass
         payload = {"ok": True, "added": ui, "count": len(RADAR.contacts)}
         record_flight({
             "route": route, "method": "GET", "status": 200,
@@ -2893,7 +3806,10 @@ def radar_force_spawn_hostile():
             ui['cell'] = world_to_cell(c.x, c.y)
         except Exception:
             pass
-        officer_say('Radar','contact',{'type': ui.get('type'), 'bearing': round((315.0)%360), 'range_nm': ui.get('range_nm'), 'speed': ui.get('speed')})
+        try:
+            officer_say('Radar','contact',{'type': ui.get('type'), 'bearing': round((315.0)%360), 'range_nm': ui.get('range_nm'), 'speed': ui.get('speed')})
+        except Exception:
+            pass
         payload = {"ok": True, "added": ui, "count": len(RADAR.contacts)}
         record_flight({"route": route, "method": "GET", "status": 200,
                        "duration_ms": int((time.time()-t0)*1000),
@@ -3007,7 +3923,10 @@ def radar_force_spawn_near():
                             "target_world_xy": [round(x,2), round(y,2)], "ship_world_xy": [round(own_x,2), round(own_y,2)]})
         except Exception:
             pass
-        officer_say('Radar','contact',{'type': klass, 'bearing': round((bearing_deg)%360), 'range_nm': ui.get('range_nm'), 'speed': ui.get('speed')})
+        try:
+            officer_say('Radar','contact',{'type': klass, 'bearing': round((bearing_deg)%360), 'range_nm': ui.get('range_nm'), 'speed': ui.get('speed')})
+        except Exception:
+            pass
         payload = {"ok": True, "added": ui, "count": len(RADAR.contacts)}
         record_flight({"route": route, "method": "GET", "status": 200,
                        "duration_ms": int((time.time()-t0)*1000),
@@ -3015,6 +3934,50 @@ def radar_force_spawn_near():
         return jsonify(payload)
     except Exception as e:
         logging.exception("/radar/force_spawn_near error: %s", e)
+        payload = {"ok": False, "error": str(e)}
+        record_flight({"route": route, "method": "GET", "status": 500,
+                       "duration_ms": int((time.time()-t0)*1000),
+                       "request": {}, "response": payload})
+        return jsonify(payload), 500
+
+@app.get("/radar/spawn_by_name")
+def radar_spawn_by_name():
+    """Debug: Spawn a specific hostile by exact name with catalog capabilities.
+    Query params: name (required), range (nm, default 18), bearing (deg, default 315)
+    """
+    t0 = time.time(); route = "/radar/spawn_by_name"
+    try:
+        from flask import request
+        name = (request.args.get('name') or '').strip()
+        if not name:
+            payload = {"ok": False, "error": "missing name"}
+            record_flight({"route": route, "method": "GET", "status": 400,
+                           "duration_ms": int((time.time()-t0)*1000),
+                           "request": {}, "response": payload})
+            return jsonify(payload), 400
+        try:
+            rng = float(request.args.get('range') or 18.0)
+        except Exception:
+            rng = 18.0
+        try:
+            bearing_deg = float(request.args.get('bearing') or 315.0)
+        except Exception:
+            bearing_deg = 315.0
+        st = ENG.public_state() if hasattr(ENG, "public_state") else {}
+        own_x, own_y = radar_xy_from_state(st)
+        c = _spawn_hostile_by_name(own_x, own_y, name=name, range_nm=rng, bearing_deg=bearing_deg)
+        ui = contact_to_ui(c, (own_x, own_y))
+        try:
+            ui['cell'] = world_to_cell(c.x, c.y)
+        except Exception:
+            pass
+        payload = {"ok": True, "added": ui, "count": len(RADAR.contacts)}
+        record_flight({"route": route, "method": "GET", "status": 200,
+                       "duration_ms": int((time.time()-t0)*1000),
+                       "request": {"name": name, "range": rng, "bearing": bearing_deg}, "response": payload})
+        return jsonify(payload)
+    except Exception as e:
+        logging.exception("/radar/spawn_by_name error: %s", e)
         payload = {"ok": False, "error": str(e)}
         record_flight({"route": route, "method": "GET", "status": 500,
                        "duration_ms": int((time.time()-t0)*1000),
@@ -3039,6 +4002,294 @@ def radar_reload_catalog():
                        "duration_ms": int((time.time()-t0)*1000),
                        "request": {}, "response": payload})
         return jsonify(payload), 500
+
+@app.get("/skirmish")
+def skirmish_page():
+    try:
+        return render_template('skirmish.html')
+    except Exception as e:
+        logging.exception("/skirmish page error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.get("/menu")
+def menu_page():
+    try:
+        return render_template('menu.html')
+    except Exception as e:
+        logging.exception("/menu page error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.get('/roadmap')
+def roadmap_page():
+    try:
+        return render_template('roadmap.html')
+    except Exception as e:
+        logging.exception("/roadmap page error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.get('/roadmap/list')
+def roadmap_list():
+    try:
+        _init_roadmap_if_missing()
+        db = _load_roadmap()
+        items = db.get('items') or []
+        items = sorted(items, key=lambda it: it.get('order', 0))
+        return jsonify({"ok": True, "items": items, "updated": db.get('updated')})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.post('/roadmap/set_status')
+def roadmap_set_status():
+    from flask import request
+    try:
+        data = request.get_json(silent=True) or {}
+        iid = int(data.get('id'))
+        status = str(data.get('status')).strip().lower()
+        if status not in ('pending','in_progress','done'):
+            return jsonify({"ok": False, "error": "bad status"}), 400
+    except Exception:
+        return jsonify({"ok": False, "error": "bad params"}), 400
+    _init_roadmap_if_missing()
+    db = _load_roadmap(); items = list(db.get('items') or [])
+    changed = False
+    # enforce single in_progress
+    if status == 'in_progress':
+        for it in items:
+            if it.get('status') == 'in_progress' and int(it.get('id',0)) != iid:
+                it['status'] = 'pending'; changed = True
+    for it in items:
+        if int(it.get('id',0)) == iid:
+            it['status'] = status; changed = True
+            break
+    if changed:
+        db['items'] = items; db['updated'] = _skirmish_now_iso(); _save_roadmap(db)
+    return jsonify({"ok": True, "items": items})
+
+@app.get('/contacts/catalog')
+def contacts_catalog():
+    """Return contacts catalog (filterable by ?hostile=1 or ?friendly=1)."""
+    try:
+        data = _load_json(CONTACTS_PATH, [])
+        items = data.get('items') if isinstance(data, dict) else data
+        arr = []
+        for it in (items or []):
+            if not isinstance(it, dict):
+                continue
+            name = str(it.get('name',''))
+            if not name:
+                continue
+            arr.append({'name': name, 'type': it.get('type') or it.get('class') or '', 'allegiance': it.get('allegiance') or ''})
+        from flask import request
+        if request.args.get('hostile'):
+            arr = [x for x in arr if str(x.get('allegiance','')).title() == 'Hostile']
+        if request.args.get('friendly'):
+            arr = [x for x in arr if str(x.get('allegiance','')).title() == 'Friendly']
+        return jsonify({"ok": True, "items": arr})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+def _skirmish_apply_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply skirmish config: own heading/speed, arming, spawn hostiles."""
+    applied: Dict[str, Any] = {"spawned": []}
+    # Nav
+    try:
+        own = cfg.get('own', {}) if isinstance(cfg, dict) else {}
+        hdg = own.get('heading_deg'); spd = own.get('speed_kts')
+        kv = []
+        if isinstance(hdg, (int, float)): kv.append(f"heading={float(hdg)}")
+        if isinstance(spd, (int, float)): kv.append(f"speed={float(spd)}")
+        if kv:
+            try:
+                ENG.exec_slash("/nav set " + " ".join(kv))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # Arming
+    try:
+        arm = cfg.get('arm', {}) if isinstance(cfg, dict) else {}
+        if isinstance(arm, dict):
+            current = load_arming()
+            for k, v in arm.items():
+                nm = _normalize_weapon_name(str(k))
+                current[nm] = _coerce_arming(v)
+            save_arming(current)
+    except Exception:
+        pass
+    # Spawns
+    try:
+        st = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+        own_x, own_y = radar_xy_from_state(st)
+        for h in (cfg.get('hostiles') or []):
+            try:
+                name = str(h.get('name','Hostile'))
+                # Support either (cell) or (range+bearing)
+                if h.get('cell'):
+                    cell = str(h.get('cell'))
+                    tx, ty = cell_to_world(cell)
+                    dx = float(tx) - float(own_x)
+                    dy = float(ty) - float(own_y)
+                    rng = (dx*dx + dy*dy) ** 0.5
+                    import math as _m
+                    bearing = (_m.degrees(_m.atan2(dx, -dy)) % 360.0)
+                else:
+                    rng = float(h.get('range_nm', 10.0))
+                    bearing = float(h.get('bearing_deg', 315.0))
+                c = _spawn_hostile_by_name(own_x, own_y, name=name, range_nm=rng, bearing_deg=float(bearing))
+                ui = contact_to_ui(c, (own_x, own_y))
+                try:
+                    ui['cell'] = world_to_cell(c.x, c.y)
+                except Exception:
+                    pass
+                applied['spawned'].append(ui)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return applied
+
+def _skirmish_summarize(start_epoch: float, stop_epoch: float) -> Dict[str, Any]:
+    out = {"missiles": {"spawned": 0, "resolved": 0, "hits": 0, "misses": 0, "sea_dart": 0, "guns": 0}}
+    try:
+        if not FLIGHT_PATH.exists():
+            return out
+        with FLIGHT_PATH.open('r', encoding='utf-8') as f:
+            for ln in f:
+                try:
+                    rec = json.loads(ln)
+                except Exception:
+                    continue
+                ts = rec.get('ts')
+                try:
+                    t = datetime.fromisoformat(ts.replace('Z','+00:00')).timestamp() if isinstance(ts, str) else 0.0
+                except Exception:
+                    t = 0.0
+                if not (start_epoch <= t <= stop_epoch):
+                    continue
+                route = rec.get('route','')
+                if route == '/radar/missile.spawn':
+                    out['missiles']['spawned'] += 1
+                elif route == '/engagement.result':
+                    resp = rec.get('response') or {}
+                    w = str(resp.get('weapon',''))
+                    if 'exocet' in w:
+                        out['missiles']['resolved'] += 1
+                        if str(resp.get('result')) == 'hit':
+                            out['missiles']['hits'] += 1
+                        else:
+                            out['missiles']['misses'] += 1
+                        d = resp.get('defense') or {}
+                        if isinstance(d, dict):
+                            if d.get('sea_dart') == 'intercept': out['missiles']['sea_dart'] += 1
+                            if d.get('guns') == 'intercept': out['missiles']['guns'] += 1
+    except Exception:
+        pass
+    return out
+
+@app.get('/skirmish/list')
+def skirmish_list():
+    try:
+        db = _load_skirmishes()
+        items = db.get('items') or {}
+        lst = []
+        for k, v in items.items():
+            try:
+                it = dict(v)
+                it['id'] = int(k)
+                lst.append(it)
+            except Exception:
+                continue
+        lst.sort(key=lambda x: x.get('id', 0))
+        return jsonify({"ok": True, "items": lst, "active": SKIRMISH_ACTIVE.get('id')})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.get('/skirmish/get')
+def skirmish_get():
+    try:
+        from flask import request
+        sid = int(request.args.get('id', '0'))
+    except Exception:
+        return jsonify({"ok": False, "error": "missing id"}), 400
+    db = _load_skirmishes(); items = db.get('items') or {}
+    it = items.get(str(sid))
+    if not it:
+        return jsonify({"ok": False, "error": "not found"}), 404
+    obj = dict(it); obj['id'] = sid
+    return jsonify({"ok": True, "item": obj, "active": SKIRMISH_ACTIVE.get('id')})
+
+@app.post('/skirmish/create')
+def skirmish_create():
+    from flask import request
+    try:
+        data = request.get_json(silent=True) or {}
+    except Exception:
+        data = {}
+    db = _load_skirmishes(); items = db.get('items') or {}
+    sid = _skirmish_next_id(db)
+    name = str(data.get('name') or f'Skirmish {sid}')
+    notes = str(data.get('notes') or '')
+    cfg = data.get('config') or {
+        'own': {'heading_deg': 120.0, 'speed_kts': 32.0},
+        'arm': {'Sea Dart SAM': 'Armed', '20mm GAM-BO1 (twin)': 'Armed', '20mm Oerlikon': 'Armed'},
+        'hostiles': [{'name': 'Super Étendard', 'range_nm': 12.0, 'bearing_deg': 315.0}],
+    }
+    rec = {'name': name, 'notes': notes, 'created_ts': _skirmish_now_iso(), 'config': cfg, 'status': 'ready', 'outcomes': [], 'run': None}
+    items[str(sid)] = rec
+    db['items'] = items
+    _save_skirmishes(db)
+    return jsonify({"ok": True, "id": sid, "item": {**rec, 'id': sid}})
+
+@app.post('/skirmish/start')
+def skirmish_start():
+    from flask import request
+    try:
+        sid = int((request.get_json(silent=True) or {}).get('id', 0) or (request.args.get('id') or 0))
+    except Exception:
+        return jsonify({"ok": False, "error": "missing id"}), 400
+    if not sid:
+        return jsonify({"ok": False, "error": "missing id"}), 400
+    with STATE_LOCK:
+        if SKIRMISH_ACTIVE.get('id') not in (None, 0):
+            return jsonify({"ok": False, "error": "skirmish already running", "active": SKIRMISH_ACTIVE.get('id')}), 409
+    db = _load_skirmishes(); items = db.get('items') or {}
+    it = items.get(str(sid))
+    if not it:
+        return jsonify({"ok": False, "error": "not found"}), 404
+    cfg = it.get('config') or {}
+    applied = _skirmish_apply_config(cfg if isinstance(cfg, dict) else {})
+    now_ep = time.time(); now_iso = _skirmish_now_iso()
+    it['status'] = 'running'; it['run'] = {'started_ts': now_iso, 'started_epoch': now_ep}
+    items[str(sid)] = it; db['items'] = items; _save_skirmishes(db)
+    with STATE_LOCK:
+        SKIRMISH_ACTIVE['id'] = sid; SKIRMISH_ACTIVE['started_ts'] = now_iso
+    record_flight({"route": "/skirmish.start", "method": "INT", "status": 200, "duration_ms": 0, "request": {"id": sid}, "response": {"ok": True}})
+    return jsonify({"ok": True, "id": sid, "applied": applied})
+
+@app.post('/skirmish/stop')
+def skirmish_stop():
+    from flask import request
+    try:
+        sid = int((request.get_json(silent=True) or {}).get('id', 0) or (request.args.get('id') or 0))
+    except Exception:
+        sid = None
+    db = _load_skirmishes(); items = db.get('items') or {}
+    if not sid:
+        sid = (SKIRMISH_ACTIVE.get('id') or 0)
+    it = items.get(str(sid))
+    if not it:
+        return jsonify({"ok": False, "error": "not found or not running"}), 404
+    run = it.get('run') or {}
+    start_ep = float(run.get('started_epoch', 0.0))
+    stop_ep = time.time(); stop_iso = _skirmish_now_iso()
+    summary = _skirmish_summarize(start_ep, stop_ep)
+    it['status'] = 'stopped'; it['run'] = {**run, 'stopped_ts': stop_iso, 'stopped_epoch': stop_ep}
+    it.setdefault('outcomes', []).append({'started_ts': run.get('started_ts'), 'stopped_ts': stop_iso, 'summary': summary})
+    items[str(sid)] = it; db['items'] = items; _save_skirmishes(db)
+    with STATE_LOCK:
+        SKIRMISH_ACTIVE['id'] = None; SKIRMISH_ACTIVE['started_ts'] = None
+    record_flight({"route": "/skirmish.stop", "method": "INT", "status": 200, "duration_ms": 0, "request": {"id": sid}, "response": {"ok": True, "summary": summary}})
+    return jsonify({"ok": True, "id": sid, "summary": summary})
 
 @app.get("/flight/tail")
 def flight_tail():

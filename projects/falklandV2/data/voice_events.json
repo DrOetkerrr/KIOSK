@@ -1,0 +1,17 @@
+[
+  {"event":"pilot.intercept.launch","role":"Pilot","intent":"Acknowledge Hermes for intercept","hint":"Hermes, intercept bogey, vector to {cell}."},
+  {"event":"pilot.fox2","role":"Pilot","intent":"Missile fired","hint":"Fox Two!"},
+  {"event":"pilot.splash","role":"Pilot","intent":"Kill confirm","hint":"Splash one bandit."},
+  {"event":"radar.scan.start","role":"Radar","intent":"Acknowledge scanning","hint":"Captain, scanning radar."},
+  {"event":"radar.scan.complete","role":"Radar","intent":"Scan complete","hint":"Captain, radar scan complete: {contacts} contact(s); hostiles {hostiles}; friendlies {friendlies}."},
+  {"event":"hostile.attack.warn","role":"Fire Control","intent":"Inbound threat warning","hint":"Incoming {weapon} at {range_nm} nm."},
+  {"event":"engineering.damage","role":"Engineering","intent":"Damage acknowledged","hint":"Captain, hit on {system}. Damage control responding."},
+  {"event":"nav.status.report","role":"Navigation","intent":"Status report","hint":"Ship {cell}. Course {hdg}°, speed {spd} knots; moving to {next_cell}."},
+  {"event":"nav.grid.enter","role":"Navigation","intent":"Grid entry","hint":"Captain, entering grid {cell}."},
+  {"event":"nav.patrol.boundary.warn","role":"Navigation","intent":"Boundary warning","hint":"Warning: leaving patrol area to the {edge_cardinal}. Recommend course {rec_hdg}°."},
+  {"event":"nav.set.course.ack","role":"Navigation","intent":"Course change acknowledged","hint":"Course set {hdg}°, making {spd} knots."},
+  {"event":"nav.turn.complete","role":"Navigation","intent":"Turn complete","hint":"Steady on course {hdg}°."},
+  {"event":"nav.set.speed.ack","role":"Navigation","intent":"Speed change acknowledged","hint":"Speed now {spd} knots; heading {hdg}°."},
+  {"event":"nav.hermes.close_in.request","role":"Navigation","intent":"Close on Hermes","hint":"Recommend closing on Hermes: bearing {ref_brg}°, range {ref_rng} nm. New course {rec_hdg}°."},
+  {"event":"nav.hermes.stand_off.request","role":"Navigation","intent":"Hermes stand-off","hint":"Recommend Hermes stand-off {standoff_nm} nm; current bearing {ref_brg}°, range {ref_rng} nm."}
+]

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Skirmish Review</title>
+    <style>
+      body{font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:#0c152b; color:#e7ecff; margin:0;}
+      .wrap{max-width:1000px;margin:20px auto;padding:0 16px}
+      h1{font-size:20px;margin:0 0 12px 0}
+      .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+      .card{background:#0f1b39;border:1px solid #23325a;border-radius:10px;padding:12px;margin-bottom:12px}
+      .mono{font-family: ui-monospace, Menlo, Consolas, monospace}
+      table{width:100%;border-collapse:collapse}
+      th,td{padding:6px;border-bottom:1px solid #23325a;text-align:left}
+      th.num,td.num{text-align:right}
+      .muted{color:#9fb2ff90}
+      .btn{background:#1f2b4d;color:#e7ecff;border:1px solid #32406b;border-radius:8px;padding:6px 10px;cursor:pointer}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Skirmish Review</h1>
+      <div class="card">
+        <div class="row">
+          <input id="sid" class="mono" placeholder="Skirmish #" style="width:100px;padding:6px;border-radius:8px;border:1px solid #23325a;background:#0c152b;color:#e7ecff"/>
+          <button id="load" class="btn">Load</button>
+          <a href="/" class="btn">Back</a>
+        </div>
+      </div>
+
+      <div class="card" id="list-card">
+        <h3>All Skirmishes</h3>
+        <div id="list"></div>
+      </div>
+
+      <div class="card" id="detail-card" hidden>
+        <h3 id="title">—</h3>
+        <div class="mono muted" id="meta">—</div>
+        <h4>Outcomes</h4>
+        <table>
+          <thead><tr><th>Start</th><th>Stop</th><th class="num">Exocets</th><th class="num">Hits</th><th class="num">Misses</th><th class="num">Sea Dart</th><th class="num">Guns</th></tr></thead>
+          <tbody id="out"></tbody>
+        </table>
+      </div>
+    </div>
+    <script>
+      async function getJSON(url){ const r=await fetch(url); return r.json(); }
+      function el(tag, txt){ const e=document.createElement(tag); if(txt!=null) e.textContent=String(txt); return e; }
+      async function loadList(){ const j=await getJSON('/skirmish/list'); const box=document.getElementById('list'); box.innerHTML='';
+        const ul=document.createElement('ul');
+        (j.items||[]).forEach(it=>{ const li=document.createElement('li'); const a=document.createElement('a'); a.href='#'; a.textContent=`#${it.id} ${it.name} [${it.status}]`; a.onclick=(e)=>{e.preventDefault(); document.getElementById('sid').value=String(it.id); loadOne();}; li.appendChild(a); ul.appendChild(li);});
+        box.appendChild(ul);
+      }
+      async function loadOne(){ const sid=Number((document.getElementById('sid').value||'').trim()); if(!sid) return; const j=await getJSON(`/skirmish/get?id=${encodeURIComponent(sid)}`);
+        const it=j.item; if(!it){return;}
+        document.getElementById('detail-card').hidden=false;
+        document.getElementById('title').textContent = `#${it.id} ${it.name}`;
+        document.getElementById('meta').textContent = `created ${it.created_ts} | status ${it.status}`;
+        const out=document.getElementById('out'); out.innerHTML='';
+        (it.outcomes||[]).forEach(o=>{
+          const tr=document.createElement('tr');
+          const m=o.summary?.missiles||{};
+          tr.append(el('td', o.started_ts||'—'));
+          tr.append(el('td', o.stopped_ts||'—'));
+          tr.append(Object.assign(el('td', String(m.resolved||0)+'/'+String(m.spawned||0)),{className:'num'}));
+          tr.append(Object.assign(el('td', m.hits||0),{className:'num'}));
+          tr.append(Object.assign(el('td', m.misses||0),{className:'num'}));
+          tr.append(Object.assign(el('td', m.sea_dart||0),{className:'num'}));
+          tr.append(Object.assign(el('td', m.guns||0),{className:'num'}));
+          out.appendChild(tr);
+        });
+      }
+      document.getElementById('load').onclick = loadOne;
+      loadList();
+    </script>
+  </body>
+  </html>

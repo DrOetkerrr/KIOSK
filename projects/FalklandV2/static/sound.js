@@ -168,7 +168,12 @@
         if (!lastRadio || lastRadio.ts !== ts3) {
           lastRadio = { ts: ts3 };
           if (unlocked) {
+            // Always use radio beeps around the transmission for immersion
             playOne('radio_on.wav');
+            if (rs.file) {
+              // Play synthesized voice via radio filter for realism
+              playRadio(rs.file, {vol: 0.8, fadeOutMs: 250});
+            }
             setTimeout(()=> playOne('radio_off.wav'), durMs);
           }
         }

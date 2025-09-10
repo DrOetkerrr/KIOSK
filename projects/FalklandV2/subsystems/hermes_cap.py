@@ -146,7 +146,11 @@ class HermesCAP:
         self.ready_pairs -= 1
         self.airframe_pool_total -= 2
         self.last_scramble = t
-        m.status = "airborne"
+        # Respect a minimum launch deck cycle of 12 seconds; keep queued until tick promotes to 'airborne'
+        try:
+            m.deck_cycle_s = max(int(m.deck_cycle_s), 12)
+        except Exception:
+            m.deck_cycle_s = 12
         return {"ok": True, "message": f"Hermes: CAP pair launching to {target_cell}", "mission": m.to_dict()}
 
     def tick(self, now: Optional[float] = None) -> None:

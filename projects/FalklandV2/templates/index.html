@@ -89,6 +89,8 @@
       </div>
     </section>
 
+    <!-- New Skirmish moved to /menu to keep dashboard focused -->
+
     <!-- Two boxes: Left (own fleet) & Right (primary) -->
     <div class="grid cols-2">
       <section id="CARD-OWNFLEET" class="card" aria-label="Own Fleet">
@@ -147,7 +149,7 @@
         <div id="cap-mini" class="row"></div>
         <div class="scroll">
           <table>
-            <thead><tr><th>#</th><th>Target cell</th><th class="num">Range</th><th class="num">TOT (s)</th><th class="num">TOS (s)</th><th>Status</th></tr></thead>
+            <thead><tr><th>#</th><th>Cell</th><th>Target cell</th><th class="num">Range</th><th class="num">TOT (s)</th><th class="num">TOS (s)</th><th>Status</th></tr></thead>
             <tbody id="cap-body"></tbody>
           </table>
         </div>
@@ -193,6 +195,14 @@
         <button id="btn-cap-request" class="btn">Request CAP</button>
         <button id="btn-spawn-air" class="btn">Spawn Near Aircraft</button>
         <button id="btn-spawn-ship" class="btn">Spawn Near Ship</button>
+        <a href="/menu" class="btn">Menu</a>
+        <button id="nav-hermes-in" class="btn">Hermes: Close In</button>
+        <button id="nav-hermes-off" class="btn">Hermes: Stand Off</button>
+        <input id="skirmish-id" class="mono" placeholder="Skirmish #" style="width:90px;padding:6px;border-radius:8px;border:1px solid var(--border);background:#0c152b;color:var(--text);margin-left:8px"/>
+        <button id="skirmish-start" class="btn">Skirmish Go</button>
+        <button id="skirmish-stop" class="btn warn">Stop</button>
+        <button id="skirmish-review" class="btn">Review</button>
+        <button id="skirmish-quick" class="btn">Quick Skirmish</button>
         <input id="cap-cell" class="mono" placeholder="Cell e.g., K13" style="width:90px;padding:6px;border-radius:8px;border:1px solid var(--border);background:#0c152b;color:var(--text)"/>
         <label class="mono" style="margin-left:8px">Minutes <span id="cap-minutes-val">10</span></label>
         <input id="cap-minutes" type="range" min="5" max="30" step="1" value="10" style="vertical-align:middle;width:120px">
@@ -406,6 +416,51 @@
       }catch(e){ appendConsole(`[fire:${mode}] ${name} ERR ${e}`); }
     }
 
+    // ---- Skirmish helpers ----
+    async function skirmishStart(){
+      const id = Number(($('#skirmish-id').value||'').trim());
+      if(!id){ appendConsole('[skirmish] ERR missing id'); return; }
+      try{ const r=await fetch('/skirmish/start',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})}); const j=await r.json(); appendConsole(`[skirmish] start ${j.ok?'OK':'ERR'} id=${id}`);}catch(e){ appendConsole(`[skirmish] start ERR ${e}`); }
+    }
+    async function skirmishStop(){
+      const idStr = ($('#skirmish-id').value||'').trim();
+      const id = idStr? Number(idStr) : undefined;
+      try{ const r=await fetch(id?`/skirmish/stop?id=${encodeURIComponent(id)}`:'/skirmish/stop',{method:'POST'}); const j=await r.json(); appendConsole(`[skirmish] stop ${j.ok?'OK':'ERR'} ${(j.summary&&JSON.stringify(j.summary))||''}`);}catch(e){ appendConsole(`[skirmish] stop ERR ${e}`); }
+    }
+    async function skirmishReview(){ window.location.href = '/skirmish'; }
+    async function skirmishQuick(){
+      try{ const r=await fetch('/skirmish/create',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})}); const j=await r.json(); if(j.ok){ $('#skirmish-id').value=String(j.id); appendConsole(`[skirmish] created id=${j.id}`);} else { appendConsole(`[skirmish] create ERR`);} }catch(e){ appendConsole(`[skirmish] create ERR ${e}`); }
+    }
+
+    // NAV Hermes helpers
+    async function navHermesClose(){ try{ const j=await doGET('/nav/hermes/close_in'); appendConsole(`[nav] hermes close_in ${j.ok?'OK':'ERR'}`);}catch(e){ appendConsole(`[nav] hermes close_in ERR ${e}`);} }
+    async function navHermesStand(){ try{ const j=await doGET('/nav/hermes/stand_off'); appendConsole(`[nav] hermes stand_off ${j.ok?'OK':'ERR'}`);}catch(e){ appendConsole(`[nav] hermes stand_off ERR ${e}`);} }
+
+    // Populate hostile targets for new skirmish
+    async function loadHostiles(){
+      try{ const j = await getJSON('/contacts/catalog?hostile=1'); const items = j.items||[];
+        const ids=['nsk-tgt1-name','nsk-tgt2-name','nsk-tgt3-name'];
+        ids.forEach(id=>{ const sel=$('#'+id); if(!sel) return; sel.innerHTML=''; const opt=document.createElement('option'); opt.value=''; opt.textContent='(none)'; sel.appendChild(opt);
+          items.forEach(it=>{ const o=document.createElement('option'); o.value=it.name; o.textContent=it.name; sel.appendChild(o); }); });
+      }catch(e){ appendConsole(`[catalog] ERR ${e}`); }
+    }
+
+    async function createSkirmishFromForm(){
+      const name = ($('#nsk-name').value||'').trim();
+      const notes = ($('#nsk-notes').value||'').trim();
+      const picks = [];
+      for(const i of [1,2,3]){
+        const n = ($('#nsk-tgt'+i+'-name')?.value||'').trim();
+        const c = ($('#nsk-tgt'+i+'-cell')?.value||'').trim().toUpperCase();
+        if(n && c) picks.push({name:n, cell:c});
+      }
+      if(picks.length===0){ appendConsole('[skirmish] ERR add at least one target'); return; }
+      const body = { name, notes, config: { hostiles: picks } };
+      try{ const r=await fetch('/skirmish/create',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+        const j=await r.json(); if(j.ok){ $('#skirmish-id').value=String(j.id); appendConsole(`[skirmish] created id=${j.id}`);} else { appendConsole(`[skirmish] create ERR`); }
+      }catch(e){ appendConsole(`[skirmish] create ERR ${e}`); }
+    }
+
     async function capIntercept(){
       try{
         const j = await doPOST('/cap/request');
@@ -485,6 +540,14 @@
     }
     $('#btn-spawn-air').onclick = ()=> spawnNear('Aircraft');
     $('#btn-spawn-ship').onclick = ()=> spawnNear('Ship');
+    $('#skirmish-start').onclick = skirmishStart;
+    $('#skirmish-stop').onclick = skirmishStop;
+    $('#skirmish-review').onclick = skirmishReview;
+    $('#skirmish-quick').onclick = skirmishQuick;
+    $('#nav-hermes-in').onclick = navHermesClose;
+    $('#nav-hermes-off').onclick = navHermesStand;
+    $('#nsk-create').onclick = createSkirmishFromForm;
+    loadHostiles();
     $('#own-apply').onclick = async ()=>{
       const sp = Number(($('#own-speed').value||'').trim());
       const cr = Number(($('#own-course').value||'').trim());

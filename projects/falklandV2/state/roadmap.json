@@ -1,0 +1,61 @@
+{
+  "items": [
+    {
+      "id": 1,
+      "title": "Radio Framework V2 for all stations",
+      "desc": "Extend events→role→intent→hint across Nav, Radar, Fire Control, Weapons, Engineering.",
+      "status": "in_progress",
+      "order": 1
+    },
+    {
+      "id": 2,
+      "title": "Damage model + Repair Teams + Win Conditions",
+      "desc": "Lives, hit effects, repair teams, win/loss.",
+      "status": "pending",
+      "order": 2
+    },
+    {
+      "id": 3,
+      "title": "Skirmish/Mission Editor foundation",
+      "desc": "Evolve skirmish into mission editor light.",
+      "status": "pending",
+      "order": 3
+    },
+    {
+      "id": 4,
+      "title": "Radio content refinement",
+      "desc": "More human, context-rich lines.",
+      "status": "pending",
+      "order": 4
+    },
+    {
+      "id": 5,
+      "title": "Voice commands MVP",
+      "desc": "Speak key commands, reduce buttons.",
+      "status": "pending",
+      "order": 5
+    },
+    {
+      "id": 6,
+      "title": "Atmosphere & polish",
+      "desc": "Small touches that add immersion.",
+      "status": "pending",
+      "order": 6
+    },
+    {
+      "id": 7,
+      "title": "Coordinated enemy attacks",
+      "desc": "Pre-planned waves via mission editor light.",
+      "status": "pending",
+      "order": 7
+    },
+    {
+      "id": 8,
+      "title": "Raspberry Pi Kiosk",
+      "desc": "Package for standalone device.",
+      "status": "pending",
+      "order": 8
+    }
+  ],
+  "updated": "2025-09-10T17:55:01.821745+00:00"
+}

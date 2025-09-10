@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Menu</title>
+    <style>
+      body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0c152b;color:#e7ecff;margin:0}
+      .wrap{max-width:960px;margin:24px auto;padding:0 16px}
+      .card{background:#0f1b39;border:1px solid #23325a;border-radius:10px;padding:12px;margin-bottom:12px}
+      .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+      .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+      .btn{background:#1f2b4d;color:#e7ecff;border:1px solid #32406b;border-radius:8px;padding:6px 10px;cursor:pointer;text-decoration:none}
+      label{color:#9fb2ff90}
+      textarea,input,select{border:1px solid #23325a;border-radius:8px;background:#0c152b;color:#e7ecff}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="row" style="margin-bottom:8px">
+        <a class="btn" href="/">Back to Dashboard</a>
+        <a class="btn" href="/skirmish">Skirmish Review</a>
+      </div>
+
+      <div class="card" aria-label="New Skirmish">
+        <h3>New Skirmish</h3>
+        <div class="row" style="margin-bottom:8px">
+          <input id="nsk-name" class="mono" placeholder="Title" style="flex:1;min-width:220px;padding:6px"/>
+        </div>
+        <div class="row" style="margin-bottom:8px">
+          <textarea id="nsk-notes" class="mono" placeholder="Skirmish description" rows="3" style="flex:1;min-width:220px;padding:6px"></textarea>
+        </div>
+        <div class="row" style="margin-bottom:6px">
+          <label class="mono" style="width:110px">Target 1</label>
+          <select id="nsk-tgt1-name" class="mono" style="min-width:200px;padding:6px"></select>
+          <input id="nsk-tgt1-cell" class="mono" placeholder="Cell e.g., K13" style="width:100px;padding:6px"/>
+        </div>
+        <div class="row" style="margin-bottom:6px">
+          <label class="mono" style="width:110px">Target 2</label>
+          <select id="nsk-tgt2-name" class="mono" style="min-width:200px;padding:6px"></select>
+          <input id="nsk-tgt2-cell" class="mono" placeholder="Cell e.g., L17" style="width:100px;padding:6px"/>
+        </div>
+        <div class="row" style="margin-bottom:10px">
+          <label class="mono" style="width:110px">Target 3</label>
+          <select id="nsk-tgt3-name" class="mono" style="min-width:200px;padding:6px"></select>
+          <input id="nsk-tgt3-cell" class="mono" placeholder="Cell e.g., M20" style="width:100px;padding:6px"/>
+        </div>
+        <div class="row">
+          <button id="nsk-create" class="btn">Create Skirmish</button>
+          <span id="nsk-msg" class="mono" style="margin-left:8px;color:#9fb2ff90"></span>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      async function getJSON(url){ const r=await fetch(url); return r.json(); }
+      function $(sel){ return document.querySelector(sel); }
+
+      async function loadHostiles(){
+        try{
+          const j = await getJSON('/contacts/catalog?hostile=1');
+          const items = j.items||[];
+          ['#nsk-tgt1-name','#nsk-tgt2-name','#nsk-tgt3-name'].forEach(id=>{
+            const sel=$(id); if(!sel) return; sel.innerHTML='';
+            const none=document.createElement('option'); none.value=''; none.textContent='(none)'; sel.appendChild(none);
+            items.forEach(it=>{ const o=document.createElement('option'); o.value=it.name; o.textContent=it.name; sel.appendChild(o); });
+          });
+        }catch(e){ console.warn('catalog',e); }
+      }
+
+      async function createSkirmish(){
+        const name = ($('#nsk-name').value||'').trim();
+        const notes = ($('#nsk-notes').value||'').trim();
+        const picks=[];
+        for(const i of [1,2,3]){
+          const n = ($('#nsk-tgt'+i+'-name')?.value||'').trim();
+          const c = ($('#nsk-tgt'+i+'-cell')?.value||'').trim().toUpperCase();
+          if(n && c) picks.push({name:n, cell:c});
+        }
+        if(picks.length===0){ $('#nsk-msg').textContent='Please add at least one target.'; return; }
+        const body = { name, notes, config: { hostiles: picks } };
+        try{
+          const r = await fetch('/skirmish/create',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+          const j = await r.json();
+          if(j.ok){ $('#nsk-msg').textContent = `Created #${j.id}`; }
+          else { $('#nsk-msg').textContent = 'Create failed'; }
+        }catch(e){ $('#nsk-msg').textContent = 'Create failed'; }
+      }
+
+      document.getElementById('nsk-create').onclick = createSkirmish;
+      loadHostiles();
+    </script>
+  </body>
+  </html>

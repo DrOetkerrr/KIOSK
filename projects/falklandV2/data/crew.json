@@ -7,7 +7,7 @@
     "Navigation": {
       "name": "Lt. (Nav) Arthur Bell",
       "callsign": "Navigation",
-      "voice": "alloy",
+      "voice": "piper:en_GB-alba-medium",
       "traits": {"tone": "precise", "style": "concise"},
       "messages": {
         "steady": "Captain, ship steady on course {hdg}°, speed {spd} knots.",
@@ -27,7 +27,7 @@
     "Radar": {
       "name": "PO (Radar) Colin Hart",
       "callsign": "Radar",
-      "voice": "alloy",
+      "voice": "piper:en_GB-jenny_dioco-medium",
       "traits": {"tone": "alert", "style": "short"},
       "messages": {
         "contact": "Captain, radar contact! {type} bearing {bearing}°, range {range_nm} nm, speed {speed} knots.",
@@ -39,7 +39,7 @@
     "Fire Control": {
       "name": "Ensign Jim Hockney",
       "callsign": "Fire Control",
-      "voice": "alloy",
+      "voice": "piper:en_GB-alan-medium",
       "traits": {"tone": "calm", "style": "authoritative"},
       "messages": {
         "locked": "Captain, priority threat locked: {name} ID {id}, range {range_nm} nm.",

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Roadmap</title>
+    <style>
+      body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0c152b;color:#e7ecff;margin:0}
+      .wrap{max-width:900px;margin:24px auto;padding:0 16px}
+      .card{background:#0f1b39;border:1px solid #23325a;border-radius:10px;padding:12px;margin-bottom:12px}
+      .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+      .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+      .btn{background:#1f2b4d;color:#e7ecff;border:1px solid #32406b;border-radius:8px;padding:6px 10px;cursor:pointer;text-decoration:none}
+      table{width:100%;border-collapse:collapse}
+      th,td{padding:6px;border-bottom:1px solid #23325a;text-align:left}
+      td.num,th.num{text-align:right}
+      .muted{color:#9fb2ff90}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="row" style="margin-bottom:8px">
+        <a class="btn" href="/">Dashboard</a>
+        <a class="btn" href="/menu">Menu</a>
+      </div>
+      <div class="card">
+        <h3>Roadmap</h3>
+        <div id="meta" class="mono muted"></div>
+        <table>
+          <thead><tr><th>#</th><th>Title</th><th>Description</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody id="body"></tbody>
+        </table>
+      </div>
+    </div>
+    <script>
+      async function getJSON(u){ const r=await fetch(u); return r.json(); }
+      async function postJSON(u,b){ const r=await fetch(u,{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(b)}); return r.json(); }
+      function $(s){ return document.querySelector(s); }
+      function row(it){
+        const tr=document.createElement('tr');
+        tr.append(cell(it.order||it.id||''));
+        tr.append(cell(it.title||''));
+        tr.append(cell(it.desc||''));
+        tr.append(cell(it.status||''));
+        const td=document.createElement('td');
+        ['pending','in_progress','done'].forEach(st=>{
+          const b=document.createElement('button'); b.className='btn'; b.textContent=st.replace('_',' ');
+          b.onclick=async()=>{ await postJSON('/roadmap/set_status',{id:it.id,status:st}); load(); };
+          td.append(b);
+        });
+        tr.append(td);
+        return tr;
+      }
+      function cell(t){ const td=document.createElement('td'); td.textContent=t; return td; }
+      async function load(){
+        const j = await getJSON('/roadmap/list');
+        $('#meta').textContent = 'Updated '+(j.updated||'—') + ' | Items '+(j.items?.length||0);
+        const body=$('#body'); body.innerHTML='';
+        (j.items||[]).forEach(it=> body.append(row(it)));
+      }
+      load();
+    </script>
+  </body>
+  </html>

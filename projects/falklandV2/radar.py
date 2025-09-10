@@ -172,7 +172,8 @@ class Contact:
     meta: Dict[str, Any] = field(default_factory=dict)
 
     def tick(self, dt_s: float, own_x: float, own_y: float):
-        if self.allegiance == "Hostile":
+        # Guidance: hostiles gently steer towards own ship; missiles fly straight
+        if self.allegiance == "Hostile" and str(self.meta.get('kind','')) != 'missile':
             # gentle steering toward own ship
             desired = math.degrees(math.atan2(own_x - self.x, -(own_y - self.y))) % 360.0
             turn = (desired - self.course_deg + 540) % 360 - 180

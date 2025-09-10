@@ -7,7 +7,7 @@
     "max_ready_pairs": 2,
     "airframe_pool_total": 8,
     "pair_rearm_refuel_min": 25,
-    "scramble_cooldown_min": 10,
+    "scramble_cooldown_min": 2,
     "default_pair_size": 2,
     "default_onstation_min": 20,
     "bingo_rtb_buffer_min": 4,

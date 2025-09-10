@@ -22,6 +22,14 @@ export PYTHONPATH=.
 
 PORT=${PORT:-5055}
 
+# Source .env if present to load secrets (e.g., OPENAI_API_KEY)
+if [[ -f .env ]]; then
+  # shellcheck disable=SC1091
+  set -a
+  source .env
+  set +a
+fi
+
 # Choose dashboard entrypoint
 ROOT_DASH="webdash.py"
 PROJ_DASH="projects/falklandV2/webdash.py"
