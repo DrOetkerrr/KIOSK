@@ -21,7 +21,7 @@ Falklands V3 — Radar & Contacts (integrated module)
 from __future__ import annotations
 import math, random, time, json, os
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, Callable
 
 # --- World constants (match engine) ------------------------------------------
 WORLD_N = 40
@@ -107,6 +107,38 @@ class Catalog:
     def pick_friendly(self) -> Tuple[str, float, Optional[str]]:
         return self._pick_weighted(self._friendly)
 
+    def pick_hostile_weighted(self, mult_by_name: Optional[Dict[str, float]]) -> Tuple[str, float, Optional[str]]:
+        """Pick a hostile applying name-based multipliers (0..1) to base weights.
+        Falls back to base weights if map is empty/invalid.
+        """
+        items = self._hostile
+        if not items or not mult_by_name:
+            return self.pick_hostile()
+        # Build adjusted list (name, speed, adj_weight, klass)
+        adjusted: List[Tuple[str, float, int, Optional[str]]] = []
+        for n, s, w, k in items:
+            try:
+                m = float(mult_by_name.get(n, 1.0))  # type: ignore[arg-type]
+                if m < 0: m = 0.0
+                if m > 1: m = 1.0
+            except Exception:
+                m = 1.0
+            adj = max(0.0, float(w) * m)
+            # Ensure at least a tiny weight to keep options open if all zero
+            adjusted.append((n, s, max(adj, 0.0), k))
+        # If all adjusted are zero, fall back
+        if sum(int(x[2] > 0.0) for x in adjusted) == 0:
+            return self.pick_hostile()
+        total = sum(x[2] for x in adjusted)
+        r = self.rng.uniform(0.0, float(total))
+        acc = 0.0
+        for n, s, w, k in adjusted:
+            acc += w
+            if r <= acc:
+                return (n, float(s), k)
+        n, s, _w, k = adjusted[-1]
+        return (n, float(s), k)
+
     def counts(self) -> Tuple[int, int]:
         return (len(self._hostile), len(self._friendly))
 
@@ -167,6 +199,8 @@ class Radar:
         self._accum = 0.0
         self._next_id = 1
         self.priority_id: Optional[int] = None
+        # Optional CAP effects provider (callable returning dict with keys: active, effects)
+        self.cap_effects_provider: Optional[Callable[[], Dict[str, Any]]] = None
         # Catalog
         if catalog_path:
             self.catalog = Catalog(catalog_path, rng=self.rng)
@@ -244,11 +278,23 @@ class Radar:
         else:
             allegiance = ("Friendly" if (self.rng.random() < float(self.cfg.get("friendly_prob", 0.3))) else "Hostile")
 
-        # Pick from catalog based on allegiance
+        # Pick from catalog based on allegiance (apply CAP spawn multipliers if provided and active)
         if allegiance == "Friendly":
             name, speed, klass = self.catalog.pick_friendly()
         else:
-            name, speed, klass = self.catalog.pick_hostile()
+            mult_map: Optional[Dict[str, float]] = None
+            try:
+                if self.cap_effects_provider is not None:
+                    eff = self.cap_effects_provider() or {}
+                    if eff.get("active"):
+                        emap = ((eff.get("stations") or [{}])[0]).get("effects", {})  # type: ignore[index]
+                        mult_map = (emap.get("spawn_weight_multiplier") or None)
+            except Exception:
+                mult_map = None
+            if mult_map:
+                name, speed, klass = self.catalog.pick_hostile_weighted(mult_map)
+            else:
+                name, speed, klass = self.catalog.pick_hostile()
 
         course_deg = (bearing_deg + 180.0) % 360.0
         c = Contact(
@@ -258,6 +304,26 @@ class Radar:
             meta={"spawn": {"bearing_deg": round(bearing_deg,1), "range_nm": round(r,2), "surprise": surprise, "allegiance": allegiance}}
         )
         self._next_id += 1
+        # CAP pre-release intercept chance: if active and mapping provides type-specific chance
+        try:
+            if self.cap_effects_provider is not None:
+                eff = self.cap_effects_provider() or {}
+                if eff.get("active"):
+                    emap = ((eff.get("stations") or [{}])[0]).get("effects", {})  # type: ignore[index]
+                    ipr = (emap.get("intercept_prob_pre_release") or {})
+                    p = float(ipr.get(name, 0.0)) if name in ipr else 0.0
+                    if p > 0.0 and self.rng.random() < max(0.0, min(1.0, p)):
+                        if self.rec:
+                            try:
+                                self.rec.log("cap.intercept_pre_release", {
+                                    "name": name, "range_nm": round(r, 2), "bearing_deg": round(bearing_deg, 1)
+                                })
+                            except Exception:
+                                pass
+                        return  # intercepted; do not add
+        except Exception:
+            pass
+
         self.contacts.append(c)
 
         if self.rec:

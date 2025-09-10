@@ -42,6 +42,7 @@ from flask import Flask, jsonify, render_template, request, send_from_directory 
 # ---- engine import (absolute) ----
 from projects.falklands.core.engine import Engine
 from projects.falklandV2.radar import Radar, Contact, HOSTILES, WORLD_N
+from projects.falklandV2.subsystems.hermes_cap import HermesCAP
 # Prefer relative import; fallback to absolute when executed as a script
 try:
     from .engine_adapter import world_to_cell, contact_to_ui, get_own_xy
@@ -82,8 +83,14 @@ def _convoy_lagged(course_deg: float, speed_kts: float) -> tuple[float, float]:
     return st["last_course"], st["last_speed"]
 
 # ---- Lightweight audio + event scheduler ----
-# Frontend polls /api/status.audio; sound.js plays files for last_launch/last_result
-AUDIO_STATE: Dict[str, Any] = {"last_launch": None, "last_result": None}
+# Frontend polls /api/status.audio; sound.js plays files for last_launch/last_result and alarm
+AUDIO_STATE: Dict[str, Any] = {"last_launch": None, "last_result": None, "radio": None, "alarm": None, "cap_launch": None}
+RADIO_QUEUE: list[Dict[str, Any]] = []  # items: {role, text, prio, enq_ts}
+RADIO_STATE: Dict[str, Any] = {"busy_until": 0.0}
+STATE_LOCK = threading.Lock()
+
+# CAP subsystem (Hermes CAP). Will be initialized after DATA_DIR is set below.
+CAP: HermesCAP | None = None
 
 # Pending delayed events (e.g., shot results); each item:
 # { 'due': float_ts, 'kind': 'resolve_shot', 'weapon': str, 'target_id': int,
@@ -105,6 +112,46 @@ def _sound_key_for_weapon(name: str) -> str:
     if "chaff" in s:
         return "corvus_chaff"
     return "weapon_launch"
+
+# ---- Alarm helpers ----
+def trigger_alarm(sound: str = "red-alert.wav", *, message: str | None = None, role: str | None = None, loop: bool = False) -> None:
+    """Stamp an alarm in AUDIO_STATE and optionally queue a radio/crew message.
+    `sound` may be a filename (e.g., 'red-alert.wav').
+    """
+    try:
+        with STATE_LOCK:
+            # Always one-shot (no loop) per operator intent
+            AUDIO_STATE['alarm'] = {"file": str(sound), "loop": False, "ts": time.time()}
+        if message:
+            record_officer(role or 'Captain', message)
+        try:
+            record_flight({
+                "route": "/alarm.trigger", "method": "INT", "status": 200,
+                "duration_ms": 0,
+                "request": {"sound": sound, "loop": loop, "role": role, "message": message},
+                "response": {"ok": True}
+            })
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+def clear_alarm() -> None:
+    try:
+        with STATE_LOCK:
+            AUDIO_STATE['alarm'] = {"stop": True, "ts": time.time()}
+        record_flight({"route": "/alarm.clear", "method": "INT", "status": 200, "duration_ms": 0,
+                       "request": {}, "response": {"ok": True}})
+    except Exception:
+        pass
+
+def stamp_cap_launch(sound_file: str = "SHAR.wav", volume: float = 0.10, fade_s: float = 2.0) -> None:
+    """Stamp a CAP launch audio cue for the frontend to play once at a low volume with fade-out."""
+    try:
+        with STATE_LOCK:
+            AUDIO_STATE['cap_launch'] = {"file": str(sound_file), "vol": float(max(0.0, min(1.0, volume))), "fade_s": float(max(0.0, fade_s)), "ts": time.time()}
+    except Exception:
+        pass
 
 def _hit_probability(weapon_name: str, target_class: str, range_nm: float) -> float:
     w = (weapon_name or "").lower(); cls = (target_class or "").title()
@@ -142,9 +189,17 @@ def _flight_time_seconds(weapon_name: str, range_nm: float) -> float:
         return max(0.5, min(4.0, r * 2.0))
     return max(1.0, r * 2.0)
 
+def _cap_flight_time_seconds(range_nm: float) -> float:
+    """Rudimentary Sidewinder time-of-flight for CAP engagements.
+    Keep it short and punchy so radio feels responsive.
+    """
+    r = max(0.0, float(range_nm))
+    return max(1.0, 2.0 + 0.5 * r)
+
 def _schedule_shot_result(weapon_name: str, target_id: int, target_name: str, target_class: str, range_nm: float) -> None:
     due = time.time() + _flight_time_seconds(weapon_name, range_nm)
-    PENDING_EVENTS.append({
+    with STATE_LOCK:
+        PENDING_EVENTS.append({
         'due': due,
         'kind': 'resolve_shot',
         'weapon': weapon_name,
@@ -156,10 +211,12 @@ def _schedule_shot_result(weapon_name: str, target_id: int, target_name: str, ta
 
 def _process_due_events() -> None:
     now = time.time()
-    if not PENDING_EVENTS:
+    with STATE_LOCK:
+        _evs = list(PENDING_EVENTS)
+    if not _evs:
         return
     remaining: list[Dict[str, Any]] = []
-    for ev in PENDING_EVENTS:
+    for ev in _evs:
         if float(ev.get('due', 0.0)) <= now and ev.get('kind') == 'resolve_shot':
             try:
                 wid = int(ev.get('target_id'))
@@ -177,18 +234,85 @@ def _process_due_events() -> None:
                         RADAR.contacts = [c for c in RADAR.contacts if int(getattr(c, 'id', -1)) != wid]
                     except Exception:
                         pass
-                    record_radio('ENGAGE', f"Hit: {tname}")
-                    AUDIO_STATE['last_result'] = {'event': 'hit', 'ts': now}
+                    officer_say('Fire Control', 'hit', {'name': tname, 'id': wid})
+                    with STATE_LOCK:
+                        AUDIO_STATE['last_result'] = {'event': 'hit', 'ts': now}
                 else:
-                    record_radio('ENGAGE', f"Miss: {tname}")
-                    AUDIO_STATE['last_result'] = {'event': 'miss', 'ts': now}
+                    officer_say('Fire Control', 'miss', {'name': tname, 'id': wid})
+                    with STATE_LOCK:
+                        AUDIO_STATE['last_result'] = {'event': 'miss', 'ts': now}
             except Exception:
                 continue
+        elif float(ev.get('due', 0.0)) <= now and ev.get('kind') == 'arming_ready':
+            try:
+                wname = str(ev.get('weapon'))
+                officer_say('Weapons', 'ready', {'weapon': wname})
+            except Exception:
+                pass
+        elif float(ev.get('due', 0.0)) <= now and ev.get('kind') == 'cap_resolve':
+            try:
+                hit = bool(ev.get('hit'))
+                tid = int(ev.get('target_id', 0))
+                tname = str(ev.get('target_name', 'Target'))
+                if hit:
+                    # Remove target if still present
+                    try:
+                        RADAR.contacts = [c for c in RADAR.contacts if int(getattr(c,'id',-1)) != tid]
+                    except Exception:
+                        pass
+                    officer_say('Pilot','splash', {'name': tname}, fallback='Splash one bandit.')
+                    with STATE_LOCK:
+                        AUDIO_STATE['last_result'] = {'event': 'hit', 'ts': now}
+                else:
+                    officer_say('Pilot','miss', {'name': tname}, fallback='Missile missed.')
+                    with STATE_LOCK:
+                        AUDIO_STATE['last_result'] = {'event': 'miss', 'ts': now}
+            except Exception:
+                pass
         else:
             remaining.append(ev)
     # swap
-    PENDING_EVENTS.clear()
-    PENDING_EVENTS.extend(remaining)
+    with STATE_LOCK:
+        PENDING_EVENTS.clear()
+        PENDING_EVENTS.extend(remaining)
+
+def _process_radio_queue() -> None:
+    now = time.time()
+    with STATE_LOCK:
+        try:
+            busy_until = float(RADIO_STATE.get('busy_until', 0.0))
+        except Exception:
+            busy_until = 0.0
+    if now < busy_until:
+        return
+    with STATE_LOCK:
+        has_items = bool(RADIO_QUEUE)
+    if not has_items:
+        return
+    # Priority first, then FIFO
+    with STATE_LOCK:
+        try:
+            RADIO_QUEUE.sort(key=lambda it: (not it.get('prio', False), it.get('enq_ts', 0.0)))
+        except Exception:
+            pass
+        it = RADIO_QUEUE.pop(0)
+    role = str(it.get('role', 'OFFICER'))
+    text = str(it.get('text', ''))
+    # Estimate speech duration (pre-TTS)
+    try:
+        words = max(1, len([w for w in text.split() if w]))
+    except Exception:
+        words = 6
+    dur = max(0.8, min(8.0, 0.6 + 0.4 * words))
+    with STATE_LOCK:
+        AUDIO_STATE['radio'] = {'role': role, 'text': text, 'ts': now, 'dur': dur}
+    try:
+        record_flight({'route': '/radio.officer', 'method': 'INT', 'status': 200, 'duration_ms': 0,
+                       'request': {}, 'response': {'role': role, 'text': text}})
+    except Exception:
+        pass
+    with STATE_LOCK:
+        RADIO_STATE['busy_until'] = now + dur + 0.3
 
 
 def get_tick_seconds() -> float:
@@ -233,20 +357,139 @@ def engine_thread() -> None:
                 RADAR.tick(dt, own_x, own_y)
             except Exception:
                 pass
+            # Advance CAP missions and auto-engage if a target is locked
+            try:
+                if CAP is not None:
+                    CAP.tick()
+                    # Determine locked target id and range using RADAR priority/PRIMARY_ID
+                    tid = None
+                    try:
+                        # Prefer explicit PRIMARY_ID if set via /api/command
+                        tid = (int(PRIMARY_ID) if ('PRIMARY_ID' in globals() and PRIMARY_ID is not None) else None)  # type: ignore[name-defined]
+                    except Exception:
+                        tid = None
+                    if tid is None:
+                        # Fallback to RADAR priority (closest hostile)
+                        tid = RADAR.priority_id
+                    if tid is not None:
+                        tgt = next((c for c in RADAR.contacts if int(getattr(c, 'id', -1)) == int(tid)), None)
+                        if tgt is not None:
+                            # Compute effective missile distance from station center (allow station radius + AIM-9 range)
+                            try:
+                                onst = [m for m in (CAP.missions or []) if getattr(m, 'status', '') == 'onstation' and getattr(m, 'missiles_left', 0) > 0]
+                            except Exception:
+                                onst = []
+                            if onst:
+                                # Use the nearest station to the target
+                                def dist_from_station(m):
+                                    try:
+                                        sx, sy = cell_to_world(str(getattr(m,'target_cell','') or ''))
+                                        dx = float(getattr(tgt,'x',0.0)) - float(sx)
+                                        dy = float(getattr(tgt,'y',0.0)) - float(sy)
+                                        return (dx*dx + dy*dy) ** 0.5, float(getattr(m,'station_radius_nm',5.0))
+                                    except Exception:
+                                        return (1e9, 0.0)
+                                dist, rad = min((dist_from_station(m) for m in onst), key=lambda t: t[0])
+                                eff = max(0.0, float(dist) - float(rad))
+                                res = CAP.auto_engage(eff, int(tid))
+                            else:
+                                # Fallback to own-ship distance if no station yet
+                                dx = float(getattr(tgt, 'x', 0.0)) - float(own_x)
+                                dy = float(getattr(tgt, 'y', 0.0)) - float(own_y)
+                                rng_nm = (dx*dx + dy*dy) ** 0.5
+                                res = CAP.auto_engage(rng_nm, int(tid))
+                            if isinstance(res, dict):
+                                # Immediate pilot call: Fox Two (repeat if two shots)
+                                try:
+                                    shots = int(res.get('shots', 1))
+                                except Exception:
+                                    shots = 1
+                                if shots >= 2:
+                                    officer_say('Pilot','fox2', {}, fallback='Fox Two, Fox Two!')
+                                else:
+                                    officer_say('Pilot','fox2', {})
+                                # Schedule result call (splash/miss) with small time-of-flight delay
+                                try:
+                                    rng = float(res.get('range_nm', 0.0))
+                                except Exception:
+                                    rng = 0.0
+                                due = time.time() + _cap_flight_time_seconds(rng)
+                                try:
+                                    tname = str(getattr(tgt,'name','Target'))
+                                except Exception:
+                                    tname = 'Target'
+                                with STATE_LOCK:
+                                    PENDING_EVENTS.append({'due': due, 'kind': 'cap_resolve', 'hit': bool(res.get('hit', False)), 'target_id': int(res.get('target_id', 0)), 'target_name': tname})
+                    else:
+                        # No explicit lock: check each on-station mission and auto-engage nearest hostile in Sidewinder range
+                        try:
+                            onst = [m for m in (CAP.missions or []) if getattr(m, 'status', '') == 'onstation' and getattr(m, 'missiles_left', 0) > 0]
+                        except Exception:
+                            onst = []
+                        for m in onst:
+                            try:
+                                # Station center at mission target cell
+                                mc = str(getattr(m, 'target_cell', '') or '')
+                                if not mc:
+                                    continue
+                                sx, sy = cell_to_world(mc)
+                                # Find nearest hostile within Sidewinder envelope
+                                candidates = [c for c in RADAR.contacts if str(getattr(c,'allegiance','')).lower()=='hostile']
+                                if not candidates:
+                                    continue
+                                # Compute distance from station center, then effective missile distance = max(0, dist - station_radius)
+                                def dnm(c):
+                                    dx = float(getattr(c,'x',0.0)) - float(sx)
+                                    dy = float(getattr(c,'y',0.0)) - float(sy)
+                                    return (dx*dx + dy*dy) ** 0.5
+                                nearest = min(candidates, key=dnm)
+                                dist = dnm(nearest)
+                                # Use CAP Sidewinder envelope if available; else default 5 nm
+                                sw_max = getattr(CAP, 'sw_max_nm', 5.0)
+                                sw_min = getattr(CAP, 'sw_min_nm', 1.0)
+                                try:
+                                    rad = float(getattr(m, 'station_radius_nm', 5.0))
+                                except Exception:
+                                    rad = 5.0
+                                eff = max(0.0, float(dist) - rad)
+                                if sw_min <= eff <= sw_max:
+                                    res = CAP.auto_engage(eff, int(getattr(nearest,'id',0)))
+                                    if isinstance(res, dict):
+                                        # Fox Two call
+                                        try:
+                                            shots = int(res.get('shots', 1))
+                                        except Exception:
+                                            shots = 1
+                                        if shots >= 2:
+                                            officer_say('Pilot','fox2', {}, fallback='Fox Two, Fox Two!')
+                                        else:
+                                            officer_say('Pilot','fox2', {})
+                                        # Schedule splash/miss
+                                        try:
+                                            rng = float(res.get('range_nm', 0.0))
+                                        except Exception:
+                                            rng = 0.0
+                                        due = time.time() + _cap_flight_time_seconds(rng)
+                                        tname = str(getattr(nearest,'name','Target'))
+                                        with STATE_LOCK:
+                                            PENDING_EVENTS.append({'due': due, 'kind': 'cap_resolve', 'hit': bool(res.get('hit', False)), 'target_id': int(res.get('target_id', 0)), 'target_name': tname})
+                            except Exception:
+                                continue
+            except Exception:
+                pass
             # process any due engagement events (hit/miss radio + sounds)
             try:
                 _process_due_events()
+            except Exception:
+                pass
+            try:
+                _process_radio_queue()
             except Exception:
                 pass
             time.sleep(dt)
         except Exception as e:
             logging.exception("engine_thread: tick failed: %s", e)
             time.sleep(0.5)
-
-
-# Start the background thread (daemon)
-_t = threading.Thread(target=engine_thread, daemon=True)
-_t.start()
 
 
 # ---- Flight recorder (lightweight) ----
@@ -261,10 +504,19 @@ AMMO_PATH = STATE_DIR / "ammo.json"
 ARMING_PATH = STATE_DIR / "arming.json"
 WEAP_CATALOG_PATH = DATA_DIR / "weapons_catalog.json"
 CONTACTS_PATH = DATA_DIR / "contacts.json"
+CREW_PATH = DATA_DIR / "crew.json"
+ALARM_CFG_PATH = DATA_DIR / "alarms.json"
+
+# Initialize CAP now that DATA_DIR is available
+try:
+    CAP = HermesCAP(DATA_DIR)
+except Exception:
+    CAP = None
 
 # ---- Grid conversion (world 40×40 → board A..Z × 1..26) ----
 WORLD_N = 40
 BOARD_N = 26
+BOARD_MIN = (WORLD_N - BOARD_N) / 2.0  # center Captain board inside world (7.0)
 
 def clamp(v: float, lo: float, hi: float) -> float:
     return lo if v < lo else hi if v > hi else v
@@ -278,9 +530,13 @@ def _idx_to_letters(idx: int) -> str:
     return s
 
 def world_to_board(row: float, col: float) -> tuple[int, int]:
+    """Map world (row,y), (col,x) 0..WORLD_N into Captain board 1..BOARD_N centered at BOARD_MIN.
+    Clamps outside positions to board edges.
+    """
     def mapv(v: float) -> int:
-        t = 1.0 + (clamp(v, 0.0, float(WORLD_N)) * (BOARD_N - 1) / float(WORLD_N))
-        return int(round(clamp(t, 1.0, float(BOARD_N))))
+        # Shift by BOARD_MIN so that A1 starts at BOARD_MIN
+        t = (v - BOARD_MIN)
+        return int(round(clamp(1.0 + t, 1.0, float(BOARD_N))))
     return mapv(row), mapv(col)
 
 def board_to_cell(row_i: int, col_i: int) -> str:
@@ -289,6 +545,125 @@ def board_to_cell(row_i: int, col_i: int) -> str:
 def cell_for_world(row: float, col: float) -> str:
     r_i, c_i = world_to_board(row, col)
     return board_to_cell(r_i, c_i)
+
+def ship_cell_from_state(state: Dict[str, Any]) -> str:
+    """Robustly map legacy (0..100) or V3 (0..40) world coords to captain cell A..Z × 1..26.
+    - If row/col exceed WORLD_N, treat them as 0..100 and rescale into 0..WORLD_N.
+    - Then apply centered board mapping (BOARD_MIN offset) via cell_for_world.
+    """
+    ship = (state or {}).get('ship', {}) if isinstance(state, dict) else {}
+    try:
+        col = float(ship.get('col', 0.0))
+        row = float(ship.get('row', 0.0))
+    except Exception:
+        col, row = 0.0, 0.0
+    # Detect scale: if clearly larger than WORLD_N, assume legacy 0..100 scale
+    if (col > float(WORLD_N)) or (row > float(WORLD_N)):
+        try:
+            # Default legacy world span
+            legacy_span = 100.0
+            # Rescale to 0..WORLD_N
+            col = (float(col) / legacy_span) * float(WORLD_N)
+            row = (float(row) / legacy_span) * float(WORLD_N)
+        except Exception:
+            pass
+    return cell_for_world(row, col)
+
+def cell_to_world(cell: str) -> tuple[float, float]:
+    """Convert a board cell like 'K13' to world (x,y) coordinates (nm), centered board.
+    Approximates to the center of the cell index using 1 nm per cell.
+    """
+    s = str(cell or "").strip().upper()
+    if not s:
+        return (0.0, 0.0)
+    # Split letters+digits
+    i = 0
+    while i < len(s) and s[i].isalpha():
+        i += 1
+    col_letters = s[:i] or "A"
+    row_str = s[i:] or "1"
+    # Letters to 1-based index
+    col_i = 0
+    for ch in col_letters:
+        col_i = col_i * 26 + (ord(ch) - ord('A') + 1)
+    try:
+        row_i = int(row_str)
+    except Exception:
+        row_i = 1
+    col_i = max(1, min(BOARD_N, col_i))
+    row_i = max(1, min(BOARD_N, row_i))
+    # Map board index back to world coordinate using BOARD_MIN offset
+    x = float(BOARD_MIN) + float(col_i - 1)
+    y = float(BOARD_MIN) + float(row_i - 1)
+    return (x, y)
+
+# ---- CAP UI adapter ----
+def _cap_ui_snapshot() -> Dict[str, Any]:
+    try:
+        if CAP is None:
+            return {"ready": False, "pairs": 0, "airframes": 0, "cooldown_s": 0, "committed": 0, "tasks": []}
+        snap = CAP.snapshot()
+        r = snap.get('readiness') or {}
+        missions = list(snap.get('missions') or [])
+        # own ship world xy from public_state
+        try:
+            st = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+            own_x, own_y = get_own_xy(st)
+        except Exception:
+            own_x, own_y = (0.0, 0.0)
+        now = time.time()
+        tasks: list[Dict[str, Any]] = []
+        for m in missions:
+            try:
+                cid = int(m.get('id'))
+                cell = str(m.get('target_cell') or '')
+                tx, ty = cell_to_world(cell) if cell else (None, None)
+                rng = None
+                if tx is not None and ty is not None:
+                    dx = float(tx) - float(own_x)
+                    dy = float(ty) - float(own_y)
+                    rng = (dx*dx + dy*dy) ** 0.5
+                engaged = bool(m.get('last_engagement'))
+                # Time-over-target (seconds until on-station)
+                ts = (m.get('timestamps') or {})
+                eta_on = ts.get('eta_onstation')
+                status = str(m.get('status') or '')
+                tot_s = None
+                try:
+                    if isinstance(eta_on, (int, float)) and status in ('queued','airborne'):
+                        tot_s = max(0, int(eta_on - now))
+                except Exception:
+                    tot_s = None
+                # Time-on-station remaining (seconds until RTB)
+                tos_s = None
+                try:
+                    etd_rtb = ts.get('etd_rtb')
+                    if isinstance(etd_rtb, (int, float)) and status == 'onstation':
+                        tos_s = max(0, int(etd_rtb - now))
+                except Exception:
+                    tos_s = None
+                tasks.append({
+                    "n": cid,
+                    "target_cell": cell or '—',
+                    "range_nm": (round(rng, 1) if isinstance(rng, (int, float)) else None),
+                    "status": status,
+                    "tot_s": tot_s,
+                    "tos_s": tos_s,
+                    "engaged": engaged,
+                })
+            except Exception:
+                continue
+        committed = len([t for t in tasks if t.get('status') in ('airborne','onstation','rtb','recovering')])
+        return {
+            "ready": bool(r.get('available', False)),
+            "pairs": int(r.get('ready_pairs', 0) or 0),
+            "airframes": int(r.get('airframes', 0) or 0),
+            "cooldown_s": int(r.get('cooldown_s', 0) or 0),
+            "committed": int(committed),
+            "tasks": tasks,
+        }
+    except Exception:
+        return {"ready": False, "pairs": 0, "airframes": 0, "cooldown_s": 0, "committed": 0, "tasks": []}
 
 def _truncate(val: Any, max_len: int = 400) -> Any:
     if isinstance(val, str) and len(val) > max_len:
@@ -344,6 +719,10 @@ def _load_targets_class_map():
                     mapping[name] = klass
     return mapping
 
+def load_alarm_cfg() -> Dict[str, Any]:
+    obj = _load_json(ALARM_CFG_PATH, {})
+    return obj if isinstance(obj, dict) else {}
+
 WEAP_CATALOG, WEAP_MAP = _load_weapons_catalog()
 TARGET_CLASS_BY_NAME = _load_targets_class_map()
 
@@ -356,11 +735,12 @@ WEAP_DEFAULT_AMMO = {
     "Corvus chaff": 15,
 }
 WEAP_DEFAULT_ARMING = {
+    # All systems default to Safe; captain must arm explicitly (/weapons/arm)
     "MM38 Exocet": "Safe",
     "4.5 inch Mk.8 gun": "Safe",
-    "Sea Dart SAM": "Armed",
-    "20mm Oerlikon": "Armed",
-    "20mm GAM-BO1 (twin)": "Armed",
+    "Sea Dart SAM": "Safe",
+    "20mm Oerlikon": "Safe",
+    "20mm GAM-BO1 (twin)": "Safe",
     "Corvus chaff": "Safe",
 }
 
@@ -580,20 +960,21 @@ def _ownfleet_snapshot(state: Dict[str, Any]) -> list[Dict[str, Any]]:
     """
     out: list[Dict[str, Any]] = []
     ship = (state or {}).get('ship', {})
-    # Own ship
+    # Own ship (robust mapping across legacy/new engines)
     try:
-        row = float(ship.get('row', 50.0)); col = float(ship.get('col', 50.0))
-        cell = cell_for_world(row, col)
+        cell = ship_cell_from_state(state)
     except Exception:
-        cell = cell_for_world(50.0, 50.0)
-    own_name = _load_json(DATA_DIR / 'ship.json', {}).get('name', 'Own Ship')
+        cell = 'K13'
+    ship_cfg = _load_json(DATA_DIR / 'ship.json', {})
+    own_name = ship_cfg.get('name', 'Own Ship')
+    own_class = ship_cfg.get('class', 'DD')
     lives = int((state or {}).get('lives', 1) or 1)
     max_lives = int((state or {}).get('max_lives', 1) or 1)
     health_pct = int(round(100.0 * (lives / max(1, max_lives))))
     out.append({
         'id': 'own',
         'name': own_name,
-        'class': 'DD',
+        'class': own_class,
         'cell': cell,
         'speed': ship.get('speed', 0),
         'heading': ship.get('heading', 0),
@@ -602,13 +983,31 @@ def _ownfleet_snapshot(state: Dict[str, Any]) -> list[Dict[str, Any]]:
     # Convoy escorts (Hermes/Glamorgan) relative offsets if available
     convoy = _load_json(DATA_DIR / 'convoy.json', {})
     escorts = convoy.get('escorts', []) if isinstance(convoy, dict) else []
-    # Compute own board indices to offset
+    # Compute own board indices to offset (parse from cell)
     try:
-        r_i, c_i = world_to_board(float(ship.get('row', 50.0)), float(ship.get('col', 50.0)))
+        # Extract letters (col) and digits (row)
+        i = 0
+        while i < len(cell) and cell[i].isalpha():
+            i += 1
+        col_letters = cell[:i] or 'A'
+        row_str = cell[i:] or '1'
+        # letters→index (1-based)
+        cc = 0
+        for ch in col_letters:
+            cc = cc * 26 + (ord(ch) - ord('A') + 1)
+        rr = int(row_str)
+        r_i, c_i = int(max(1, min(BOARD_N, rr))), int(max(1, min(BOARD_N, cc)))
     except Exception:
         r_i, c_i = (13, 11)
     def _escort_cell(dx: int, dy: int) -> str:
         rr = int(clamp(r_i + dy, 1, BOARD_N)); cc = int(clamp(c_i + dx, 1, BOARD_N))
+        # Enforce minimum Chebyshev separation of 2 cells from own ship
+        if abs(cc - c_i) < 2:
+            step_x = 2 if (dx or 1) > 0 else -2
+            cc = int(clamp(c_i + step_x, 1, BOARD_N))
+        if abs(rr - r_i) < 2:
+            step_y = 2 if (dy or 1) > 0 else -2
+            rr = int(clamp(r_i + step_y, 1, BOARD_N))
         return board_to_cell(rr, cc)
     # Compute lagged course/speed for escorts to simulate following with delay
     eff_course, eff_speed = _convoy_lagged(float(ship.get('heading', 0.0)), float(ship.get('speed', 0.0)))
@@ -616,11 +1015,12 @@ def _ownfleet_snapshot(state: Dict[str, Any]) -> list[Dict[str, Any]]:
     hermes = next((e for e in escorts if str(e.get('name','')).lower().find('hermes')>=0), None)
     if hermes:
         dx, dy = hermes.get('offset_cells', [-2,3])
+        hermes_cell = _escort_cell(int(dx), int(dy))
         out.append({
             'id':'hermes',
             'name': hermes.get('name'),
             'class': hermes.get('class','Carrier'),
-            'cell': _escort_cell(int(dx), int(dy)),
+            'cell': hermes_cell,
             'speed': eff_speed,
             'heading': eff_course,
             'status': {'health_pct': 100},
@@ -634,11 +1034,31 @@ def _ownfleet_snapshot(state: Dict[str, Any]) -> list[Dict[str, Any]]:
     glam = next((e for e in escorts if str(e.get('name','')).lower().find('glamorgan')>=0), None)
     if glam:
         dx, dy = glam.get('offset_cells', [2,1])
+        glam_cell = _escort_cell(int(dx), int(dy))
+        # Ensure minimum separation from Hermes as well
+        try:
+            # Parse hermes_cell back to indices
+            def _parse_cell(s: str):
+                j=0
+                while j < len(s) and s[j].isalpha(): j+=1
+                cl=s[:j] or 'A'; rs=int(s[j:] or '1')
+                ci=0
+                for ch in cl: ci=ci*26+(ord(ch)-ord('A')+1)
+                return int(max(1,min(BOARD_N,rs))), int(max(1,min(BOARD_N,ci)))
+            hr, hc = _parse_cell(hermes_cell) if hermes else (r_i, c_i)
+            gr, gc = _parse_cell(glam_cell)
+            if max(abs(gr-hr), abs(gc-hc)) < 2:
+                # push glam further along its intended direction
+                gr = int(clamp(gr + (2 if (dy or 1)>0 else -2), 1, BOARD_N))
+                gc = int(clamp(gc + (2 if (dx or 1)>0 else -2), 1, BOARD_N))
+                glam_cell = board_to_cell(gr, gc)
+        except Exception:
+            pass
         out.append({
             'id':'glamorgan',
             'name': glam.get('name'),
             'class': glam.get('class','DD'),
-            'cell': _escort_cell(int(dx), int(dy)),
+            'cell': glam_cell,
             'speed': eff_speed,
             'heading': eff_course,
             'status': {'health_pct': 100},
@@ -730,6 +1150,178 @@ def record_radio(kind: str, text: str) -> None:
     except Exception:
         pass
 
+def record_officer(role: str, text: str) -> None:
+    """Queue an officer radio line; playback + logging handled by radio queue.
+    Target/threat messages are priority. UI renders '/radio.officer' lines; we log when playback starts.
+    """
+    role_str = str(role or "OFFICER")
+    msg = str(text or "")
+    low = msg.lower()
+    prio = (role_str in ("Fire Control",)) or any(w in low for w in ("priority", "threat", "hit", "miss", "locked", "destroyed"))
+    with STATE_LOCK:
+        RADIO_QUEUE.append({"role": role_str, "text": msg, "prio": bool(prio), "enq_ts": time.time()})
+
+# (moved earlier) crew helpers defined above
+
+# ---- Radio content helpers ----
+def _radar_summary_ctx(own_x: float, own_y: float) -> Dict[str, Any]:
+    try:
+        contacts = list(RADAR.contacts)
+    except Exception:
+        contacts = []
+    n = len(contacts)
+    hostiles = [c for c in contacts if str(getattr(c,'allegiance','')).lower()== 'hostile']
+    friendlies = [c for c in contacts if str(getattr(c,'allegiance','')).lower()== 'friendly']
+    # Choose nearest hostile (threat)
+    def dnm(c):
+        dx = float(getattr(c,'x',0.0)) - float(own_x)
+        dy = float(getattr(c,'y',0.0)) - float(own_y)
+        return (dx*dx + dy*dy) ** 0.5
+    top = (min(hostiles, key=dnm) if hostiles else None)
+    return {
+        'contacts': n,
+        'hostiles': len(hostiles),
+        'friendlies': len(friendlies),
+        'threat': (str(getattr(top,'name','')) if top else '—'),
+        'range_nm': (round(dnm(top),1) if top else None),
+        'threat_level': (str(getattr(top,'threat','')) if top else '—')
+    }
+
+# ---- Simple rule-based Officer AI (Phase 2, step 1) ----
+def _ai_parse(text: str) -> list[dict]:
+    """Return a list of action dicts parsed from a free-form command.
+    Actions: radar_scan, radar_lock{id}, radar_unlock, cap_request, cap_to_cell{cell,minutes?,radius_nm?}
+    """
+    actions: list[dict] = []
+    s = (text or '').strip()
+    low = s.lower()
+    import re
+    # scan
+    if 'scan' in low and ('radar' in low or low.startswith('scan')):
+        actions.append({'kind':'radar_scan'})
+    # unlock (checked before lock)
+    if 'unlock' in low:
+        actions.append({'kind':'radar_unlock'})
+    # lock <id>
+    if 'lock' in low:
+        m = re.search(r"lock\D*(\d+)", low)
+        if m:
+            actions.append({'kind':'radar_lock', 'id': int(m.group(1))})
+    # CAP request to locked/priority
+    if ('cap' in low) and any(w in low for w in ('request','launch','vector')) and ('to' not in low):
+        actions.append({'kind':'cap_request'})
+    # CAP to cell (e.g., "cap to K13 for 12 minutes radius 8")
+    if 'cap' in low and 'to' in low:
+        # find cell like K13
+        m = re.search(r"\b([a-z]{1,2})(\d{1,2})\b", low)
+        cell = None
+        if m:
+            col, row = m.group(1).upper(), int(m.group(2))
+            if 1 <= row <= 26:
+                cell = f"{col}{row}"
+        # minutes
+        mm = re.search(r"(for|minutes?)\s*(\d{1,2})", low)
+        minutes = int(mm.group(2)) if mm else None
+        # radius
+        rm = re.search(r"radius\s*(\d{1,2})", low)
+        radius = int(rm.group(1)) if rm else None
+        if cell:
+            actions.append({'kind':'cap_to_cell', 'cell': cell, 'minutes': minutes, 'radius_nm': radius})
+    return actions
+
+def _ai_exec(actions: list[dict]) -> list[str]:
+    """Execute parsed actions via existing helpers. Return list of textual confirmations."""
+    msgs: list[str] = []
+    try:
+        st = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+        own_x, own_y = get_own_xy(st)
+    except Exception:
+        own_x, own_y = (0.0, 0.0)
+    for a in actions:
+        k = a.get('kind')
+        try:
+            if k == 'radar_scan':
+                officer_say('Radar', 'scanning', {})
+                try: RADAR.scan(own_x, own_y)
+                except Exception: pass
+                try:
+                    ctx = _radar_summary_ctx(own_x, own_y)
+                    officer_say('Radar', 'scan_report', ctx, fallback=f"Captain, radar scan complete: {ctx['contacts']} contact(s), hostiles {ctx['hostiles']}, friendlies {ctx['friendlies']}.")
+                except Exception: pass
+                msgs.append('RADAR: scanned')
+            elif k == 'radar_unlock':
+                try:
+                    globals()['PRIMARY_ID'] = None
+                except Exception: pass
+                try:
+                    RADAR.priority_id = None  # type: ignore[attr-defined]
+                except Exception: pass
+                officer_say('Fire Control', 'unlocked', {})
+                msgs.append('RADAR: unlocked')
+            elif k == 'radar_lock':
+                cid = int(a.get('id'))
+                target = None
+                for c in RADAR.contacts:
+                    if int(getattr(c,'id',-1)) == cid:
+                        target = c; break
+                if not target:
+                    msgs.append(f'RADAR: lock failed (#{cid} not found)')
+                else:
+                    try: globals()['PRIMARY_ID'] = cid
+                    except Exception: pass
+                    try: RADAR.priority_id = cid  # type: ignore[attr-defined]
+                    except Exception: pass
+                    # Officer radio (Fire Control)
+                    try:
+                        ui = contact_to_ui(target, (own_x, own_y))
+                        officer_say('Fire Control','locked',{'name': ui.get('name'), 'id': cid, 'range_nm': ui.get('range_nm')})
+                    except Exception:
+                        officer_say('Fire Control','locked',{'id': cid})
+                    msgs.append(f'RADAR: locked #{cid}')
+            elif k == 'cap_request':
+                # Determine target as in /cap/request
+                tid = None
+                try:
+                    tid = int(PRIMARY_ID) if ('PRIMARY_ID' in globals() and PRIMARY_ID is not None) else None  # type: ignore[name-defined]
+                except Exception:
+                    tid = None
+                if tid is None:
+                    tid = RADAR.priority_id
+                tgt = next((c for c in RADAR.contacts if int(getattr(c,'id',-1)) == int(tid)), None) if tid is not None else None
+                if not tgt or CAP is None:
+                    msgs.append('CAP: no locked target or CAP unavailable')
+                else:
+                    dx = float(getattr(tgt,'x',0.0)) - float(own_x)
+                    dy = float(getattr(tgt,'y',0.0)) - float(own_y)
+                    rng = (dx*dx + dy*dy) ** 0.5
+                    cell = world_to_cell(float(getattr(tgt,'x',0.0)), float(getattr(tgt,'y',0.0)))
+                    res = CAP.request_cap_to_cell(cell, distance_nm=float(rng))
+                    if res.get('ok'):
+                        msgs.append(f'Hermes: CAP pair launching to {cell}')
+                        try: stamp_cap_launch()
+                        except Exception: pass
+                    else:
+                        msgs.append(f'CAP denied: {res.get("message","denied")}')
+            elif k == 'cap_to_cell':
+                if CAP is None:
+                    msgs.append('CAP unavailable')
+                else:
+                    cell = str(a.get('cell') or '')
+                    minutes = a.get('minutes', None)
+                    radius_nm = a.get('radius_nm', None)
+                    tx, ty = cell_to_world(cell)
+                    dx, dy = float(tx) - float(own_x), float(ty) - float(own_y)
+                    rng = (dx*dx + dy*dy) ** 0.5
+                    res = CAP.request_cap_to_cell(cell, distance_nm=float(rng), station_minutes=(float(minutes) if minutes is not None else None), radius_nm=(float(radius_nm) if radius_nm is not None else None))
+                    if res.get('ok'):
+                        msgs.append(f'Hermes: CAP pair launching to {cell}')
+                        try: stamp_cap_launch()
+                        except Exception: pass
+                    else:
+                        msgs.append(f'CAP denied: {res.get("message","denied")}')
+        except Exception:
+            continue
+    return msgs
 
 # ---- Routes ----
 @app.get("/debug/template")
@@ -826,6 +1418,142 @@ def radio_say():
                        "request": {}, "response": payload})
         return jsonify(payload), 500
 
+@app.route("/radio/ask", methods=["GET", "POST"])
+def radio_ask():
+    from flask import request
+    t0 = time.time(); route = "/radio/ask"
+    try:
+        txt = _arg_or_json(request, 'text', '')  # type: ignore[name-defined]
+        if not txt:
+            payload = {"ok": False, "error": "missing text"}
+            record_flight({"route": route, "method": request.method, "status": 400,
+                           "duration_ms": int((time.time()-t0)*1000),
+                           "request": {}, "response": payload})
+            return jsonify(payload), 400
+        s = str(txt).strip()
+        head = s.split(':',1)[0].split(',',1)[0].strip().lower()
+        role = 'Ensign'
+        if head.startswith(('nav','navigation')):
+            role = 'Navigation'
+        elif head.startswith(('radar','search')):
+            role = 'Radar'
+        elif head.startswith(('weap','weapon')):
+            role = 'Weapons'
+        elif head.startswith(('fire control','fire','fc')):
+            role = 'Fire Control'
+        elif head.startswith(('eng','engineer','engineering')):
+            role = 'Engineering'
+        reply = 'Captain, acknowledged.'
+        try:
+            st = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+            ship = (st or {}).get('ship', {})
+            hdg = int(float(ship.get('heading', 0)))
+            spd = int(float(ship.get('speed', 0)))
+            cell = cell_for_world(float(ship.get('row',50.0)), float(ship.get('col',50.0)))
+            low = s.lower()
+            if role == 'Navigation' and ('course' in low or 'speed' in low or 'grid' in low):
+                reply = f"Captain, ship steady on course {hdg}°, speed {spd} knots, grid {cell}."
+            elif role == 'Radar' and ('nearest' in low or 'contacts' in low):
+                own_x, own_y = get_own_xy(st)
+                if RADAR.contacts:
+                    c = min(RADAR.contacts, key=lambda k: ((k.x-own_x)**2 + (k.y-own_y)**2))
+                    rng = round(((c.x-own_x)**2 + (c.y-own_y)**2) ** 0.5, 2)
+                    reply = f"Captain, nearest contact ID {c.id}, range {rng} nm."
+                else:
+                    reply = "Captain, no contacts on scope."
+            elif role == 'Weapons' and ('status' in low or 'readiness' in low or 'ammo' in low):
+                arming = load_arming(); ammo = load_ammo()
+                ready = [f"{k} {arming.get(k)} ({ammo.get(k,0)})" for k in ammo.keys()]
+                reply = "Captain, weapons: " + "; ".join(ready[:3]) + ("…" if len(ready)>3 else "")
+            # CAP request via radio (e.g., "Fire Control: Request CAP", "CAP launch")
+            if ('cap' in low) and any(w in low for w in ('request','launch','vector')):
+                # Determine locked/priority target
+                tid = None
+                try:
+                    if 'PRIMARY_ID' in globals() and PRIMARY_ID is not None:  # type: ignore[name-defined]
+                        tid = int(PRIMARY_ID)  # type: ignore[name-defined]
+                except Exception:
+                    tid = None
+                if tid is None:
+                    tid = getattr(RADAR, 'priority_id', None)
+                tgt = next((c for c in RADAR.contacts if int(getattr(c, 'id', -1)) == int(tid)), None) if tid is not None else None
+                if tgt is None:
+                    reply = "Captain, no locked or selected target for CAP."
+                else:
+                    own_x, own_y = get_own_xy(st)
+                    dx = float(getattr(tgt,'x',0.0)) - float(own_x)
+                    dy = float(getattr(tgt,'y',0.0)) - float(own_y)
+                    rng = (dx*dx + dy*dy) ** 0.5
+                    try:
+                        tcell = world_to_cell(float(getattr(tgt,'x',0.0)), float(getattr(tgt,'y',0.0)))
+                    except Exception:
+                        tcell = cell
+                    if CAP is None:
+                        reply = "Captain, CAP unavailable."
+                    else:
+                        res = CAP.request_cap_to_cell(tcell, distance_nm=float(rng))
+                        if res.get('ok'):
+                            reply = f"Hermes: CAP pair launching to {tcell}."
+                            try:
+                                stamp_cap_launch()
+                            except Exception:
+                                pass
+                        else:
+                            reply = f"Hermes: unable to launch — {res.get('message','denied')}"
+        except Exception:
+            pass
+        record_officer(role, reply)
+        payload = {"ok": True, "role": role, "reply": reply}
+        record_flight({"route": route, "method": request.method, "status": 200,
+                       "duration_ms": int((time.time()-t0)*1000),
+                       "request": {"text": txt}, "response": payload})
+        return jsonify(payload)
+    except Exception as e:
+        logging.exception("/radio/ask error: %s", e)
+        payload = {"ok": False, "error": str(e)}
+        record_flight({"route": route, "method": request.method, "status": 500,
+                       "duration_ms": int((time.time()-t0)*1000),
+                       "request": {}, "response": payload})
+        return jsonify(payload), 500
+
+@app.post("/radio/ai")
+def radio_ai():
+    from flask import request
+    t0 = time.time(); route = "/radio/ai"
+    try:
+        txt = _arg_or_json(request, 'text', '')  # type: ignore[name-defined]
+        if not txt:
+            payload = {"ok": False, "error": "missing text"}
+            record_flight({"route": route, "method": request.method, "status": 400,
+                           "duration_ms": int((time.time()-t0)*1000),
+                           "request": {}, "response": payload})
+            return jsonify(payload), 400
+        actions = _ai_parse(str(txt))
+        if not actions:
+            # Offer a brief help nudge
+            record_officer('Ensign', "Captain, say 'Scan radar', 'Lock <id>', 'Request CAP', or 'CAP to K13'.")
+            payload = {"ok": True, "actions": [], "reply": "HELP"}
+            record_flight({"route": route, "method": request.method, "status": 200,
+                           "duration_ms": int((time.time()-t0)*1000),
+                           "request": {"text": txt}, "response": payload})
+            return jsonify(payload)
+        msgs = _ai_exec(actions)
+        # Summarize as a single officer reply line
+        if msgs:
+            record_officer('Ensign', f"Captain, { '; '.join(msgs) }.")
+        payload = {"ok": True, "actions": actions, "messages": msgs}
+        record_flight({"route": route, "method": request.method, "status": 200,
+                       "duration_ms": int((time.time()-t0)*1000),
+                       "request": {"text": txt}, "response": payload})
+        return jsonify(payload)
+    except Exception as e:
+        logging.exception("/radio/ai error: %s", e)
+        payload = {"ok": False, "error": str(e)}
+        record_flight({"route": route, "method": request.method, "status": 500,
+                       "duration_ms": int((time.time()-t0)*1000),
+                       "request": {}, "response": payload})
+        return jsonify(payload), 500
+
 
 @app.get("/data/sounds/<path:filename>")
 def data_sounds(filename: str):
@@ -835,6 +1563,50 @@ def data_sounds(filename: str):
     except Exception as e:
         logging.exception("/data/sounds error: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 404
+
+
+@app.post("/alarm/trigger")
+def alarm_trigger():
+    from flask import request
+    t0 = time.time(); route = "/alarm/trigger"
+    try:
+        data = request.get_json(silent=True) or {}
+        sound = data.get('sound') or data.get('file') or 'red-alert.wav'
+        # Always one-shot; ignore loop flag from client
+        loop = False
+        role = data.get('role') or 'Captain'
+        msg = data.get('message') or None
+        trigger_alarm(str(sound), message=(str(msg) if msg else None), role=str(role), loop=False)
+        payload = {"ok": True}
+        record_flight({"route": route, "method": request.method, "status": 200,
+                       "duration_ms": int((time.time()-t0)*1000),
+                       "request": {"sound": sound, "loop": loop, "role": role, "message": msg}, "response": payload})
+        return jsonify(payload)
+    except Exception as e:
+        logging.exception("/alarm/trigger error: %s", e)
+        payload = {"ok": False, "error": str(e)}
+        record_flight({"route": route, "method": request.method, "status": 500,
+                       "duration_ms": int((time.time()-t0)*1000),
+                       "request": {}, "response": payload})
+        return jsonify(payload), 500
+
+@app.post("/alarm/clear")
+def alarm_clear():
+    t0 = time.time(); route = "/alarm/clear"
+    try:
+        clear_alarm()
+        payload = {"ok": True}
+        record_flight({"route": route, "method": "POST", "status": 200,
+                       "duration_ms": int((time.time()-t0)*1000),
+                       "request": {}, "response": payload})
+        return jsonify(payload)
+    except Exception as e:
+        logging.exception("/alarm/clear error: %s", e)
+        payload = {"ok": False, "error": str(e)}
+        record_flight({"route": route, "method": "POST", "status": 500,
+                       "duration_ms": int((time.time()-t0)*1000),
+                       "request": {}, "response": payload})
+        return jsonify(payload), 500
 
 
 @app.get("/api/status")
@@ -875,6 +1647,11 @@ def api_status():
         payload["contacts"] = radar_list
         payload["threats"] = threats
         payload["top_threat_id"] = (threats[0]["id"] if threats else None)
+        # CAP snapshot (UI-friendly shape)
+        try:
+            payload["cap"] = _cap_ui_snapshot()
+        except Exception:
+            payload["cap"] = {"ready": False, "pairs": 0, "airframes": 0, "cooldown_s": 0, "committed": 0, "tasks": []}
         # Optional debug-contacts appended after radar list only if enabled
         try:
             if 'DEBUG_CONTACTS_ON' in globals() and DEBUG_CONTACTS_ON:  # type: ignore[name-defined]
@@ -883,8 +1660,8 @@ def api_status():
             pass
         # Ship cell string (A..Z + 1..26)
         try:
-            s = payload.get('state',{}).get('ship',{})
-            payload['ship_cell'] = cell_for_world(float(s.get('row',0.0)), float(s.get('col',0.0)))
+            s = payload.get('state',{})
+            payload['ship_cell'] = ship_cell_from_state(s)
         except Exception:
             pass
         # Primary from module-level PRIMARY_ID (prefer), otherwise omit
@@ -936,9 +1713,10 @@ def api_status():
             pass
         # Audio snapshot for frontend (last_launch / last_result)
         try:
-            payload['audio'] = dict(AUDIO_STATE)
+            with STATE_LOCK:
+                payload['audio'] = dict(AUDIO_STATE)
         except Exception:
-            payload['audio'] = {'last_launch': None, 'last_result': None}
+            payload['audio'] = {'last_launch': None, 'last_result': None, 'radio': None}
         record_flight({
             "route": route, "method": "GET", "status": 200,
             "duration_ms": int((time.time()-t0)*1000),
@@ -953,6 +1731,144 @@ def api_status():
             "duration_ms": int((time.time()-t0)*1000),
             "request": {}, "response": payload,
         })
+        return jsonify(payload), 500
+
+@app.get("/cap/readiness")
+def cap_readiness():
+    try:
+        if CAP is None:
+            return jsonify({"ok": False, "error": "CAP unavailable"}), 503
+        return jsonify({"ok": True, "readiness": CAP.readiness()})
+    except Exception as e:
+        logging.exception("/cap/readiness error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.get("/cap/status")
+def cap_status():
+    try:
+        if CAP is None:
+            return jsonify({"ok": False, "error": "CAP unavailable"}), 503
+        return jsonify({"ok": True, "cap": CAP.snapshot()})
+    except Exception as e:
+        logging.exception("/cap/status error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.post("/cap/request")
+def cap_request():
+    from flask import request
+    t0 = time.time(); route = "/cap/request"
+    try:
+        if CAP is None:
+            payload = {"ok": False, "error": "CAP unavailable"}
+            record_flight({"route": route, "method": request.method, "status": 503,
+                           "duration_ms": int((time.time()-t0)*1000),
+                           "request": {}, "response": payload})
+            return jsonify(payload), 503
+        data = request.get_json(silent=True) or {}
+        # Determine target: explicit id or current PRIMARY_ID / RADAR.priority_id
+        tid = data.get("id")
+        try:
+            tid = int(tid) if tid is not None else tid
+        except Exception:
+            tid = None
+        if tid is None:
+            try:
+                tid = int(PRIMARY_ID) if ('PRIMARY_ID' in globals() and PRIMARY_ID is not None) else None  # type: ignore[name-defined]
+            except Exception:
+                tid = None
+        if tid is None:
+            tid = RADAR.priority_id
+        tgt = next((c for c in RADAR.contacts if int(getattr(c, 'id', -1)) == int(tid)) , None) if tid is not None else None
+        if tgt is None:
+            payload = {"ok": False, "error": "no locked/selected target"}
+            record_flight({"route": route, "method": request.method, "status": 400,
+                           "duration_ms": int((time.time()-t0)*1000),
+                           "request": data, "response": payload})
+            return jsonify(payload), 400
+        # Compute distance and target cell
+        st = ENG.public_state() if hasattr(ENG, "public_state") else {}
+        own_x, own_y = get_own_xy(st)
+        dx = float(getattr(tgt, 'x', 0.0)) - float(own_x)
+        dy = float(getattr(tgt, 'y', 0.0)) - float(own_y)
+        rng_nm = (dx*dx + dy*dy) ** 0.5
+        try:
+            # world_to_cell expects (x, y)
+            cell = world_to_cell(float(getattr(tgt, 'x', 0.0)), float(getattr(tgt, 'y', 0.0)))
+        except Exception:
+            cell = "K13"
+        res = CAP.request_cap_to_cell(cell, distance_nm=float(rng_nm))
+        status = 200 if res.get("ok") else 400
+        payload = {"ok": bool(res.get("ok")), "message": res.get("message"), "mission": res.get("mission")}
+        if res.get('ok'):
+            try:
+                stamp_cap_launch()
+            except Exception:
+                pass
+        record_flight({"route": route, "method": request.method, "status": status,
+                       "duration_ms": int((time.time()-t0)*1000),
+                       "request": {"id": tid, "cell": cell, "range_nm": round(rng_nm,2)}, "response": payload})
+        return jsonify(payload), status
+    except Exception as e:
+        logging.exception("/cap/request error: %s", e)
+        payload = {"ok": False, "error": str(e)}
+        record_flight({"route": route, "method": request.method, "status": 500,
+                       "duration_ms": int((time.time()-t0)*1000),
+                       "request": {}, "response": payload})
+        return jsonify(payload), 500
+
+@app.post("/cap/launch_to")
+def cap_launch_to():
+    from flask import request
+    t0 = time.time(); route = "/cap/launch_to"
+    try:
+        if CAP is None:
+            payload = {"ok": False, "error": "CAP unavailable"}
+            record_flight({"route": route, "method": request.method, "status": 503,
+                           "duration_ms": int((time.time()-t0)*1000),
+                           "request": {}, "response": payload})
+            return jsonify(payload), 503
+        data = request.get_json(silent=True) or {}
+        cell = str(data.get("cell") or "").strip().upper()
+        if not cell:
+            payload = {"ok": False, "error": "missing cell"}
+            record_flight({"route": route, "method": request.method, "status": 400,
+                           "duration_ms": int((time.time()-t0)*1000),
+                           "request": data, "response": payload})
+            return jsonify(payload), 400
+        # Compute distance from own ship to requested cell center
+        st = ENG.public_state() if hasattr(ENG, "public_state") else {}
+        own_x, own_y = get_own_xy(st)
+        tx, ty = cell_to_world(cell)
+        dx, dy = float(tx) - float(own_x), float(ty) - float(own_y)
+        rng_nm = (dx*dx + dy*dy) ** 0.5
+        # Allow overrides; default to your requested 10 min on-station, 10 nm radius
+        try:
+            sm = data.get('station_minutes', None)
+            rm = data.get('radius_nm', None)
+        except Exception:
+            sm = None; rm = None
+        if sm is None:
+            sm = 10
+        if rm is None:
+            rm = 10
+        res = CAP.request_cap_to_cell(cell, distance_nm=float(rng_nm), station_minutes=float(sm), radius_nm=float(rm))
+        status = 200 if res.get("ok") else 400
+        payload = {"ok": bool(res.get("ok")), "message": res.get("message"), "mission": res.get("mission")}
+        if res.get('ok'):
+            try:
+                stamp_cap_launch()
+            except Exception:
+                pass
+        record_flight({"route": route, "method": request.method, "status": status,
+                       "duration_ms": int((time.time()-t0)*1000),
+                       "request": {"cell": cell, "range_nm": round(rng_nm,2)}, "response": payload})
+        return jsonify(payload), status
+    except Exception as e:
+        logging.exception("/cap/launch_to error: %s", e)
+        payload = {"ok": False, "error": str(e)}
+        record_flight({"route": route, "method": request.method, "status": 500,
+                       "duration_ms": int((time.time()-t0)*1000),
+                       "request": {}, "response": payload})
         return jsonify(payload), 500
 
 @app.route("/api/command", methods=["GET", "POST"])
@@ -999,9 +1915,10 @@ def api_command():
             # Recorder events
             try:
                 RADAR.rec.log("radar.unlock", {})
-                RADAR.rec.log("radio.msg", {"kind": "UNLOCK", "text": "UNLOCK"})
             except Exception:
                 pass
+            # Officer radio
+            officer_say('Fire Control', 'unlocked', {})
             payload = {"ok": True, "result": "UNLOCKED"}
             record_flight({
                 "route": route, "method": request.method, "status": 200,
@@ -1042,9 +1959,16 @@ def api_command():
                 pass
             try:
                 RADAR.rec.log("radar.lock", {"id": tid})
-                RADAR.rec.log("radio.msg", {"kind": "LOCK", "text": f"LOCK id={tid}"})
             except Exception:
                 pass
+            # Officer radio (Fire Control)
+            try:
+                st = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+                own_x, own_y = get_own_xy(st)
+                ui = contact_to_ui(target, (own_x, own_y))
+                officer_say('Fire Control','locked',{'name': ui.get('name'), 'id': tid, 'range_nm': ui.get('range_nm')})
+            except Exception:
+                officer_say('Fire Control','locked',{'id': tid})
             payload = {"ok": True, "result": f"LOCKED id={tid}"}
             record_flight({
                 "route": route, "method": request.method, "status": 200,
@@ -1057,8 +1981,19 @@ def api_command():
             # compute own_xy
             st = ENG.public_state() if hasattr(ENG, "public_state") else {}
             own_x, own_y = get_own_xy(st)
+            # Radio: confirmation + summary
+            try:
+                officer_say('Radar', 'scanning', {})
+            except Exception:
+                pass
             try:
                 RADAR.scan(own_x, own_y)
+            except Exception:
+                pass
+            # Build a short summary for the crew
+            try:
+                ctx = _radar_summary_ctx(own_x, own_y)
+                officer_say('Radar', 'scan_report', ctx, fallback=f"Captain, radar scan complete: {ctx['contacts']} contact(s), hostiles {ctx['hostiles']}, friendlies {ctx['friendlies']}.")
             except Exception:
                 pass
             result = f"RADAR: scanned, {len(RADAR.contacts)} contact(s)"
@@ -1144,6 +2079,12 @@ def weapons_arm():
             RADAR.rec.log('weapons.arm', {'name': name, 'state': state})
         except Exception:
             pass
+        # Schedule officer readiness call when arming completes
+        if state == 'Armed':
+            try:
+                PENDING_EVENTS.append({'due': time.time()+5.0, 'kind': 'arming_ready', 'weapon': name})
+            except Exception:
+                pass
         payload = {'ok': True, 'name': name, 'state': disp_state}
         record_flight({'route': route, 'method': 'POST', 'status': 200,
                        'duration_ms': int((time.time()-t0)*1000),
@@ -1170,19 +2111,44 @@ def weapons_fire():
                            'duration_ms': int((time.time()-t0)*1000),
                            'request': {'name': name, 'mode': mode}, 'response': payload})
             return jsonify(payload), 400
-        # test mode
+        # test mode (require ARMED, consume ammo like real shot; no range gating)
         if mode == 'test':
+            arming = load_arming(); ammo = load_ammo()
+            if arming.get(name, 'Safe') != 'Armed':
+                payload = {'ok': False, 'error': 'NOT_ARMED'}
+                record_flight({'route': route, 'method': 'POST', 'status': 400,
+                               'duration_ms': int((time.time()-t0)*1000),
+                               'request': {'name': name, 'mode': mode}, 'response': payload})
+                return jsonify(payload), 400
+            if ammo.get(name, 0) <= 0:
+                payload = {'ok': False, 'error': 'NO_AMMO'}
+                record_flight({'route': route, 'method': 'POST', 'status': 400,
+                               'duration_ms': int((time.time()-t0)*1000),
+                               'request': {'name': name, 'mode': mode}, 'response': payload})
+                return jsonify(payload), 400
             try:
-                RADAR.rec.log('weapons.fire', {'name': name, 'mode': 'test'})
+                if name in ("20mm Oerlikon", "20mm GAM-BO1 (twin)"):
+                    dec = 50
+                else:
+                    dec = 1
+            except Exception:
+                dec = 1
+            ammo[name] = int(ammo.get(name, 0)) - int(dec)
+            if ammo[name] < 0:
+                ammo[name] = 0
+            save_ammo(ammo)
+            try:
+                RADAR.rec.log('weapons.fire', {'name': name, 'mode': 'test', 'ammo': ammo[name]})
                 RADAR.rec.log('radio.msg', {'kind': 'FIRE', 'text': f'TEST {name}'})
             except Exception:
                 pass
             # Stamp audio launch so frontend plays sound for test fire
             try:
-                AUDIO_STATE['last_launch'] = {'weapon': _sound_key_for_weapon(name), 'ts': time.time()}
+                with STATE_LOCK:
+                    AUDIO_STATE['last_launch'] = {'weapon': _sound_key_for_weapon(name), 'ts': time.time()}
             except Exception:
                 pass
-            payload = {'ok': True, 'result': 'TEST FIRED', 'name': name}
+            payload = {'ok': True, 'result': 'TEST FIRED', 'name': name, 'ammo': ammo[name]}
             record_flight({'route': route, 'method': 'POST', 'status': 200,
                            'duration_ms': int((time.time()-t0)*1000),
                            'request': {'name': name, 'mode': mode}, 'response': payload})
@@ -1250,7 +2216,8 @@ def weapons_fire():
             pass
         # Audio: stamp launch for frontend
         try:
-            AUDIO_STATE['last_launch'] = {'weapon': _sound_key_for_weapon(name), 'ts': time.time()}
+            with STATE_LOCK:
+                AUDIO_STATE['last_launch'] = {'weapon': _sound_key_for_weapon(name), 'ts': time.time()}
         except Exception:
             pass
         # Schedule outcome (hit/miss) at arrival time
@@ -1393,6 +2360,27 @@ class _RecorderLike:
                 "request": {},
                 "response": {"event": event, **(data or {})},
             })
+            # Auto-alarm on close threat if enabled in alarm config
+            if event == "ship.alarm.threat_close":
+                try:
+                    cfg = load_alarm_cfg()
+                    auto = (cfg.get('auto') or {}).get('threat_close') or {}
+                    if bool(auto.get('enabled', False)):
+                        msg_tpl = str(auto.get('message') or 'Combat alarm! Threat inside {range_nm} nm.')
+                        rng = None
+                        try:
+                            rng = float((data or {}).get('range_nm'))
+                        except Exception:
+                            rng = None
+                        try:
+                            thresh = float(auto.get('threshold_nm', 3.0))
+                        except Exception:
+                            thresh = 3.0
+                        if (rng is None) or (rng <= thresh):
+                            msg = msg_tpl.format(range_nm=(f"{rng:.1f}" if isinstance(rng, (int,float)) else "?"))
+                            trigger_alarm(str(auto.get('sound') or 'red-alert.wav'), message=msg, role=str(auto.get('role') or 'Fire Control'), loop=False)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -1408,6 +2396,11 @@ RADAR = Radar(
     rng=_rng,
     catalog_path=os.path.join(os.path.dirname(__file__), 'data', 'contacts.json')
 )
+try:
+    # Provide CAP effects to RADAR so spawn/intercept logic can use it
+    RADAR.cap_effects_provider = (lambda: CAP.current_effects() if CAP is not None else {"active": False})
+except Exception:
+    pass
 
 # ---- Radar demo helpers ----
 def _weighted_hostile_pick(rng: random.Random) -> tuple[str, float]:
@@ -1503,10 +2496,8 @@ def radar_force_spawn():
             ui['cell'] = world_to_cell(c.x, c.y)
         except Exception:
             pass
-        try:
-            RADAR.rec.log("radio.msg", {"kind": "SPAWN", "text": f"{ui.get('type')} {ui.get('name')} r={ui.get('range_nm')} nm at {ui.get('cell')}"})
-        except Exception:
-            pass
+        # Officer radio (Radar)
+        officer_say('Radar','contact',{'type': ui.get('type'), 'bearing': round((315.0)%360), 'range_nm': ui.get('range_nm'), 'speed': ui.get('speed')})
         payload = {"ok": True, "added": ui, "count": len(RADAR.contacts)}
         record_flight({
             "route": route, "method": "GET", "status": 200,
@@ -1536,10 +2527,7 @@ def radar_force_spawn_hostile():
             ui['cell'] = world_to_cell(c.x, c.y)
         except Exception:
             pass
-        try:
-            RADAR.rec.log("radio.msg", {"kind": "SPAWN", "text": f"{ui.get('type')} {ui.get('name')} r={ui.get('range_nm')} nm at {ui.get('cell')}"})
-        except Exception:
-            pass
+        officer_say('Radar','contact',{'type': ui.get('type'), 'bearing': round((315.0)%360), 'range_nm': ui.get('range_nm'), 'speed': ui.get('speed')})
         payload = {"ok": True, "added": ui, "count": len(RADAR.contacts)}
         record_flight({"route": route, "method": "GET", "status": 200,
                        "duration_ms": int((time.time()-t0)*1000),
@@ -1565,10 +2553,7 @@ def radar_force_spawn_friendly():
             ui['cell'] = world_to_cell(c.x, c.y)
         except Exception:
             pass
-        try:
-            RADAR.rec.log("radio.msg", {"kind": "SPAWN", "text": f"{ui.get('type')} {ui.get('name')} r={ui.get('range_nm')} nm at {ui.get('cell')}"})
-        except Exception:
-            pass
+        officer_say('Radar','contact',{'type': ui.get('type'), 'bearing': round((315.0)%360), 'range_nm': ui.get('range_nm'), 'speed': ui.get('speed')})
         payload = {"ok": True, "added": ui, "count": len(RADAR.contacts)}
         record_flight({"route": route, "method": "GET", "status": 200,
                        "duration_ms": int((time.time()-t0)*1000),
@@ -1654,9 +2639,9 @@ def radar_force_spawn_near():
         try:
             RADAR.rec.log("radar.force_spawn", {"name": name, "class": klass, "bearing_deg": round(bearing_deg,1), "range_nm": round(rng,2),
                             "target_world_xy": [round(x,2), round(y,2)], "ship_world_xy": [round(own_x,2), round(own_y,2)]})
-            RADAR.rec.log("radio.msg", {"kind": "SPAWN", "text": f"Hostile {name} r={ui.get('range_nm')} nm at {ui.get('cell')}"})
         except Exception:
             pass
+        officer_say('Radar','contact',{'type': klass, 'bearing': round((bearing_deg)%360), 'range_nm': ui.get('range_nm'), 'speed': ui.get('speed')})
         payload = {"ok": True, "added": ui, "count": len(RADAR.contacts)}
         record_flight({"route": route, "method": "GET", "status": 200,
                        "duration_ms": int((time.time()-t0)*1000),
@@ -1721,4 +2706,47 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     info = _template_info("index.html")
     print(f"[webdash] templates -> {info['template_folder']} | index -> {info.get('path')} | sha1={info.get('sha1')}")
+    # Start the background engine thread only after all functions/routes are defined
+    try:
+        _t = threading.Thread(target=engine_thread, daemon=True)
+        _t.start()
+    except Exception:
+        pass
     app.run(host="127.0.0.1", port=PORT, debug=False, threaded=True)
+# ---- Crew config (roles, voices, messages) ----
+def _load_crew() -> Dict[str, Any]:
+    try:
+        data = _load_json(CREW_PATH, {})
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+CREW = _load_crew()
+
+def _crew_msg(role: str, key: str) -> str | None:
+    try:
+        r = (CREW.get('roles') or {}).get(role)
+        if not isinstance(r, dict):
+            return None
+        msgs = r.get('messages')
+        if not isinstance(msgs, dict):
+            return None
+        tpl = msgs.get(key)
+        return str(tpl) if tpl else None
+    except Exception:
+        return None
+
+def _fmt_msg(tpl: str, ctx: Dict[str, Any]) -> str:
+    class _Safe(dict):
+        def __missing__(self, k):
+            return "?"
+    try:
+        return tpl.format_map(_Safe(**{k: ("—" if v is None else v) for k, v in (ctx or {}).items()}))
+    except Exception:
+        return tpl
+
+def officer_say(role: str, key: str, ctx: Dict[str, Any] | None = None, fallback: str | None = None) -> None:
+    tpl = _crew_msg(role, key)
+    text = _fmt_msg(tpl, ctx or {}) if tpl else (fallback or "")
+    if text:
+        record_officer(role, text)

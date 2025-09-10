@@ -11,19 +11,18 @@ except Exception:
     except Exception:
         WORLD_N = 40  # type: ignore
 
-# Board size for A..Z and 1..26 grid
+# Board size for A..Z and 1..26 grid, centered inside 40x40 world
 BOARD_N = 26
+BOARD_MIN = (WORLD_N - BOARD_N) / 2.0  # 7.0 for 40→26 center window
 
 def world_to_cell(x: float, y: float, world_n: float = WORLD_N, board_n: int = BOARD_N) -> str:
-    def idx(v: float) -> int:
-        if v <= 0:
-            return 0
-        if v >= world_n:
-            return board_n - 1
-        # proportional index with rounding
-        return int(round((v / world_n) * (board_n - 1)))
-    col_i = idx(x)                # 0..25
-    row_i = idx(y)                # 0..25
+    """Map world (x,y) in 0..WORLD_N into captain grid A..Z,1..26 centered in world.
+    Clamps outside positions to board edges. K13 should correspond to x=BOARD_MIN+10, y=BOARD_MIN+12.
+    """
+    bx = x - BOARD_MIN
+    by = y - BOARD_MIN
+    col_i = max(0, min(board_n - 1, int(round(bx))))
+    row_i = max(0, min(board_n - 1, int(round(by))))
     col_letter = chr(ord('A') + col_i)
     return f"{col_letter}{row_i + 1}"
 

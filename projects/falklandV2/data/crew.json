@@ -1,0 +1,73 @@
+{
+  "defaults": {
+    "voice": "alloy",
+    "traits": {"tone": "calm", "style": "clipped", "brevity": true}
+  },
+  "roles": {
+    "Navigation": {
+      "name": "Lt. (Nav) Arthur Bell",
+      "callsign": "Navigation",
+      "voice": "alloy",
+      "traits": {"tone": "precise", "style": "concise"},
+      "messages": {
+        "steady": "Captain, ship steady on course {hdg}°, speed {spd} knots.",
+        "grid": "Captain, we are entering grid {cell}."
+      }
+    },
+    "Weapons": {
+      "name": "Lt. (Wpn) Sarah Blake",
+      "callsign": "Weapons",
+      "voice": "verse",
+      "traits": {"tone": "cool", "style": "crisp"},
+      "messages": {
+        "ready": "Captain, {weapon} ready.",
+        "status": "Captain, weapons: {summary}."
+      }
+    },
+    "Radar": {
+      "name": "PO (Radar) Colin Hart",
+      "callsign": "Radar",
+      "voice": "alloy",
+      "traits": {"tone": "alert", "style": "short"},
+      "messages": {
+        "contact": "Captain, radar contact! {type} bearing {bearing}°, range {range_nm} nm, speed {speed} knots.",
+        "none": "Captain, no contacts on scope.",
+        "scanning": "Captain, scanning radar.",
+        "scan_report": "Captain, radar scan complete: {contacts} contact(s), hostiles {hostiles}, friendlies {friendlies}. Top threat {threat} at {range_nm} nm ({threat_level})."
+      }
+    },
+    "Fire Control": {
+      "name": "Ensign Jim Hockney",
+      "callsign": "Fire Control",
+      "voice": "alloy",
+      "traits": {"tone": "calm", "style": "authoritative"},
+      "messages": {
+        "locked": "Captain, priority threat locked: {name} ID {id}, range {range_nm} nm.",
+        "unlocked": "Captain, target unlocked.",
+        "hit": "Captain, target destroyed: {name} ID {id}.",
+        "miss": "Captain, shot missed: {name} ID {id}."
+      }
+    },
+    "Engineering": {
+      "name": "CPO (Eng) Martin Shaw",
+      "callsign": "Engineering",
+      "voice": "alloy",
+      "traits": {"tone": "measured", "style": "brief"},
+      "messages": {
+        "damage": "Captain, hit on {system}. Damage control responding.",
+        "repaired": "Captain, repairs complete on {system}."
+      }
+    },
+    "Pilot": {
+      "name": "Lt. (Air) Flight Lead",
+      "callsign": "Pilot",
+      "voice": "alloy",
+      "traits": {"tone": "crisp", "style": "brevity"},
+      "messages": {
+        "fox2": "Fox Two!",
+        "splash": "Splash one bandit.",
+        "miss": "Missile missed."
+      }
+    }
+  }
+}

@@ -35,7 +35,8 @@ def _interp(x: float, pts: List[Tuple[float, float]]) -> float:
 
 class CAPMission:
     """State machine: queued -> airborne -> onstation -> rtb -> recovering -> complete."""
-    def __init__(self, mission_id: int, target_cell: str, cfg: Dict[str, Any], *, now: float, distance_nm: float):
+    def __init__(self, mission_id: int, target_cell: str, cfg: Dict[str, Any], *, now: float, distance_nm: float,
+                 onstation_min: Optional[float] = None, station_radius_nm: Optional[float] = None):
         self.id = mission_id
         self.target_cell = target_cell
         self.status = "queued"
@@ -44,10 +45,10 @@ class CAPMission:
 
         # Static params
         self.deck_cycle_s = int(cfg.get("deck_cycle_per_pair_s", 180))
-        self.onstation_s = int(cfg.get("default_onstation_min", 20)) * 60
+        self.onstation_s = int(onstation_min if onstation_min is not None else cfg.get("default_onstation_min", 20)) * 60
         self.bingo_rtb_buffer_s = int(cfg.get("bingo_rtb_buffer_min", 4)) * 60
         self.cruise_speed_kts = float(cfg.get("cruise_speed_kts", 420))
-        self.station_radius_nm = float(cfg.get("station_radius_nm", 5))
+        self.station_radius_nm = float(station_radius_nm if station_radius_nm is not None else cfg.get("station_radius_nm", 5))
 
         # Simple weapons loadout for a pair: two AIM-9 total (not per-airframe)
         wcfg = (cfg.get("weapons") or {}).get("aim9", {})
@@ -125,7 +126,8 @@ class HermesCAP:
             "station_radius_nm": float(self.cfg.get("station_radius_nm", 5))
         }
 
-    def request_cap_to_cell(self, target_cell: str, *, distance_nm: float, now: Optional[float] = None) -> Dict[str, Any]:
+    def request_cap_to_cell(self, target_cell: str, *, distance_nm: float, now: Optional[float] = None,
+                            station_minutes: Optional[float] = None, radius_nm: Optional[float] = None) -> Dict[str, Any]:
         t = now or time.time()
         if (t - self.last_scramble) < self.min_launch_interval_s:
             return {"ok": False, "message": "Deck cycle in progress"}
@@ -136,7 +138,9 @@ class HermesCAP:
         if self.airframe_pool_total < 2:
             return {"ok": False, "message": "Insufficient airframes"}
 
-        m = CAPMission(self._next_id, target_cell, self.cfg, now=t, distance_nm=float(distance_nm))
+        m = CAPMission(self._next_id, target_cell, self.cfg, now=t, distance_nm=float(distance_nm),
+                       onstation_min=(float(station_minutes) if station_minutes is not None else None),
+                       station_radius_nm=(float(radius_nm) if radius_nm is not None else None))
         self._next_id += 1
         self.missions.append(m)
         self.ready_pairs -= 1

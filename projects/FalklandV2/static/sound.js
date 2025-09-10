@@ -23,6 +23,8 @@
     weapon_launch: "missile_launch.wav",
     hit: "hit.wav",
     miss: "miss.wav",
+    // alarms
+    red_alert: "red-alert.wav",
   };
 
   const BASE = "/data/sounds/";
@@ -68,6 +70,10 @@
   // ---- Weapon launch/result playback (edge-trigger) ----
   let lastStamp = null;
   let lastResult = null;
+  let lastRadio = null;
+  let lastAlarm = null;
+  let alarmAudio = null;
+  let lastCapLaunch = null;
 
   async function pollLaunchAndPlay() {
     try {
@@ -99,7 +105,54 @@
         }
       }
 
-      // 3) Fly-by trigger (any aircraft within 0.3 nm crossing inward)
+      // 3) Radio speech (serialized)
+      const rs = j?.audio?.radio;
+      if (rs) {
+        const ts3 = rs.ts || 0;
+        const durMs = Math.max(200, Math.min(8000, Number(rs.dur||1.2)*1000));
+        if (!lastRadio || lastRadio.ts !== ts3) {
+          lastRadio = { ts: ts3 };
+          if (unlocked) {
+            playOne('radio_on.wav');
+            setTimeout(()=> playOne('radio_off.wav'), durMs);
+          }
+        }
+      }
+
+      // 4) Alarm (server-stamped)
+      const alarm = j?.audio?.alarm;
+      if (alarm) {
+        const ts4 = alarm.ts || 0;
+        if (!lastAlarm || lastAlarm.ts !== ts4) {
+          lastAlarm = { ts: ts4 };
+          const stop = !!alarm.stop;
+          if (stop) {
+            try { if (alarmAudio) { alarmAudio.pause(); alarmAudio.currentTime = 0; alarmAudio = null; } } catch (_) {}
+          } else if (unlocked) {
+            try {
+              const file = alarm.file || SOUND_MAP[alarm.sound || 'red_alert'] || 'red-alert.wav';
+              if (alarmAudio) { try { alarmAudio.pause(); } catch(_){}; alarmAudio = null; }
+              alarmAudio = new Audio(file.startsWith('/')? file : (BASE + file));
+              // Always one-shot: do not loop alarms
+              alarmAudio.loop = false;
+              alarmAudio.volume = 1.0;
+              alarmAudio.play().catch(()=>{});
+            } catch (_) {}
+          }
+        }
+      }
+
+      // 5) CAP launch cue (one-shot, low volume, fade-out)
+      const cap = j?.audio?.cap_launch;
+      if (cap) {
+        const ts5 = cap.ts || 0;
+        if (!lastCapLaunch || lastCapLaunch.ts !== ts5) {
+          lastCapLaunch = { ts: ts5 };
+          if (unlocked) playWithFade(cap.file || 'SHAR.wav', Number(cap.vol || 0.1), Number(cap.fade_s || 2.0));
+        }
+      }
+
+      // 6) Fly-by trigger (any aircraft within 0.3 nm crossing inward)
       updateFlyby(j);
     } catch (_) {
       // never break the UI
@@ -108,8 +161,35 @@
 
   function playOne(file) {
     try {
-      const a = new Audio(BASE + file);
+      const a = new Audio(file.startsWith('/')? file : (BASE + file));
       a.volume = 1.0;
+      a.play().catch(() => {});
+    } catch (_) {}
+  }
+
+  function playWithFade(file, volume, fadeSeconds) {
+    try {
+      const a = new Audio(file.startsWith('/')? file : (BASE + file));
+      a.volume = Math.max(0, Math.min(1, isFinite(volume)? volume : 0.1));
+      a.loop = false;
+      const doFade = (sec) => {
+        const duration = a.duration || 0;
+        const startInMs = Math.max(0, (duration - sec) * 1000);
+        setTimeout(() => {
+          try {
+            const steps = Math.max(4, Math.floor(sec * 20)); // 50ms steps
+            let i = 0;
+            const v0 = a.volume;
+            const id = setInterval(() => {
+              i += 1;
+              const t = i / steps;
+              a.volume = Math.max(0, v0 * (1 - t));
+              if (i >= steps || a.paused) { clearInterval(id); }
+            }, 50);
+          } catch (_) {}
+        }, startInMs);
+      };
+      a.addEventListener('loadedmetadata', () => doFade(Math.max(0, isFinite(fadeSeconds)? fadeSeconds : 2.0)));
       a.play().catch(() => {});
     } catch (_) {}
   }

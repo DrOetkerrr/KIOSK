@@ -1,0 +1,12 @@
+{
+  "auto": {
+    "threat_close": {
+      "enabled": false,
+      "threshold_nm": 3.0,
+      "sound": "red-alert.wav",
+      "loop": false,
+      "role": "Fire Control",
+      "message": "Combat alarm! Threat inside {range_nm} nm."
+    }
+  }
+}

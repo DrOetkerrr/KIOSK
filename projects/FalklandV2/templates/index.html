@@ -138,11 +138,16 @@
     <!-- Two boxes: CAP (left) & Radio (right) -->
     <div class="grid cols-2">
       <section id="CARD-CAP" class="card" aria-label="Hermes CAP">
-        <h3>Hermes CAP</h3>
+        <h3>
+          Hermes CAP
+          <button id="cap-int-btn" class="btn" title="Launch Intercept (to locked target)">Intercept</button>
+          <input id="cap-head-cell" class="mono" placeholder="Cell" style="width:74px;padding:4px;border-radius:8px;border:1px solid var(--border);background:#0c152b;color:var(--text)">
+          <button id="cap-head-launch" class="btn" title="Launch CAP to cell">Launch CAP</button>
+        </h3>
         <div id="cap-mini" class="row"></div>
         <div class="scroll">
           <table>
-            <thead><tr><th>#</th><th>Target cell</th><th class="num">Range</th><th>Status</th></tr></thead>
+            <thead><tr><th>#</th><th>Target cell</th><th class="num">Range</th><th class="num">TOT (s)</th><th class="num">TOS (s)</th><th>Status</th></tr></thead>
             <tbody id="cap-body"></tbody>
           </table>
         </div>
@@ -152,6 +157,10 @@
       <section id="CARD-RADIO" class="card" aria-label="Radio Messages">
         <h3>Radio Messages</h3>
         <div id="radio-list" class="scroll"></div>
+        <div class="row" style="margin-top:8px">
+          <input id="radio-input" class="mono" placeholder="Type to an officer (e.g., 'Radar, nearest contact?')" style="flex:1;min-width:200px;padding:6px;border-radius:8px;border:1px solid var(--border);background:#0c152b;color:var(--text)"/>
+          <button id="radio-send" class="btn">Send</button>
+        </div>
         <div id="radio-empty" class="placeholder" hidden>— No messages yet.</div>
       </section>
     </div>
@@ -180,9 +189,15 @@
         <button id="cmd-scan" class="btn">Scan now</button>
         <button id="cmd-unlock" class="btn" disabled>Unlock</button>
         <button class="btn warn" disabled>Deploy Chaff</button>
-        <button class="btn" disabled>Request CAP</button>
+        <button id="btn-cap-request" class="btn">Request CAP</button>
         <button id="btn-spawn-air" class="btn">Spawn Near Aircraft</button>
         <button id="btn-spawn-ship" class="btn">Spawn Near Ship</button>
+        <input id="cap-cell" class="mono" placeholder="Cell e.g., K13" style="width:90px;padding:6px;border-radius:8px;border:1px solid var(--border);background:#0c152b;color:var(--text)"/>
+        <label class="mono" style="margin-left:8px">Minutes <span id="cap-minutes-val">10</span></label>
+        <input id="cap-minutes" type="range" min="5" max="30" step="1" value="10" style="vertical-align:middle;width:120px">
+        <label class="mono" style="margin-left:8px">Radius <span id="cap-radius-val">10</span> nm</label>
+        <input id="cap-radius" type="range" min="2" max="20" step="1" value="10" style="vertical-align:middle;width:120px">
+        <button id="btn-cap-to-cell" class="btn">CAP to Cell</button>
       </div>
       <div id="console" class="scroll mono muted"></div>
     </section>
@@ -279,7 +294,7 @@
         const statusEl = arming? badge('Arming','badge warn') : (armed? badge('Armed','badge ok') : badge('Safe','badge'));
         const armBtn = Object.assign(document.createElement('button'), {className:'btn', textContent: (armed||arming)?'Safe':'Arm'});
         armBtn.onclick = ()=> toggleArm(w.name, (armed||arming)? 'Safe':'Armed');
-        const testBtn = Object.assign(document.createElement('button'), {className:'btn', textContent:'Test Fire', disabled: false});
+        const testBtn = Object.assign(document.createElement('button'), {className:'btn', textContent:'Test Fire', disabled: (!armed || ammo<=0)});
         testBtn.onclick = ()=> fireWeapon(w.name, 'test');
         const fireBtn = Object.assign(document.createElement('button'), {className:'btn danger', textContent:'Fire',
                            disabled: (!armed || !inRange || ammo<=0)});
@@ -310,10 +325,14 @@
         badge(`cooldown ${cap.cooldown_s??0}s`), badge(`committed ${cap.committed??0}`)
       );
       (cap.tasks||[]).forEach(t=>{
+        const statusTxt = (t.status||'').trim();
+        const finalStatus = t.engaged ? (statusTxt? `${statusTxt} (engaged)` : 'Engaged') : (statusTxt||'—');
         body.appendChild(rowEl([
           String(t.n||'—'), t.target_cell||'—',
-          {cls:'num', text: t.range_nm? fmt(t.range_nm,1):'—'},
-          t.engaged? 'Engaged':'—'
+          {cls:'num', text: (typeof t.range_nm==='number')? fmt(t.range_nm,1):'—'},
+          {cls:'num', text: (typeof t.tot_s==='number')? String(t.tot_s): '—'},
+          {cls:'num', text: (typeof t.tos_s==='number')? String(t.tos_s): '—'},
+          finalStatus
         ]));
       });
     }
@@ -325,7 +344,7 @@
       empty.hidden=true;
       lines.slice(0,4).forEach(l=>{
         const row=document.createElement('div'); row.className='row';
-        row.append(badge(l.ts||'--:--:--','badge muted'), badge(l.kind||'EVT','badge'),
+        row.append(badge(l.ts||'--:--:--','badge muted'), badge(l.role||'OFF','badge'),
                    document.createTextNode(l.text||''));
         box.append(row);
       });
@@ -386,12 +405,67 @@
       }catch(e){ appendConsole(`[fire:${mode}] ${name} ERR ${e}`); }
     }
 
+    async function capIntercept(){
+      try{
+        const j = await doPOST('/cap/request');
+        appendConsole(`[CAP] intercept ${j.ok?'OK':'ERR'} ${j.message||''}`);
+      }catch(e){ appendConsole(`[CAP] intercept ERR ${e}`); }
+    }
+
+    async function capLaunchTo(cell, minutes=10, radius=10){
+      try{
+        const r = await fetch('/cap/launch_to', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({cell, station_minutes:minutes, radius_nm:radius})});
+        const j = await r.json();
+        appendConsole(`[CAP->${cell}] ${j.ok?'OK':'ERR'} ${j.message||''}`);
+      }catch(e){ appendConsole(`[CAP->${cell}] ERR ${e}`); }
+    }
+
+    async function requestCAP(){
+      try{
+        const j=await doPOST('/cap/request');
+        appendConsole(`[cap] ${j.ok?'OK':'ERR'} ${j.message||''}`);
+      }catch(e){ appendConsole(`[cap] ERR ${e}`); }
+    }
+
     // Wire buttons
     $('#btn-scan').onclick = scanNow;
     $('#cmd-scan').onclick = scanNow;
     $('#btn-lock').onclick = lockNow;
     $('#btn-unlock').onclick = unlockNow;
     $('#cmd-unlock').onclick = unlockNow;
+    const capBtn = $('#btn-cap-request'); if (capBtn) capBtn.onclick = requestCAP;
+    const capCellBtn = $('#btn-cap-to-cell'); if (capCellBtn) capCellBtn.onclick = async ()=>{
+      const inp = $('#cap-cell'); if(!inp) return; const cell = (inp.value||'').trim().toUpperCase();
+      if(!cell){ appendConsole('[cap] ERR missing cell'); return; }
+      const minEl = $('#cap-minutes'); const radEl = $('#cap-radius');
+      const station_minutes = minEl? Number(minEl.value) : 10;
+      const radius_nm = radEl? Number(radEl.value) : 10;
+      try{
+        const r = await fetch('/cap/launch_to', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({cell, station_minutes, radius_nm})});
+        const j = await r.json();
+        appendConsole(`[cap->${cell}] ${j.ok?'OK':'ERR'} ${j.message||''}`);
+      }catch(e){ appendConsole(`[cap->${cell}] ERR ${e}`); }
+    };
+    // Slider displays
+    const capMinEl = $('#cap-minutes'); const capMinVal = $('#cap-minutes-val'); if(capMinEl && capMinVal){ capMinEl.addEventListener('input', ()=> capMinVal.textContent = String(capMinEl.value)); }
+    const capRadEl = $('#cap-radius'); const capRadVal = $('#cap-radius-val'); if(capRadEl && capRadVal){ capRadEl.addEventListener('input', ()=> capRadVal.textContent = String(capRadEl.value)); }
+
+    // CAP header controls
+    const capIntBtn = $('#cap-int-btn'); if (capIntBtn) capIntBtn.onclick = capIntercept;
+    const capHeadLaunch = $('#cap-head-launch'); if (capHeadLaunch) capHeadLaunch.onclick = ()=>{
+      const cellEl = $('#cap-head-cell'); const cell = (cellEl?.value||'').trim().toUpperCase();
+      if(!cell){ appendConsole('[CAP] ERR missing cell'); return; }
+      capLaunchTo(cell, 10, 10);
+    };
+    // Radio input
+    async function sendRadio(){
+      const el=$('#radio-input'); if(!el) return; const s=(el.value||'').trim(); if(!s) return;
+      try{ const r=await fetch('/radio/ask',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text:s})});
+        const j=await r.json(); appendConsole(`[radio] ${j.ok?'OK':'ERR'} ${j.role||''}`); el.value=''; }
+      catch(e){ appendConsole(`[radio] ERR ${e}`); }
+    }
+    const rs=$('#radio-send'); if(rs) rs.onclick = sendRadio;
+    const ri=$('#radio-input'); if(ri) ri.addEventListener('keydown', (e)=>{ if(e.key==='Enter') sendRadio(); });
     // Force-spawn helpers (nearby targets for weapons testing)
     async function spawnNear(kind){
       try{
@@ -436,19 +510,10 @@
       try{
         const j = await getJSON('/flight/tail?n=20');
         const lines = (j.lines||[]).map(x=>{
-          // Try to classify
           const route = x.route||'';
-          if(route==='/radio.msg'){
-            return {ts:(x.ts||'').slice(11,19), kind:(x.response?.kind||'EVT'), text:(x.response?.text||'')};
+          if(route==='/radio.officer'){
+            return {ts:(x.ts||'').slice(11,19), role:(x.response?.role||'OFF'), text:(x.response?.text||'')};
           }
-          if(route.startsWith('/api/command')){
-            const cmd = x.request?.cmd || '';
-            if(cmd.includes('/radar lock')) return {ts:(x.ts||'').slice(11,19), kind:'LOCK', text: cmd };
-            if(cmd.includes('/radar unlock')) return {ts:(x.ts||'').slice(11,19), kind:'UNLOCK', text:'Target unlock'};
-            if(cmd.includes('/radar scan')) return {ts:(x.ts||'').slice(11,19), kind:'SCAN', text:(x.response?.result||'scan')};
-          }
-          if(route.includes('/weapons')) return {ts:(x.ts||'').slice(11,19), kind:'FIRE', text: JSON.stringify(x.response||{}) };
-          if((x.hud||'').includes('alarm')) return {ts:(x.ts||'').slice(11,19), kind:'ALARM', text:x.hud};
           return null;
         }).filter(Boolean);
         return lines;
@@ -465,6 +530,19 @@
         renderPrimary(j.primary);
         renderWeapons(j.weapons);
         renderCAP(j.cap);
+        // Enable/disable CAP header buttons
+        try{
+          const hasPrimary = !!j.primary;
+          const ready = !!(j.cap && j.cap.ready);
+          const capIntBtn = $('#cap-int-btn'); if (capIntBtn) { capIntBtn.disabled = !(hasPrimary && ready); capIntBtn.classList.toggle('danger', hasPrimary && ready); }
+          const cellEl = $('#cap-head-cell'); const capHeadLaunch = $('#cap-head-launch');
+          if (capHeadLaunch) capHeadLaunch.disabled = !(ready && (cellEl && (cellEl.value||'').trim().length>0));
+        }catch(_){ }
+        // Enable CAP button only if a primary exists and CAP reports available
+        try{
+          const capBtn = $('#btn-cap-request');
+          if (capBtn) capBtn.disabled = !(j.primary && j.cap && j.cap.ready);
+        }catch(_){ }
 
         // radio: prefer status.radio; else from recorder
         if (Array.isArray(j.radio) && j.radio.length){

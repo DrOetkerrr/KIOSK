@@ -1,6 +1,6 @@
 {
-  "name": "HMS Glamorgan",
-  "class": "Type 21",
+  "name": "HMS Sheffield",
+  "class": "Type 42",
   "speed_max_kts": 32,
   "speed_cruise_kts": 18,
   "range_nm_at_cruise": 4600,
