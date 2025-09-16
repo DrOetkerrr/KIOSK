@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import json, math, random, time
 
-ROOT = Path(__file__).resolve().parents[1]  # projects/FalklandV2
+ROOT = Path(__file__).resolve().parents[1]  # projects/falklandV2
 DATA = ROOT / "data"
 STATE = ROOT / "state"
 

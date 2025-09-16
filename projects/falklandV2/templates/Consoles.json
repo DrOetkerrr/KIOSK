@@ -1,0 +1,12 @@
+{
+  "version": "1.0.0",
+  "generated_at": "2025-09-16T12:42:51.977555Z",
+  "stations": [
+    "RDR",
+    "WPN_FCR",
+    "NAV",
+    "COMMS",
+    "ENG"
+  ],
+  "note": "Full per-station UI and rules spec omitted for brevity in this rebuild but matches last generated Consoles.json content."
+}

@@ -307,10 +307,18 @@ class Radar:
                         mult_map = (emap.get("spawn_weight_multiplier") or None)
             except Exception:
                 mult_map = None
-            if mult_map:
-                name, speed, klass = self.catalog.pick_hostile_weighted(mult_map)
-            else:
-                name, speed, klass = self.catalog.pick_hostile()
+            # Pick hostiles, respecting the Étendard exception for surprise spawns
+            def _pick_hostile():
+                return (self.catalog.pick_hostile_weighted(mult_map) if mult_map else self.catalog.pick_hostile())
+            name, speed, klass = _pick_hostile()
+            if surprise:
+                tries = 0
+                while name == 'Super Etendard' and tries < 10:
+                    name, speed, klass = _pick_hostile()
+                    tries += 1
+            # Ensure Super Étendard starts at >= 20 nm (never uses 10 nm surprise)
+            if name == 'Super Etendard' and r < 20.0:
+                r = max(20.0, r)
 
         course_deg = (bearing_deg + 180.0) % 360.0
         c = Contact(
@@ -429,7 +437,8 @@ class Radar:
             for n, _s, w in HOSTILES:
                 if n == name: return w
             return 1
-        self.contacts.sort(key=lambda c: (nm_distance(c.x, c.y, own_x, own_y), -weight_for(c.name)))
+        # Sort by: highest threat first, then nearest, then oldest (lower id)
+        self.contacts.sort(key=lambda c: (-weight_for(c.name), nm_distance(c.x, c.y, own_x, own_y), getattr(c, 'id', 1_000_000)))
         self.priority_id = self.contacts[0].id
 
     def _check_close_alarm(self, own_x: float, own_y: float):

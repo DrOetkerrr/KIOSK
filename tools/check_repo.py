@@ -54,13 +54,31 @@ def py_compile_all(files: List[Path]) -> List[Tuple[Path, str]]:
     return errs
 
 def summarize_routes() -> None:
-    wd = ROOT / 'projects' / 'FalklandV2' / 'webdash.py'
+    wd = ROOT / 'projects' / 'falklandV2' / 'webdash.py'
     if not wd.exists():
         print('routes: webdash.py not found')
         return
     text = wd.read_text(encoding='utf-8', errors='ignore')
     n = len(re.findall(r'@app\.(?:route|get|post)\(', text))
     print(f'routes: webdash.py contains {n} route decorators')
+
+    # Guard: warn if webdash grows new endpoints outside of a small allowlist
+    allow_prefixes = (
+        '/', '/about', '/routes', '/health', '/api/status',
+        '/data/sounds/', '/data/tts/', '/flight/tail', '/flight/errors', '/flight/info',
+        '/debug/template', '/radar/reload_catalog'
+    )
+    unusual = []
+    pat = re.compile(r"@app\.(?:route|get|post)\(\s*([\'\"])([^\1]+?)\1")
+    for m in pat.finditer(text):
+        path = m.group(2)
+        if path.startswith('/__disabled/'):
+            continue
+        if not any(path == p or path.startswith(p) for p in allow_prefixes):
+            unusual.append(path)
+    if unusual:
+        uniq = sorted(set(unusual))
+        print(f"routes-guard: WARN unusual endpoints in webdash.py: {', '.join(uniq[:10])}{' …' if len(uniq)>10 else ''}")
 
 def size_guard(files: List[Path]) -> int:
     warns = 0

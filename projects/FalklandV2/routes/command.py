@@ -69,9 +69,30 @@ def api_command():
                 if '=' in p:
                     k, v = p.split('=', 1)
                     kv[k.strip().lower()] = v.strip()
-            # Execute command via engine
+            # Apply via engine directly (set_course/set_speed); fall back to exec_slash if available
+            result_parts = []
             try:
-                result = ENG.exec_slash(cmd)  # type: ignore
+                if 'heading' in kv and hasattr(ENG, 'set_course'):
+                    try:
+                        hdg = float(kv['heading'])
+                        ENG.set_course(hdg)  # type: ignore[attr-defined]
+                        result_parts.append(f"heading={int(round(hdg))}")
+                    except Exception:
+                        pass
+                if 'speed' in kv and hasattr(ENG, 'set_speed'):
+                    try:
+                        spd = float(kv['speed'])
+                        ENG.set_speed(spd)  # type: ignore[attr-defined]
+                        result_parts.append(f"speed={int(round(spd))}")
+                    except Exception:
+                        pass
+                # Best-effort exec_slash to keep compatibility with richer engines
+                if hasattr(ENG, 'exec_slash'):
+                    try:
+                        _ = ENG.exec_slash(cmd)  # type: ignore
+                    except Exception:
+                        pass
+                result = "NAV SET: " + (" ".join(result_parts) if result_parts else "OK")
             except Exception as ee:
                 result = f"ERR: {ee}"
             # Voice acks
@@ -172,6 +193,21 @@ def api_command():
                     if int(getattr(c, "id", -1)) == cid_i:
                         return c
                 return None
+            # enforce exclusive lock (must unlock before different target)
+            try:
+                existing = getattr(RADAR, 'priority_id', None)
+                if existing is not None and str(arg).lower() not in ("nearest","primary"):
+                    try:
+                        if int(existing) != int(arg):
+                            payload = {"ok": False, "error": "LOCK_EXISTS", "id": int(existing)}
+                            record_flight({"route": route, "method": request.method, "status": 409,
+                                           "duration_ms": int((time.time()-t0)*1000),
+                                           "request": {"cmd": cmd}, "response": payload})
+                            return jsonify(payload), 409
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             # allow '/radar lock nearest' or 'primary'
             if str(arg).lower() in ("nearest","primary"):
                 tid = getattr(RADAR, 'priority_id', None)
@@ -271,3 +307,72 @@ def api_command():
         })
         return jsonify(payload), 500
 
+
+@bp.post("/api/nav/set")
+def api_nav_set():
+    """Direct NAV setter used by the Own Fleet box to avoid slash parsing issues.
+    Body: {"heading": <deg?>, "speed": <kts?>}
+    Applies to both minimal V3 Engine (set_course/set_speed) and Falklands Engine (exec_slash).
+    """
+    # Late imports
+    from ..webdash import ENG, STATE_LOCK, NAV_STATE, voice_emit, record_flight
+    t0 = time.time(); route = "/api/nav/set"
+    try:
+        data = request.get_json(silent=True) or {}
+        hdg = data.get("heading")
+        spd = data.get("speed")
+        # Apply directly if possible
+        try:
+            if hdg is not None and hasattr(ENG, 'set_course'):
+                try: ENG.set_course(float(hdg))
+                except Exception: pass
+            if spd is not None and hasattr(ENG, 'set_speed'):
+                try: ENG.set_speed(float(spd))
+                except Exception: pass
+        except Exception:
+            pass
+        # Also pass through to exec_slash for compatibility
+        try:
+            parts = []
+            if hdg is not None: parts.append(f"heading={hdg}")
+            if spd is not None: parts.append(f"speed={spd}")
+            if parts and hasattr(ENG, 'exec_slash'):
+                try: ENG.exec_slash("/nav set " + " ".join(parts))
+                except Exception: pass
+        except Exception:
+            pass
+        # Voice acknowledgment and turn target tracking
+        try:
+            spd_now = None
+            try:
+                st2 = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+                ship = (st2 or {}).get('ship', {}) if isinstance(st2, dict) else {}
+                spd_now = float(ship.get('speed', 0.0))
+            except Exception:
+                spd_now = None
+            if hdg is not None:
+                with STATE_LOCK:
+                    NAV_STATE['turn_target'] = float(hdg)
+                    NAV_STATE['turn_hold_since'] = 0.0
+                voice_emit('nav.set.course.ack', {'hdg': round(float(hdg)), 'spd': round(float(spd_now or spd or 0))}, fallback=f'Course set {round(float(hdg))}°, making {round(float(spd_now or spd or 0))} knots.', role='Navigation')
+            elif spd is not None:
+                # If only speed changed
+                try:
+                    st3 = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+                    ship3 = (st3 or {}).get('ship', {}) if isinstance(st3, dict) else {}
+                    hdg3 = float(ship3.get('heading', 0.0))
+                except Exception:
+                    hdg3 = float(hdg or 0)
+                voice_emit('nav.set.speed.ack', {'spd': round(float(spd)), 'hdg': round(float(hdg3))}, fallback=f'Speed now {round(float(spd))} knots; heading {round(float(hdg3))}°.', role='Navigation')
+        except Exception:
+            pass
+        payload = {"ok": True}
+        record_flight({"route": route, "method": request.method, "status": 200,
+                       "duration_ms": int((time.time()-t0)*1000), "request": data, "response": payload})
+        return jsonify(payload)
+    except Exception as e:
+        logging.exception("/api/nav/set error: %s", e)
+        payload = {"ok": False, "error": str(e)}
+        record_flight({"route": route, "method": request.method, "status": 500,
+                       "duration_ms": int((time.time()-t0)*1000), "request": {}, "response": payload})
+        return jsonify(payload), 500

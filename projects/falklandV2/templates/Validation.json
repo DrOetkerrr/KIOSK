@@ -1,0 +1,57 @@
+{
+  "version": "3.1.0",
+  "generated_at": "2025-09-16T12:40:39.421222Z",
+  "engineering_systems": [
+    {
+      "id": "Navigation",
+      "status": "OK",
+      "timer_s": 0,
+      "team_assigned": false
+    },
+    {
+      "id": "Radar",
+      "status": "OK",
+      "timer_s": 0,
+      "team_assigned": false
+    },
+    {
+      "id": "FireControl_Weapons",
+      "status": "OK",
+      "timer_s": 0,
+      "team_assigned": false
+    },
+    {
+      "id": "COMMS",
+      "status": "OK",
+      "timer_s": 0,
+      "team_assigned": false
+    },
+    {
+      "id": "Engine_Propulsion",
+      "status": "OK",
+      "timer_s": 0,
+      "team_assigned": false
+    },
+    {
+      "id": "Rudder_Steering",
+      "status": "OK",
+      "timer_s": 0,
+      "team_assigned": false
+    },
+    {
+      "id": "Hull",
+      "status": "OK",
+      "substatus": [
+        "intact"
+      ],
+      "timer_s": 0,
+      "team_assigned": false
+    }
+  ],
+  "repair_rules": {
+    "teams_total": 4,
+    "repair_timer_s": 120,
+    "permanent_loss_if_unrepaired_after_s": 120,
+    "life_loss_on_permanent_system_loss": 1
+  }
+}

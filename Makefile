@@ -27,3 +27,13 @@ smoke:
 check:
 	@echo "→ Static checks (compile + size guard + route summary)"
 	@python3 ./tools/check_repo.py
+
+.PHONY: desktop
+desktop:
+	@echo "→ Starting server (if needed) and launching desktop UI"
+	@PORT=$(PORT) ./run_desktop.sh
+
+.PHONY: debrief
+debrief:
+	@echo "→ Debriefing session (SESSION=$${SESSION:-}, LAST=$${LAST:-30m})"
+	@python3 ./tools/debrief_session.py --last "$${LAST:-30m}" $$(test -n "$$SESSION" && printf -- "--session %s" "$$SESSION")

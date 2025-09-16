@@ -1,0 +1,31 @@
+/* CRT-like minimal theme */
+QWidget { background-color: #000000; color: #57ff57; }
+QLabel { color: #57ff57; }
+QTableWidget { gridline-color: #114411; }
+QHeaderView::section { background-color: #001900; color: #57ff57; border: 1px solid #114411; }
+QPushButton { background-color: #0f5e1a; color: #eaffea; border: 1px solid #1d7a2a; padding: 4px 8px; }
+QPushButton:disabled { background-color: #052c0c; color: #3b7a3b; border: 1px solid #114411; }
+QLineEdit { background-color: #001900; color: #57ff57; border: 1px solid #114411; padding: 2px 4px; }
+QComboBox { background-color: #001900; color: #57ff57; border: 1px solid #114411; padding: 2px 4px; }
+
+/* Tabs: unselected = black with green text and light-green thin border; selected = dark green with light green text */
+QTabWidget::pane {
+  border: 1px solid #114411;
+  top: 0px;
+}
+QTabBar::tab {
+  background: #000000;
+  color: #57ff57;
+  border: 1px solid #57ff57; /* thin light-green border */
+  padding: 4px 10px;
+  margin: 2px 4px;
+  border-radius: 3px;
+}
+QTabBar::tab:selected {
+  background: #0f5e1a;      /* dark green */
+  color: #eaffea;           /* light green text */
+  border: 1px solid #57ff57;
+}
+QTabBar::tab:!selected:hover {
+  background: #041a04;      /* very dark green on hover */
+}

@@ -50,6 +50,20 @@
           <span id="nsk-msg" class="mono" style="margin-left:8px;color:#9fb2ff90"></span>
         </div>
       </div>
+
+      <div class="card" aria-label="Diagnostics">
+        <h3>Diagnostics</h3>
+        <div class="row" style="margin-bottom:8px">
+          <button id="btn-selftest" class="btn">Run Self Test</button>
+          <button id="btn-reset" class="btn">Reset Runtime</button>
+          <span id="diag-msg" class="mono" style="margin-left:8px;color:#9fb2ff90"></span>
+        </div>
+        <div class="row" style="margin-bottom:8px">
+          <input id="sess-id" class="mono" placeholder="Session ID (optional)" style="width:200px;padding:6px"/>
+          <button id="sess-start" class="btn">Start Session</button>
+          <button id="sess-end" class="btn">End Session</button>
+        </div>
+      </div>
     </div>
 
     <script>
@@ -89,6 +103,29 @@
 
       document.getElementById('nsk-create').onclick = createSkirmish;
       loadHostiles();
+
+      // Diagnostics wiring
+      const $ = (sel)=>document.querySelector(sel);
+      const setMsg = (s)=>{ const el=$('#diag-msg'); if(el) el.textContent=s; };
+      const btnSelf = $('#btn-selftest'); if (btnSelf) btnSelf.onclick = async ()=>{
+        setMsg('Running self test…');
+        try{ const r=await fetch('/diag/selftest'); const j=await r.json(); setMsg(j.ok?'Self test OK':'Self test ERR'); }
+        catch{ setMsg('Self test ERR'); }
+      };
+      const btnReset = $('#btn-reset'); if (btnReset) btnReset.onclick = async ()=>{
+        setMsg('Resetting…');
+        try{ const r=await fetch('/diag/reset',{method:'POST'}); const j=await r.json(); setMsg(j.ok?'Reset OK':'Reset ERR'); }
+        catch{ setMsg('Reset ERR'); }
+      };
+      const sessStart = $('#sess-start'); if (sessStart) sessStart.onclick = async ()=>{
+        const id = ($('#sess-id')?.value||'').trim();
+        try{ const r=await fetch('/session/start',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(id?{id}:{})}); const j=await r.json(); setMsg(j.ok?`Session ${j.id}`:'Session start ERR'); }
+        catch{ setMsg('Session start ERR'); }
+      };
+      const sessEnd = $('#sess-end'); if (sessEnd) sessEnd.onclick = async ()=>{
+        try{ const r=await fetch('/session/end',{method:'POST'}); const j=await r.json(); setMsg(j.ok?`Session ended (${j.id||''})`:'Session end ERR'); }
+        catch{ setMsg('Session end ERR'); }
+      };
     </script>
   </body>
   </html>

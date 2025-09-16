@@ -105,10 +105,16 @@ class Engine:
     def hud_line(self) -> str:
         d = self.st.data
         ship = d.get("ship", {})
-        col = ship.get("col", 50)
-        row = ship.get("row", 50)
-        hdg = ship.get("heading", 270)
-        spd = ship.get("speed", 15)
+        # Prefer live floating position from nav integration
+        pos = d.get("ship_position", {})
+        try:
+            col = int(round(float(pos.get("col_f", ship.get("col", 50)))))
+            row = int(round(float(pos.get("row_f", ship.get("row", 50)))))
+        except Exception:
+            col = ship.get("col", 50)
+            row = ship.get("row", 50)
+        hdg = ship.get("heading", d.get("ship_course_deg", 270))
+        spd = ship.get("speed", d.get("ship_speed_kn", 15))
 
         primary_txt = "No active contact"
         if self._radar:
@@ -130,12 +136,20 @@ class Engine:
         """A safe snapshot for the LLM (keep it small)."""
         d = self.st.data
         ship = d.get("ship", {})
+        pos = d.get("ship_position", {})
+        # Derive discrete display col/row from floating position if available
+        try:
+            col_disp = int(round(float(pos.get("col_f", ship.get("col", 50)))))
+            row_disp = int(round(float(pos.get("row_f", ship.get("row", 50)))))
+        except Exception:
+            col_disp = ship.get("col", 50)
+            row_disp = ship.get("row", 50)
         out = {
             "ship": {
-                "col": ship.get("col", 50),
-                "row": ship.get("row", 50),
-                "heading": ship.get("heading", 270),
-                "speed": ship.get("speed", 15),
+                "col": col_disp,
+                "row": row_disp,
+                "heading": ship.get("heading", d.get("ship_course_deg", 270)),
+                "speed": ship.get("speed", d.get("ship_speed_kn", 15)),
             },
             "CELL_NM": d.get("CELL_NM", 4.0),
         }

@@ -4,7 +4,7 @@ import re, subprocess
 def extract_routes(rev: str):
     try:
         text = subprocess.check_output([
-            'git','show', f'{rev}:projects/FalklandV2/webdash.py'
+            'git','show', f'{rev}:projects/falklandV2/webdash.py'
         ], text=True)
     except Exception:
         return []
@@ -38,4 +38,3 @@ for p in added[:40]:
 print(f'Removed: {len(removed)}')
 for p in removed[:40]:
     print('-', p)
-

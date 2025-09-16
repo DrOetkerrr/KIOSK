@@ -13,15 +13,18 @@ _py_eval() {
   local body="$1"; shift
   local code="$1"; shift || true
   local res
-  res=$(printf '%s' "$body" | ${PY:-python3} - 2>/dev/null <<PY || echo FAIL
-import sys, json
+  # Pass JSON via env to avoid stdin/heredoc collision; expand code inline
+  res=$(SMOKE_BODY="$body" ${PY:-python3} - 2>/dev/null <<PY || echo FAIL
+import os, json
 try:
-    j=json.load(sys.stdin)
+    j=json.loads(os.environ.get('SMOKE_BODY','{}'))
     ${code}
 except Exception:
     print('FAIL')
 PY
 )
+  # debug: show raw result (escaped)
+  # echo "DBG $label res=$(printf '%q' "$res")" >&2 || true
   case "$res" in
     OK)   echo "[$label] PASS" ;;
     SKIP) echo "[$label] SKIP" ;;
@@ -43,16 +46,7 @@ check_status() {
   # weapons non-empty
   _py_eval weapons "$body" "arr=j.get('weapons') or []; print('OK' if isinstance(arr,list) and len(arr)>=1 else 'FAIL')"
   # contacts shape (optional)
-  _py_eval contacts.shape "$body" "arr=j.get('contacts') or []; 
-if not isinstance(arr,list) or not arr:
-    print('SKIP')
-else:
-    c=arr[0];
-    ok = isinstance(c.get('cell'), str) and isinstance(c.get('name'), str) and isinstance(c.get('type'), str)
-    ok = ok and isinstance(c.get('id'), (int,))
-    ok = ok and isinstance(c.get('range_nm'), (int,float)) and isinstance(c.get('course'), (int,)) and isinstance(c.get('speed'), (int,))
-    print('OK' if ok else 'FAIL')
-"
+  _py_eval contacts.shape "$body" "arr=j.get('contacts') or []; print('SKIP' if (not isinstance(arr,list) or not arr) else ('OK' if (isinstance(arr[0].get('cell'),str) and isinstance(arr[0].get('name'),str) and isinstance(arr[0].get('type'),str) and isinstance(arr[0].get('id'),int) and isinstance(arr[0].get('range_nm'),(int,float)) and isinstance(arr[0].get('course'),int) and isinstance(arr[0].get('speed'),int)) else 'FAIL'))"
 }
 
 echo "BASE=$BASE"

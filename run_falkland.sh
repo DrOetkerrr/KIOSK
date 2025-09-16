@@ -30,20 +30,7 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-# Choose dashboard entrypoint
-ROOT_DASH="webdash.py"
-PROJ_DASH="projects/falklandV2/webdash.py"
-
-if [[ -f "$ROOT_DASH" ]]; then
-  TARGET="$ROOT_DASH"
-elif [[ -f "$PROJ_DASH" ]]; then
-  TARGET="$PROJ_DASH"
-else
-  echo "[ERROR] Could not find a dashboard entrypoint." >&2
-  echo "        Checked: $ROOT_DASH and $PROJ_DASH" >&2
-  exit 2
-fi
-
+# Always run via module to ensure a single module instance across imports
 echo "Starting Falkland V2 dashboard on http://127.0.0.1:${PORT} …"
 export PORT
-exec python -u "$TARGET" "$@"
+exec python -u -m projects.falklandV2.webdash "$@"

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 import json
 
-ROOT = Path(__file__).resolve().parents[1]   # .../FalklandV2
+ROOT = Path(__file__).resolve().parents[1]   # .../falklandV2
 DATA = ROOT / "data"
 
 def _load_json(path: Path) -> Dict[str, Any]:

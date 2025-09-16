@@ -88,13 +88,14 @@ function renderWeapons(arr){
     const arming = state==='Arming';
     const ammo = Number(w.ammo ?? 0);
     const rangeEl = badge(`${fmt(w.min_nm)}–${fmt(w.max_nm)} nm`, 'badge '+(inRange?'ok': ''));
-    const statusEl = arming? badge('Arming','badge warn') : (armed? badge('Armed','badge ok') : badge('Safe','badge'));
+    const cdLeft = Number(w.cooldown_s||0);
+    const statusEl = cdLeft>0 ? badge(`Cooldown ${cdLeft}s`, 'badge warn') : (arming? badge('Arming','badge warn') : (armed? badge('Armed','badge ok') : badge('Safe','badge')));
     const armBtn = Object.assign(document.createElement('button'), {className:'btn', textContent: (armed||arming)?'Safe':'Arm'});
     armBtn.onclick = ()=> toggleArm(w.name, (armed||arming)? 'Safe':'Armed');
-    const testBtn = Object.assign(document.createElement('button'), {className:'btn', textContent:'Test Fire', disabled: (!armed || ammo<=0)});
+    const testBtn = Object.assign(document.createElement('button'), {className:'btn', textContent:'Test Fire', disabled: (!armed || ammo<=0 || cdLeft>0)});
     testBtn.onclick = ()=> fireWeapon(w.name, 'test');
     const fireBtn = Object.assign(document.createElement('button'), {className:'btn danger', textContent:'Fire',
-                       disabled: (!armed || !inRange || ammo<=0)});
+                       disabled: (!armed || !inRange || ammo<=0 || cdLeft>0)});
     fireBtn.onclick = ()=> fireWeapon(w.name, 'real');
 
     const actions = document.createElement('div'); actions.className='row';
@@ -104,7 +105,7 @@ function renderWeapons(arr){
       w.name || '—',
       {cls:'num', el: badge(String(ammo), ammo>0?'badge':'badge warn')},
       {cls:'num', el: rangeEl},
-      statusEl,
+      {el: statusEl},
       {el: actions}
     ]));
   });
@@ -115,6 +116,7 @@ async function toggleArm(name, state){
     const r = await fetch('/weapons/arm',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name,state})});
     const j=await r.json();
     if(!j.ok) throw new Error('arm failed');
+    poll();
   }catch(e){ appendConsole(`[arm] ERR ${e}`); }
 }
 
@@ -123,22 +125,44 @@ async function fireWeapon(name, mode){
     const r = await fetch('/weapons/fire',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name,mode})});
     const j=await r.json();
     appendConsole(`[fire] ${j.ok?'OK':'ERR'} ${j.result||''}`);
+    poll();
   }catch(e){ appendConsole(`[fire] ERR ${e}`); }
 }
 
 function renderCAP(cap){
-  const head=$('#cap-head');
-  if(!cap){ head.textContent='CAP: —'; return; }
-  head.innerHTML='';
-  head.append(
-    badge(cap.ready?'READY':'NOT READY', cap.ready?'badge ok':'badge warn'),
-    badge(`pairs ${cap.pairs??0}`), badge(`airframes ${cap.airframes??0}`),
-    badge(`cooldown ${cap.cooldown_s??0}s`), badge(`committed ${cap.committed??0}`)
-  );
+  const head=$('#cap-mini'); const body=$('#cap-body'); const empty=$('#cap-empty');
+  if(!cap){ if(head) head.textContent='CAP: —'; if(empty) empty.hidden=false; if(body) body.innerHTML=''; return; }
+  if(head){
+    head.innerHTML='';
+    head.append(
+      badge(cap.ready?'READY':'NOT READY', cap.ready?'badge ok':'badge warn'),
+      badge(`pairs ${cap.pairs??0}`), badge(`airframes ${cap.airframes??0}`),
+      badge(`cooldown ${cap.cooldown_s??0}s`), badge(`committed ${cap.committed??0}`)
+    );
+  }
+  if(!body) return;
+  body.innerHTML='';
+  const tasks = Array.isArray(cap.tasks)? cap.tasks : [];
+  if(!tasks.length){ if(empty) empty.hidden=false; return; }
+  if(empty) empty.hidden=true;
+  tasks.forEach(t=>{
+    const statusCell = document.createElement('div');
+    statusCell.textContent = String(t.status || '—');
+    if (t.vector) statusCell.appendChild(badge('VECTOR','badge accent'));
+    body.appendChild(rowEl([
+      t.n ?? '—',
+      t.cur_cell ?? '—',
+      t.target_cell ?? '—',
+      {cls:'num', text: (t.range_nm!=null? fmt(t.range_nm,1): '—')},
+      {cls:'num', text: (t.tot_s!=null? fmt(t.tot_s,0): '—')},
+      {cls:'num', text: (t.tos_s!=null? fmt(t.tos_s,0): '—')},
+      {el: statusCell}
+    ]));
+  });
 }
 
 function renderRadio(lines){
-  const out=$('#radio');
+  const out=$('#radio-list');
   out.innerHTML='';
   (lines||[]).slice(-10).forEach(l=>{
     const row=document.createElement('div'); row.className='row';
@@ -188,6 +212,20 @@ function lockNow(id){
   doGET(`/api/command?cmd=${encodeURIComponent('/radar lock nearest')}`).then(j=>{
     appendConsole(`[radar] lock ${j.ok?'OK':'ERR'} ${j.result||''}`);
   }).catch(e=> appendConsole(`[radar] lock ERR ${e}`));
+}
+
+// Scan and unlock helpers (mirror inline script behavior)
+async function scanNow(){
+  try{
+    const j = await doGET('/api/command?cmd=' + encodeURIComponent('/radar scan'));
+    appendConsole(`[scan] ${j.ok?'OK':'ERR'} ${j.result||''}`);
+  }catch(e){ appendConsole(`[scan] ERR ${e}`); }
+}
+async function unlockNow(){
+  try{
+    const j = await doGET('/api/command?cmd=' + encodeURIComponent('/radar unlock'));
+    appendConsole(`[unlock] ${j.ok?'OK':'ERR'}`);
+  }catch(e){ appendConsole(`[unlock] ERR ${e}`); }
 }
 
 async function doGET(url){
@@ -303,17 +341,61 @@ const navOff = $('#nav-hermes-off'); if (navOff) navOff.onclick = navHermesStand
 const nskCreate = $('#nsk-create'); if (nskCreate) nskCreate.onclick = createSkirmishFromForm;
 loadHostiles();
 const ownApply = $('#own-apply'); if (ownApply) ownApply.onclick = async ()=>{
-  const sp = Number(($('#own-speed').value||'').trim());
-  const cr = Number(($('#own-course').value||'').trim());
-  const parts=[];
-  if(!Number.isNaN(cr)) parts.push(`heading=${encodeURIComponent(cr)}`);
-  if(!Number.isNaN(sp)) parts.push(`speed=${encodeURIComponent(sp)}`);
-  if(!parts.length){ appendConsole('[nav] ERR missing values'); return; }
+  const spStr = ($('#own-speed').value||'').trim();
+  const crStr = ($('#own-course').value||'').trim();
+  const payload = {};
+  if (spStr !== '' && !Number.isNaN(Number(spStr))) payload['speed'] = Number(spStr);
+  if (crStr !== '' && !Number.isNaN(Number(crStr))) payload['heading'] = Number(crStr);
+  if(Object.keys(payload).length===0){ appendConsole('[nav] ERR missing values'); return; }
   try{
-    const cmd = `/nav set ${parts.join(' ')}`;
-    const j = await doGET(`/api/command?cmd=${encodeURIComponent(cmd)}`);
-    appendConsole(`[nav] ${j.ok?'OK':'ERR'} ${j.result||''}`);
+    const r = await fetch('/api/nav/set',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    const j = await r.json();
+    appendConsole(`[nav] ${j.ok?'OK':'ERR'}`);
+    poll();
   }catch(e){ appendConsole(`[nav] ERR ${e}`); }
+};
+// CAP header controls wiring
+const capIntBtn = $('#cap-int-btn'); if (capIntBtn) capIntBtn.onclick = async ()=>{
+  try{
+    const r = await fetch('/cap/request', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
+    const j = await r.json(); appendConsole(`[cap intercept] ${j.ok?'OK':'ERR'} ${j.message||''}`);
+    poll();
+  }catch(e){ appendConsole(`[cap intercept] ERR ${e}`); }
+};
+const capHeadLaunch = $('#cap-head-launch'); if (capHeadLaunch) capHeadLaunch.onclick = ()=>{
+  const cellEl = $('#cap-head-cell'); const cell = (cellEl?.value||'').trim().toUpperCase();
+  if(!cell){ appendConsole('[CAP] ERR missing cell'); return; }
+  (async ()=>{
+    try{
+      const r = await fetch('/cap/launch_to',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({cell, station_minutes:10, radius_nm:10})});
+      const j = await r.json(); appendConsole(`[CAP->${cell}] ${j.ok?'OK':'ERR'} ${j.message||''}`);
+      poll();
+    }catch(e){ appendConsole(`[CAP->${cell}] ERR ${e}`); }
+  })();
+};
+// Wire scan/lock/unlock buttons if present
+const btnScan = $('#btn-scan'); if (btnScan) btnScan.onclick = scanNow;
+const cmdScan = $('#cmd-scan'); if (cmdScan) cmdScan.onclick = scanNow;
+const btnLock = $('#btn-lock'); if (btnLock) btnLock.onclick = ()=> lockNow($('#lock-id')?.value);
+const btnUnlock = $('#btn-unlock'); if (btnUnlock) btnUnlock.onclick = unlockNow;
+const btnLockNearest = $('#btn-lock-nearest'); if (btnLockNearest) btnLockNearest.onclick = ()=> lockNow();
+const cmdUnlockBtn = $('#cmd-unlock'); if (cmdUnlockBtn) cmdUnlockBtn.onclick = unlockNow;
+// Self test button
+const btnSelf = $('#selftest-run'); if (btnSelf) btnSelf.onclick = async ()=>{
+  try{
+    const r = await fetch('/diag/selftest'); const j = await r.json();
+    const R = j.results || {};
+    const n = v => (v && v.ok ? 'OK' : 'ERR');
+    appendConsole(`[selftest] nav=${n(R.nav)} radar=${n(R.radar)} weapons=${n(R.weapons)} cap=${n(R.cap)} radio=${n(R.radio)}`);
+  }catch(e){ appendConsole(`[selftest] ERR ${e}`); }
+};
+// Commands card: Request CAP quick action
+const capReqBtn = $('#btn-cap-request'); if (capReqBtn) capReqBtn.onclick = async ()=>{
+  try{
+    const r = await fetch('/cap/request', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
+    const j = await r.json(); appendConsole(`[cap request] ${j.ok?'OK':'ERR'} ${j.message||''}`);
+    poll();
+  }catch(e){ appendConsole(`[cap request] ERR ${e}`); }
 };
 // Enable Lock button when an ID is typed; lock nearest when none typed
 const lockIdEl = $('#lock-id');

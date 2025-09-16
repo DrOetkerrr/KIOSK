@@ -12,7 +12,8 @@ def _lazy():
         WEAP_CATALOG, _load_json, _save_json, ARMING_PATH,
         RADAR, PENDING_EVENTS, STATE_LOCK, AUDIO_STATE,
         compute_in_range, get_own_xy, contact_to_ui, save_ammo,
-        TARGET_CLASS_BY_NAME, _sound_key_for_weapon, ENG
+        TARGET_CLASS_BY_NAME, _sound_key_for_weapon, ENG,
+        load_ammo, load_arming, voice_emit, officer_say
     )
     return locals()
 
@@ -82,33 +83,84 @@ def weapons_fire():
         mode = (_arg_or_json(request, 'mode', 'real') or 'real').lower()
         if not name or mode not in ('real','test'):
             return jsonify({'ok': False, 'error': 'bad params'}), 400
-        # Load & update ammo
-        def _ammo():
-            try:
-                d = L['_load_json'](L['ARMING_PATH'], {})
-                return d if isinstance(d, dict) else {}
-            except Exception:
-                return {}
-        raw = _ammo()
-        ammo = raw.get('weapons') if isinstance(raw, dict) else None
-        if not isinstance(ammo, dict):
-            ammo = raw
-        if not isinstance(ammo, dict):
-            ammo = {}
+        # Load & update ammo using canonical store
+        ammo = L['load_ammo']() if 'load_ammo' in L else {}
         ammo.setdefault(name, 0)
+        # Helper: read/update cooldown in arming state file
+        def _get_cooldown_until(nm: str) -> float:
+            try:
+                raw = L['_load_json'](L['ARMING_PATH'], {})
+                rec = (raw or {}).get(nm) if isinstance(raw, dict) else None
+                if isinstance(rec, dict):
+                    return float(rec.get('cooldown_until', 0.0) or 0.0)
+            except Exception:
+                pass
+            return 0.0
+        def _set_cooldown_until(nm: str, until: float) -> None:
+            try:
+                raw = L['_load_json'](L['ARMING_PATH'], {})
+                if not isinstance(raw, dict): raw = {}
+                rec = raw.get(nm)
+                if not isinstance(rec, dict): rec = {'armed': False, 'arming_until': 0}
+                rec['cooldown_until'] = float(until)
+                raw[nm] = rec
+                L['_save_json'](L['ARMING_PATH'], raw)
+            except Exception:
+                pass
+        def _cooldown_seconds_by_class(nm: str) -> float:
+            try:
+                wrec = next((w for w in L['WEAP_CATALOG'] if w.get('name') == nm), None)
+                cls = (wrec or {}).get('class', 'Other')
+                if (wrec or {}).get('cooldown_s') is not None:
+                    return float(wrec['cooldown_s'])
+                if cls == 'Missile':
+                    return 8.0
+                if cls == 'SAM':
+                    return 6.0
+                if cls == 'Decoy':
+                    return 5.0
+                # Guns & other
+                return 2.0
+            except Exception:
+                return 3.0
+        # Enforce cooldown
+        now = time.time()
+        if _get_cooldown_until(name) > now:
+            return jsonify({'ok': False, 'error': 'COOLDOWN'}), 400
+        # Enforce ARMED state for both test and real
+        arming_state = L['load_arming']() if 'load_arming' in L else {}
+        if arming_state.get(name) != 'Armed':
+            return jsonify({'ok': False, 'error': 'NOT_ARMED'}), 400
         if mode == 'test':
             if int(ammo.get(name, 0)) <= 0:
                 return jsonify({'ok': False, 'error': 'NO_AMMO'}), 400
+            # Consume ammo in test as a live drill (no range gating)
             try:
-                if mode == 'test':
-                    L['RADAR'].rec.log('weapons.fire', {'name': name, 'mode': 'test', 'ammo': ammo[name]})
+                dec = 50 if name in ("20mm Oerlikon", "20mm GAM-BO1 (twin)") else 1
+            except Exception:
+                dec = 1
+            ammo[name] = max(0, int(ammo.get(name, 0)) - int(dec))
+            L['save_ammo'](ammo)
+            try:
+                L['RADAR'].rec.log('weapons.fire', {'name': name, 'mode': 'test', 'ammo': ammo[name]})
             except Exception:
                 pass
+            # Stamp audio launch so frontend plays the sound
             try:
                 with L['STATE_LOCK']:
                     L['AUDIO_STATE']['last_launch'] = {'weapon': L['_sound_key_for_weapon'](name), 'ts': time.time()}
             except Exception:
                 pass
+            # Radio cue (Weapons) — best-effort; ensures at least beeps even without TTS
+            try:
+                L['voice_emit']('weapons.launch', {'weapon': name}, fallback=f"{name} away.", role='Weapons')
+            except Exception:
+                try:
+                    L['officer_say']('Weapons', f"{name} fired (test).", {})
+                except Exception:
+                    pass
+            # Apply cooldown
+            _set_cooldown_until(name, now + _cooldown_seconds_by_class(name))
             return jsonify({'ok': True, 'result': 'TEST', 'name': name, 'ammo': ammo[name]})
 
         # Real fire path
@@ -148,6 +200,14 @@ def weapons_fire():
                 L['AUDIO_STATE']['last_launch'] = {'weapon': L['_sound_key_for_weapon'](name), 'ts': time.time()}
         except Exception:
             pass
+        # Radio cue (Weapons)
+        try:
+            L['voice_emit']('weapons.launch', {'weapon': name}, fallback=f"{name} away.", role='Weapons')
+        except Exception:
+            try:
+                L['officer_say']('Weapons', f"{name} fired.", {})
+            except Exception:
+                pass
         # Chaff special case
         try:
             if name.lower().find('chaff') >= 0:
@@ -166,8 +226,9 @@ def weapons_fire():
             _schedule_shot_result(name, tid, tname, tclass, rng)
         except Exception:
             pass
+        # Apply cooldown
+        _set_cooldown_until(name, now + _cooldown_seconds_by_class(name))
         return jsonify({'ok': True, 'result': 'FIRED', 'name': name, 'ammo': ammo[name]})
     except Exception as e:
         logging.exception("/weapons/fire error: %s", e)
         return jsonify({'ok': False, 'error': str(e)}), 500
-

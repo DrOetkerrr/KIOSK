@@ -1,639 +1,90 @@
-<!-- FALKLANDS DASH LAYOUT SENTINEL v1: zones/IDs fixed; modify contents only -->
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Falklands V2 — Dashboard</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Falklands V2 — Stations</title>
   <style>
     :root{
       --bg:#0b1220; --panel:#10192b; --border:#21324f; --muted:#8aa0c2;
       --text:#e8f0ff; --ok:#2ecc71; --warn:#f1c40f; --err:#e74c3c; --accent:#3b82f6;
-      --pill:#14233d; --shadow:0 6px 18px rgba(0,0,0,0.25);
+      --shadow:0 6px 18px rgba(0,0,0,0.25);
     }
     *{box-sizing:border-box}
-    html,body{height:100%}
-    body{margin:0;background:linear-gradient(180deg,#08101f,#0b1220);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial}
-    a{color:var(--accent);text-decoration:none}
-    .wrap{max-width:1200px;margin:0 auto;padding:16px;display:grid;gap:16px}
-
-    /* Top bar */
-    #Z-HUD{
-      display:flex;align-items:center;justify-content:space-between;
-      padding:10px 14px;background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow)
-    }
-    #Z-HUD .left{display:flex;gap:12px;align-items:center}
-    .dot{width:10px;height:10px;border-radius:50%;background:var(--err)}
-    .dot.ok{background:var(--ok)}
-    .hud-badge{padding:4px 8px;border:1px solid var(--border);border-radius:999px;background:#0d1730;color:var(--muted)}
-    .hud-title{font-weight:600;color:#bfd6ff}
-    .hud-mono{font-variant-numeric:tabular-nums}
-
-    /* Grid layout (desktop) */
-    .grid{display:grid;gap:16px}
-    .grid.cols-2{grid-template-columns:1fr 1fr}
-    .grid.cols-2-66{grid-template-columns:1fr 1fr}
-    .full{grid-column:1 / -1}
-
-    /* Cards */
-    .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:12px 12px 10px;box-shadow:var(--shadow)}
-    .card h3{margin:0 0 10px;font-size:15px;color:#cae1ff;display:flex;align-items:center;gap:8px}
-    .card .placeholder{color:var(--muted);padding:10px;border:1px dashed var(--border);border-radius:10px;background:#0c152b}
-    .row{display:flex;gap:12px;flex-wrap:wrap}
-    .kvs{display:grid;grid-template-columns:auto 1fr;gap:6px 12px}
-    .pill{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;background:var(--pill);border:1px solid var(--border);color:#c0d6ff}
-    .btn{padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:#0e1a34;color:var(--text);cursor:pointer}
-    .btn[disabled]{opacity:.45;cursor:not-allowed}
-    .btn.primary{background:var(--accent);border-color:#2f69c6}
-    .btn.warn{background:#2a1f00;border-color:#6b4e00;color:#ffdf8a}
-    .btn.danger{background:#2a0f12;border-color:#6b1f27;color:#ffb4b4}
-    .badge{padding:2px 6px;border-radius:6px;border:1px solid var(--border);background:#0e1a34;color:#cfe1ff}
-    .badge.ok{background:#092716;border-color:#1a5a36;color:#a8f3c5}
-    .badge.err{background:#2a1212;border-color:#6b1f1f;color:#ffb4b4}
-    .badge.warn{background:#2a220c;border-color:#6b5d1a;color:#ffe7a8}
+    body{margin:0;background:linear-gradient(180deg,#08101f,#0b1220);color:var(--text);font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Arial}
+    .wrap{max-width:960px;margin:0 auto;padding:14px;display:flex;flex-direction:column;gap:12px}
+    .hud{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--panel);border:1px solid var(--border);border-radius:10px}
+    .hud .dot{width:10px;height:10px;border-radius:999px;background:var(--err)}
+    .hud .dot.ok{background:var(--ok)}
+    .hud .meta{display:flex;gap:10px;color:#cfe1ff}
+    .window{width:800px;height:480px;background:#0e1a34;border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);overflow:hidden;margin:0 auto;padding:10px}
+    .toolbar{display:flex;justify-content:center;gap:8px}
+    .btn{padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:#112147;color:var(--text);cursor:pointer;min-width:80px}
+    .btn.active{background:#0f2c12;border-color:#1b5e2e;color:#b6f2c9}
+    .btn[disabled]{opacity:.5;cursor:not-allowed}
+    .panel{padding:8px}
+    h2{margin:0 0 8px;font-size:16px;color:#cfe1ff}
     table{width:100%;border-collapse:separate;border-spacing:0 6px}
-    th,td{padding:8px 10px;vertical-align:middle}
+    th,td{padding:6px 8px;vertical-align:middle}
     th{font-weight:600;color:#c0d6ff;text-align:left;font-size:12px}
-    tbody tr{background:#0e1a34;border:1px solid var(--border)}
-    tbody tr td:first-child{border-top-left-radius:8px;border-bottom-left-radius:8px}
-    tbody tr td:last-child{border-top-right-radius:8px;border-bottom-right-radius:8px}
-    .num{font-variant-numeric:tabular-nums;text-align:right}
+    tbody tr{background:#102044;border:1px solid var(--border)}
+    tbody tr td:first-child{border-top-left-radius:6px;border-bottom-left-radius:6px}
+    tbody tr td:last-child{border-top-right-radius:6px;border-bottom-right-radius:6px}
+    .row{display:flex;gap:8px;flex-wrap:wrap}
+    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+    .num{text-align:right;font-variant-numeric:tabular-nums}
     .muted{color:var(--muted)}
-    .ok{color:var(--ok)} .err{color:var(--err)} .warn{color:var(--warn)} .accent{color:var(--accent)}
-    .mono{font-family:ui-monospace,SFMono-Regular,Consolas,Menlo,monospace;font-variant-numeric:tabular-nums}
-    .scroll{max-height:260px;overflow:auto;padding-right:4px}
-
-    /* Layout order: HUD → two boxes → weapons (full) → two boxes → radar → commands */
-    @media (max-width:1100px){
-      .grid.cols-2, .grid.cols-2-66{grid-template-columns:1fr}
-    }
-
-    /* Safeguard: DO NOT REMOVE these IDs */
-    /* CARD-OWNFLEET, CARD-PRIMARY, CARD-WEAPONS, CARD-CAP, CARD-RADIO, CARD-RADAR, CARD-CMDS */
+    .ok{color:var(--ok)} .err{color:var(--err)} .warn{color:var(--warn)}
+    .statdot{width:10px;height:10px;border-radius:999px;display:inline-block;background:#6b7280}
+    .statdot.on{background:#35d07f}
+    .scroll{overflow:auto;max-height:365px}
+    .section{margin-bottom:8px}
+    .input{padding:6px;border-radius:6px;border:1px solid var(--border);background:#0c152b;color:#fff}
+    .badge{padding:2px 6px;border-radius:6px;border:1px solid var(--border);background:#0e1a34;color:#cfe1ff}
+    .tag{display:inline-block;padding:2px 6px;border-radius:6px;background:#0e1a34;border:1px solid var(--border);}
+    .tag.green{background:#052412;border-color:#1a5a36;color:#b6f2c9}
+    .tag.red{background:#2a1212;border-color:#6b1f1f;color:#ffb4b4}
+    .tag.grey{background:#1f2937;border-color:#374151;color:#d1d5db}
+    .radio-box{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <!-- Z-HUD -->
-    <section id="Z-HUD" aria-label="HUD">
-      <div class="left">
-        <div id="hud-dot" class="dot" title="status"></div>
-        <div class="hud-title">Falklands V2</div>
-        <div id="hud-ship" class="hud-badge mono">Ship —</div>
-        <div id="hud-hdg" class="hud-badge mono">hdg —°</div>
-        <div id="hud-spd" class="hud-badge mono">spd — kn</div>
-      </div>
-      <div class="right">
-        <span id="hud-poll" class="muted mono">poll: — ms</span>
-        <span class="hud-badge"><a href="/flight/tail?n=20" target="_blank">flight log »</a></span>
-      </div>
-    </section>
-
-    <!-- New Skirmish moved to /menu to keep dashboard focused -->
-
-    <!-- Two boxes: Left (own fleet) & Right (primary) -->
-    <div class="grid cols-2">
-      <section id="CARD-OWNFLEET" class="card" aria-label="Own Fleet">
-        <h3>Own Fleet</h3>
-        <div id="ownfleet"></div>
-        <div id="ownfleet-empty" class="placeholder" hidden>— No fleet data.</div>
-        <div class="row" style="margin-top:8px">
-          <label for="own-speed" class="mono muted">Speed</label>
-          <input id="own-speed" class="mono" inputmode="numeric" style="width:80px;padding:6px;border-radius:8px;border:1px solid var(--border);background:#0c152b;color:var(--text)"/>
-          <label for="own-course" class="mono muted">Course</label>
-          <input id="own-course" class="mono" inputmode="numeric" style="width:80px;padding:6px;border-radius:8px;border:1px solid var(--border);background:#0c152b;color:var(--text)"/>
-          <button id="own-apply" class="btn">Apply</button>
-        </div>
-      </section>
-
-      <section id="CARD-PRIMARY" class="card" aria-label="Primary Target">
-        <h3>Primary Target</h3>
-        <div class="row" style="margin-bottom:8px">
-          <label class="mono muted">Target ID:</label>
-          <input id="lock-id" class="mono" inputmode="numeric" style="width:90px;padding:6px;border-radius:8px;border:1px solid var(--border);background:#0c152b;color:var(--text)"/>
-          <button id="btn-scan" class="btn">Scan</button>
-          <button id="btn-lock" class="btn primary" disabled>Lock</button>
-          <button id="btn-unlock" class="btn" disabled>Unlock</button>
-        </div>
-        <div id="primary-kvs" class="kvs"></div>
-        <div id="primary-empty" class="placeholder">— No target locked.</div>
-      </section>
+    <div class="hud">
+      <div class="left row"><div id="hud-dot" class="dot"></div><div>Falklands V2 — Stations</div></div>
+      <div class="meta mono"><span id="hud-ship">Ship —</span><span id="hud-hdg">hdg —°</span><span id="hud-spd">spd — kn</span></div>
     </div>
 
-    <!-- Full-width weapons -->
-    <section id="CARD-WEAPONS" class="card full" aria-label="Weapons">
-      <h3>Weapons</h3>
-      <div class="scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Weapon</th><th class="num">Ammo</th><th class="num">Range (nm)</th>
-              <th>Status</th><th>Arming</th><th>Action</th>
-            </tr>
-          </thead>
-          <tbody id="weapons-body"></tbody>
-        </table>
-      </div>
-      <div id="weapons-empty" class="placeholder" hidden>— No weapons data.</div>
-    </section>
-
-    <!-- Two boxes: CAP (left) & Radio (right) -->
-    <div class="grid cols-2">
-      <section id="CARD-CAP" class="card" aria-label="Hermes CAP">
-        <h3>
-          Hermes CAP
-          <button id="cap-int-btn" class="btn" title="Launch Intercept (to locked target)">Intercept</button>
-          <input id="cap-head-cell" class="mono" placeholder="Cell" style="width:74px;padding:4px;border-radius:8px;border:1px solid var(--border);background:#0c152b;color:var(--text)">
-          <button id="cap-head-launch" class="btn" title="Launch CAP to cell">Launch CAP</button>
-        </h3>
-        <div id="cap-mini" class="row"></div>
-        <div class="scroll">
-          <table>
-            <thead><tr><th>#</th><th>Cell</th><th>Target cell</th><th class="num">Range</th><th class="num">TOT (s)</th><th class="num">TOS (s)</th><th>Status</th></tr></thead>
-            <tbody id="cap-body"></tbody>
-          </table>
-        </div>
-        <div id="cap-empty" class="placeholder" hidden>— CAP offline.</div>
-      </section>
-
-      <section id="CARD-RADIO" class="card" aria-label="Radio Messages">
-        <h3>Radio Messages</h3>
-        <div id="radio-list" class="scroll"></div>
-        <div class="row" style="margin-top:8px">
-          <input id="radio-input" class="mono" placeholder="Type to an officer (e.g., 'Radar, nearest contact?')" style="flex:1;min-width:200px;padding:6px;border-radius:8px;border:1px solid var(--border);background:#0c152b;color:var(--text)"/>
-          <button id="radio-send" class="btn">Send</button>
-        </div>
-        <div id="radio-empty" class="placeholder" hidden>— No messages yet.</div>
-      </section>
+    <div class="window">
+      <div id="station-panel" class="panel"></div>
     </div>
 
-    <!-- Radar list -->
-    <section id="CARD-RADAR" class="card" aria-label="Radar — All Contacts">
-      <h3>Radar — All Contacts</h3>
-      <div class="scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>#</th><th>Cell</th><th>Type</th><th>Name</th>
-              <th class="num">Range</th><th class="num">CRS</th><th class="num">SPD</th><th class="num">ID</th>
-            </tr>
-          </thead>
-          <tbody id="radar-body"></tbody>
-        </table>
-      </div>
-      <div id="radar-empty" class="placeholder" hidden>— No contacts.</div>
-    </section>
+    <div class="toolbar">
+      <button class="btn" data-st="NAV">NAV</button>
+      <button class="btn" data-st="RADAR">RADAR</button>
+      <button class="btn" data-st="WPN">WPN</button>
+      <button class="btn" data-st="RADIO">RADIO</button>
+      <button class="btn" data-st="ENG">ENG</button>
+      <button class="btn" data-st="SYS">SYS</button>
+    </div>
 
-    <!-- Commands & Console -->
-    <section id="CARD-CMDS" class="card" aria-label="Commands">
-      <h3>Commands & Console</h3>
-      <div class="row" style="margin-bottom:10px">
-        <button id="cmd-scan" class="btn">Scan now</button>
-        <button id="cmd-unlock" class="btn" disabled>Unlock</button>
-        <button id="btn-lock-nearest" class="btn">Lock Nearest</button>
-        <button class="btn warn" disabled>Deploy Chaff</button>
-        <button id="btn-cap-request" class="btn">Request CAP</button>
-        <button id="btn-spawn-air" class="btn">Spawn Near Aircraft</button>
-        <button id="btn-spawn-ship" class="btn">Spawn Near Ship</button>
-        <a href="/menu" class="btn">Menu</a>
-        <button id="nav-hermes-in" class="btn">Hermes: Close In</button>
-        <button id="nav-hermes-off" class="btn">Hermes: Stand Off</button>
-        <input id="skirmish-id" class="mono" placeholder="Skirmish #" style="width:90px;padding:6px;border-radius:8px;border:1px solid var(--border);background:#0c152b;color:var(--text);margin-left:8px"/>
-        <button id="skirmish-start" class="btn">Skirmish Go</button>
-        <button id="skirmish-stop" class="btn warn">Stop</button>
-        <button id="skirmish-review" class="btn">Review</button>
-        <button id="skirmish-quick" class="btn">Quick Skirmish</button>
-        <input id="cap-cell" class="mono" placeholder="Cell e.g., K13" style="width:90px;padding:6px;border-radius:8px;border:1px solid var(--border);background:#0c152b;color:var(--text)"/>
-        <label class="mono" style="margin-left:8px">Minutes <span id="cap-minutes-val">10</span></label>
-        <input id="cap-minutes" type="range" min="5" max="30" step="1" value="10" style="vertical-align:middle;width:120px">
-        <label class="mono" style="margin-left:8px">Radius <span id="cap-radius-val">10</span> nm</label>
-        <input id="cap-radius" type="range" min="2" max="20" step="1" value="10" style="vertical-align:middle;width:120px">
-        <button id="btn-cap-to-cell" class="btn">CAP to Cell</button>
+    <div class="radio-box">
+      <h3 style="margin:0 0 6px">Radio</h3>
+      <div id="radio-list" class="scroll" style="max-height:120px"></div>
+      <div class="row" style="margin-top:8px">
+        <input id="radio-input" class="input mono" placeholder="Type to an officer (e.g., 'Radar, nearest contact?')" style="flex:1;min-width:200px" />
+        <button id="radio-send" class="btn">Send</button>
       </div>
-      <div id="console" class="scroll mono muted"></div>
-    </section>
+    </div>
   </div>
 
-  <script src="/static/app.js"></script>
-  <script type="application/json" id="app-js-disabled">
-    // ---------- Helpers ----------
-    const $ = (sel)=>document.querySelector(sel);
-    const $$ = (sel)=>document.querySelectorAll(sel);
-    const fmt = (v, d=0)=> (v===undefined||v===null) ? '—' : Number(v).toFixed(d);
-    const text = (el, s)=>{ el.textContent = s; };
-    function rowEl(cells){
-      const tr=document.createElement('tr');
-      cells.forEach(c=>{
-        const td=document.createElement('td');
-        if (c && c.el){
-          td.appendChild(c.el);
-        } else if (c && typeof c === 'object' && ('text' in c)){
-          td.textContent = (c.text ?? '—');
-        } else {
-          td.textContent = (c ?? '—');
-        }
-        td.className = (c && c.cls)||'';
-        tr.appendChild(td);
-      });
-      return tr;
+  <script src="{{ url_for('static', filename='sound.js', v=app_version|default('dev')) }}"></script>
+  <script src="{{ url_for('static', filename='stations.js', v=app_version|default('dev')) }}" defer></script>
+  <script>
+    // Fallback if template tags were not rendered or request failed
+    if(!window.__stations_loaded){
+      document.write('<script src="/static/stations.js?v=dev" defer><\\/script>');
     }
-    function badge(txt, cls='badge'){ const span=document.createElement('span'); span.className=cls; span.textContent=txt; return span;}
-
-    let lastOK=false, lastPoll=0, pendingLockId=null;
-
-    // ---------- Poll status ----------
-    async function getJSON(url){
-      const t0=performance.now();
-      const r = await fetch(url, {cache:'no-store'});
-      lastPoll = Math.round(performance.now()-t0);
-      if(!r.ok) throw new Error(r.status+' '+url);
-      return await r.json();
-    }
-
-    function setHUD(j){
-      $('#hud-dot').classList.toggle('ok', !!j.ok);
-      text($('#hud-poll'), `poll: ${lastPoll} ms`);
-      const ship = j.state?.ship || {};
-      text($('#hud-ship'), `Ship ${j.ship_cell||'—'}`);
-      text($('#hud-hdg'), `hdg ${fmt(ship.heading) }°`);
-      text($('#hud-spd'), `spd ${fmt(ship.speed)} kn`);
-    }
-
-    function renderOwnFleet(arr){
-      const box = $('#ownfleet'); const empty=$('#ownfleet-empty');
-      box.innerHTML='';
-      if(!arr || !arr.length){ empty.hidden=false; return; }
-      empty.hidden=true;
-      arr.slice(0,3).forEach(u=>{
-        const line=document.createElement('div'); line.className='mono';
-        const hp = (u.status&&u.status.health_pct!=null)? String(u.status.health_pct)+'%':'—%';
-        line.textContent = `${u.name||'Unit'}: ${u.cell||'—'}  spd ${fmt(u.speed)}  hdg ${fmt(u.heading)}  ${hp}`;
-        box.appendChild(line);
-        if((u.id||'')==='own'){
-          const sp = $('#own-speed'); const cr = $('#own-course');
-          if(sp && (sp.value||'')==='') sp.value = String(u.speed||'');
-          if(cr && (cr.value||'')==='') cr.value = String(u.heading||'');
-        }
-      });
-    }
-
-    function renderPrimary(p){
-      const kv=$('#primary-kvs'); const empty=$('#primary-empty');
-      const btnLock=$('#btn-lock'), btnUnlock=$('#btn-unlock'), cmdUnlock=$('#cmd-unlock');
-      kv.innerHTML='';
-      if(!p){ empty.hidden=false; btnUnlock.disabled=true; cmdUnlock.disabled=true; return; }
-      empty.hidden=true; btnUnlock.disabled=false; cmdUnlock.disabled=false;
-      const add=(k,v)=>{ const kEl=badge(k,'badge'); const vEl=document.createElement('div'); vEl.className='mono'; vEl.textContent=v; kv.append(kEl,vEl); };
-      add('LOCKED', `${p.name||'—'}`);
-      add('Cell', p.cell||'—');
-      add('Range', fmt(p.range_nm,2)+' nm');
-      add('Course', fmt(p.course)+'°');
-      add('Speed', fmt(p.speed)+' kn');
-    }
-
-    function renderWeapons(arr){
-      const body=$('#weapons-body'); const empty=$('#weapons-empty');
-      body.innerHTML='';
-      if(!arr || !arr.length){ empty.hidden=false; return; }
-      empty.hidden=true;
-      arr.forEach(w=>{
-        const inRange = !!w.in_range;
-        const state = (w.armed||'Safe');
-        const armed = state==='Armed';
-        const arming = state==='Arming';
-        const ammo = Number(w.ammo ?? 0);
-        const rangeEl = badge(`${fmt(w.min_nm)}–${fmt(w.max_nm)} nm`, 'badge '+(inRange?'ok': ''));
-        const statusEl = arming? badge('Arming','badge warn') : (armed? badge('Armed','badge ok') : badge('Safe','badge'));
-        const armBtn = Object.assign(document.createElement('button'), {className:'btn', textContent: (armed||arming)?'Safe':'Arm'});
-        armBtn.onclick = ()=> toggleArm(w.name, (armed||arming)? 'Safe':'Armed');
-        const testBtn = Object.assign(document.createElement('button'), {className:'btn', textContent:'Test Fire', disabled: (!armed || ammo<=0)});
-        testBtn.onclick = ()=> fireWeapon(w.name, 'test');
-        const fireBtn = Object.assign(document.createElement('button'), {className:'btn danger', textContent:'Fire',
-                           disabled: (!armed || !inRange || ammo<=0)});
-        fireBtn.onclick = ()=> fireWeapon(w.name, 'real');
-
-        const actions = document.createElement('div'); actions.className='row';
-        actions.append(armBtn, testBtn, fireBtn);
-
-        body.appendChild(rowEl([
-          w.name || '—',
-          {cls:'num', el: badge(String(ammo), ammo>0?'badge':'badge warn')},
-          {cls:'num', el: rangeEl},
-          {el: statusEl},
-          arming? '—' : '—', // keep column alignment (legacy "Status" vs "Arming")
-          {el: actions}
-        ]));
-      });
-    }
-
-    function renderCAP(cap){
-      const mini=$('#cap-mini'); const body=$('#cap-body'); const empty=$('#cap-empty');
-      mini.innerHTML=''; body.innerHTML='';
-      if(!cap){ empty.hidden=false; return;}
-      empty.hidden=true;
-      mini.append(
-        badge(cap.ready?'READY':'NOT READY', cap.ready?'badge ok':'badge warn'),
-        badge(`pairs ${cap.pairs??0}`), badge(`airframes ${cap.airframes??0}`),
-        badge(`cooldown ${cap.cooldown_s??0}s`), badge(`committed ${cap.committed??0}`)
-      );
-      (cap.tasks||[]).forEach(t=>{
-        const statusTxt = (t.status||'').trim();
-        const finalStatus = t.engaged ? (statusTxt? `${statusTxt} (engaged)` : 'Engaged') : (statusTxt||'—');
-        body.appendChild(rowEl([
-          String(t.n||'—'), t.target_cell||'—',
-          {cls:'num', text: (typeof t.range_nm==='number')? fmt(t.range_nm,1):'—'},
-          {cls:'num', text: (typeof t.tot_s==='number')? String(t.tot_s): '—'},
-          {cls:'num', text: (typeof t.tos_s==='number')? String(t.tos_s): '—'},
-          finalStatus
-        ]));
-      });
-    }
-
-    function renderRadio(lines){
-      const box=$('#radio-list'); const empty=$('#radio-empty');
-      box.innerHTML='';
-      if(!lines || !lines.length){ empty.hidden=false; return; }
-      empty.hidden=true;
-      lines.slice(0,4).forEach(l=>{
-        const row=document.createElement('div'); row.className='row';
-        row.append(badge(l.ts||'--:--:--','badge muted'), badge(l.role||'OFF','badge'),
-                   document.createTextNode(l.text||''));
-        box.append(row);
-      });
-    }
-
-    function renderRadar(arr){
-      const body=$('#radar-body'); const empty=$('#radar-empty');
-      body.innerHTML='';
-      if(!arr || !arr.length){ empty.hidden=false; return; }
-      empty.hidden=true;
-      arr.forEach((c,idx)=>{
-        const link=document.createElement('button');
-        link.className='btn'; link.textContent='select';
-        link.onclick=()=>{ pendingLockId=c.id; $('#lock-id').value=c.id; $('#btn-lock').disabled=false; };
-        body.appendChild(rowEl([
-          String(idx+1),
-          c.cell||'—',
-          c.type||'—',
-          c.name||'—',
-          {cls:'num', text: fmt(c.range_nm,2)},
-          {cls:'num', text: fmt(c.course)},
-          {cls:'num', text: fmt(c.speed)},
-          {cls:'num', text: String(c.id||'—')}
-        ]));
-      });
-    }
-
-    function appendConsole(line){ const el=$('#console'); const div=document.createElement('div'); div.textContent=line; el.prepend(div); }
-
-    // ---------- Actions ----------
-    async function doGET(url){ const r=await fetch(url); return r.json(); }
-    async function doPOST(url){ const r=await fetch(url,{method:'POST'}); return r.json(); }
-
-    async function scanNow(){
-      try{ const j=await doGET('/api/command?cmd=/radar%20scan'); appendConsole(`[scan] ${j.ok?'OK':'ERR'} ${j.result||''}`);}
-      catch(e){ appendConsole(`[scan] ERR ${e}`); }
-    }
-    async function lockNow(){
-      const id = ($('#lock-id').value||'').trim();
-      if(!id) return;
-      try{ const j=await doGET(`/api/command?cmd=/radar%20lock%20${encodeURIComponent(id)}`);
-        appendConsole(`[lock ${id}] ${j.ok?'OK':'ERR'}`); $('#btn-lock').disabled=true; }
-      catch(e){ appendConsole(`[lock ${id}] ERR ${e}`); }
-    }
-    async function unlockNow(){
-      try{ const j=await doGET('/api/command?cmd=/radar%20unlock');
-        appendConsole(`[unlock] ${j.ok?'OK':'ERR'}`); $('#btn-lock').disabled=false; }
-      catch(e){ appendConsole(`[unlock] ERR ${e}`); }
-    }
-    async function toggleArm(name, state){
-      try{ const j=await doPOST(`/weapons/arm?name=${encodeURIComponent(name)}&state=${encodeURIComponent(state)}`);
-        appendConsole(`[arm] ${name} → ${state} ${j.ok?'OK':'ERR'}`);
-      }catch(e){ appendConsole(`[arm] ${name} ERR ${e}`); }
-    }
-    async function fireWeapon(name, mode){
-      try{ const j=await doPOST(`/weapons/fire?name=${encodeURIComponent(name)}&mode=${encodeURIComponent(mode)}`);
-        appendConsole(`[fire:${mode}] ${name} ${j.ok?'OK':'ERR'} ${j.result||j.err||''}`);
-      }catch(e){ appendConsole(`[fire:${mode}] ${name} ERR ${e}`); }
-    }
-
-    // ---- Skirmish helpers ----
-    async function skirmishStart(){
-      const id = Number(($('#skirmish-id').value||'').trim());
-      if(!id){ appendConsole('[skirmish] ERR missing id'); return; }
-      try{ const r=await fetch('/skirmish/start',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})}); const j=await r.json(); appendConsole(`[skirmish] start ${j.ok?'OK':'ERR'} id=${id}`);}catch(e){ appendConsole(`[skirmish] start ERR ${e}`); }
-    }
-    async function skirmishStop(){
-      const idStr = ($('#skirmish-id').value||'').trim();
-      const id = idStr? Number(idStr) : undefined;
-      try{ const r=await fetch(id?`/skirmish/stop?id=${encodeURIComponent(id)}`:'/skirmish/stop',{method:'POST'}); const j=await r.json(); appendConsole(`[skirmish] stop ${j.ok?'OK':'ERR'} ${(j.summary&&JSON.stringify(j.summary))||''}`);}catch(e){ appendConsole(`[skirmish] stop ERR ${e}`); }
-    }
-    async function skirmishReview(){ window.location.href = '/skirmish'; }
-    async function skirmishQuick(){
-      try{ const r=await fetch('/skirmish/create',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})}); const j=await r.json(); if(j.ok){ $('#skirmish-id').value=String(j.id); appendConsole(`[skirmish] created id=${j.id}`);} else { appendConsole(`[skirmish] create ERR`);} }catch(e){ appendConsole(`[skirmish] create ERR ${e}`); }
-    }
-
-    // NAV Hermes helpers
-    async function navHermesClose(){ try{ const j=await doGET('/nav/hermes/close_in'); appendConsole(`[nav] hermes close_in ${j.ok?'OK':'ERR'}`);}catch(e){ appendConsole(`[nav] hermes close_in ERR ${e}`);} }
-    async function navHermesStand(){ try{ const j=await doGET('/nav/hermes/stand_off'); appendConsole(`[nav] hermes stand_off ${j.ok?'OK':'ERR'}`);}catch(e){ appendConsole(`[nav] hermes stand_off ERR ${e}`);} }
-
-    // Populate hostile targets for new skirmish
-    async function loadHostiles(){
-      try{ const j = await getJSON('/contacts/catalog?hostile=1'); const items = j.items||[];
-        const ids=['nsk-tgt1-name','nsk-tgt2-name','nsk-tgt3-name'];
-        ids.forEach(id=>{ const sel=$('#'+id); if(!sel) return; sel.innerHTML=''; const opt=document.createElement('option'); opt.value=''; opt.textContent='(none)'; sel.appendChild(opt);
-          items.forEach(it=>{ const o=document.createElement('option'); o.value=it.name; o.textContent=it.name; sel.appendChild(o); }); });
-      }catch(e){ appendConsole(`[catalog] ERR ${e}`); }
-    }
-
-    async function createSkirmishFromForm(){
-      const name = ($('#nsk-name').value||'').trim();
-      const notes = ($('#nsk-notes').value||'').trim();
-      const picks = [];
-      for(const i of [1,2,3]){
-        const n = ($('#nsk-tgt'+i+'-name')?.value||'').trim();
-        const c = ($('#nsk-tgt'+i+'-cell')?.value||'').trim().toUpperCase();
-        if(n && c) picks.push({name:n, cell:c});
-      }
-      if(picks.length===0){ appendConsole('[skirmish] ERR add at least one target'); return; }
-      const body = { name, notes, config: { hostiles: picks } };
-      try{ const r=await fetch('/skirmish/create',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-        const j=await r.json(); if(j.ok){ $('#skirmish-id').value=String(j.id); appendConsole(`[skirmish] created id=${j.id}`);} else { appendConsole(`[skirmish] create ERR`); }
-      }catch(e){ appendConsole(`[skirmish] create ERR ${e}`); }
-    }
-
-    async function capIntercept(){
-      try{
-        const j = await doPOST('/cap/request');
-        appendConsole(`[CAP] intercept ${j.ok?'OK':'ERR'} ${j.message||''}`);
-      }catch(e){ appendConsole(`[CAP] intercept ERR ${e}`); }
-    }
-
-    async function capLaunchTo(cell, minutes=10, radius=10){
-      try{
-        const r = await fetch('/cap/launch_to', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({cell, station_minutes:minutes, radius_nm:radius})});
-        const j = await r.json();
-        appendConsole(`[CAP->${cell}] ${j.ok?'OK':'ERR'} ${j.message||''}`);
-      }catch(e){ appendConsole(`[CAP->${cell}] ERR ${e}`); }
-    }
-
-    async function requestCAP(){
-      try{
-        const j=await doPOST('/cap/request');
-        appendConsole(`[cap] ${j.ok?'OK':'ERR'} ${j.message||''}`);
-      }catch(e){ appendConsole(`[cap] ERR ${e}`); }
-    }
-
-    // Wire buttons
-    $('#btn-scan').onclick = scanNow;
-    $('#cmd-scan').onclick = scanNow;
-    $('#btn-lock').onclick = lockNow;
-    $('#btn-unlock').onclick = unlockNow;
-    const lockNearest = async ()=>{
-      try{ const j=await doGET('/api/command?cmd=/radar%20lock%20nearest'); appendConsole(`[lock nearest] ${j.ok?'OK':'ERR'}`);}catch(e){ appendConsole(`[lock nearest] ERR ${e}`); }
-    };
-    $('#btn-lock-nearest').onclick = lockNearest;
-    $('#cmd-unlock').onclick = unlockNow;
-    const capBtn = $('#btn-cap-request'); if (capBtn) capBtn.onclick = requestCAP;
-    const capCellBtn = $('#btn-cap-to-cell'); if (capCellBtn) capCellBtn.onclick = async ()=>{
-      const inp = $('#cap-cell'); if(!inp) return; const cell = (inp.value||'').trim().toUpperCase();
-      if(!cell){ appendConsole('[cap] ERR missing cell'); return; }
-      const minEl = $('#cap-minutes'); const radEl = $('#cap-radius');
-      const station_minutes = minEl? Number(minEl.value) : 10;
-      const radius_nm = radEl? Number(radEl.value) : 10;
-      try{
-        const r = await fetch('/cap/launch_to', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({cell, station_minutes, radius_nm})});
-        const j = await r.json();
-        appendConsole(`[cap->${cell}] ${j.ok?'OK':'ERR'} ${j.message||''}`);
-      }catch(e){ appendConsole(`[cap->${cell}] ERR ${e}`); }
-    };
-    // Slider displays
-    const capMinEl = $('#cap-minutes'); const capMinVal = $('#cap-minutes-val'); if(capMinEl && capMinVal){ capMinEl.addEventListener('input', ()=> capMinVal.textContent = String(capMinEl.value)); }
-    const capRadEl = $('#cap-radius'); const capRadVal = $('#cap-radius-val'); if(capRadEl && capRadVal){ capRadEl.addEventListener('input', ()=> capRadVal.textContent = String(capRadEl.value)); }
-
-    // CAP header controls
-    const capIntBtn = $('#cap-int-btn'); if (capIntBtn) capIntBtn.onclick = capIntercept;
-    const capHeadLaunch = $('#cap-head-launch'); if (capHeadLaunch) capHeadLaunch.onclick = ()=>{
-      const cellEl = $('#cap-head-cell'); const cell = (cellEl?.value||'').trim().toUpperCase();
-      if(!cell){ appendConsole('[CAP] ERR missing cell'); return; }
-      capLaunchTo(cell, 10, 10);
-    };
-    // Radio input
-    async function sendRadio(){
-      const el=$('#radio-input'); if(!el) return; const s=(el.value||'').trim(); if(!s) return;
-      try{ const r=await fetch('/radio/ask',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text:s})});
-        const j=await r.json(); appendConsole(`[radio] ${j.ok?'OK':'ERR'} ${j.role||''}`); el.value=''; }
-      catch(e){ appendConsole(`[radio] ERR ${e}`); }
-    }
-    const rs=$('#radio-send'); if(rs) rs.onclick = sendRadio;
-    const ri=$('#radio-input'); if(ri) ri.addEventListener('keydown', (e)=>{ if(e.key==='Enter') sendRadio(); });
-    // Force-spawn helpers (nearby targets for weapons testing)
-    async function spawnNear(kind){
-      try{
-        if(kind==='Aircraft'){
-          const j=await doGET('/radar/force_spawn_near?class=Aircraft&range=2.5');
-          appendConsole(`[spawn] Aircraft ${j.ok?'OK':'ERR'} ${j.added?.name||''} ${j.added?.cell||''}`);
-        }else{
-          const j=await doGET('/radar/force_spawn_near?class=Ship&range=4');
-          appendConsole(`[spawn] Ship ${j.ok?'OK':'ERR'} ${j.added?.name||''} ${j.added?.cell||''}`);
-        }
-      }catch(e){ appendConsole(`[spawn:${kind}] ERR ${e}`); }
-    }
-    const btnSpawnAir = $('#btn-spawn-air'); if (btnSpawnAir) btnSpawnAir.onclick = ()=> spawnNear('Aircraft');
-    const btnSpawnShip = $('#btn-spawn-ship'); if (btnSpawnShip) btnSpawnShip.onclick = ()=> spawnNear('Ship');
-    const skStart = $('#skirmish-start'); if (skStart) skStart.onclick = skirmishStart;
-    const skStop = $('#skirmish-stop'); if (skStop) skStop.onclick = skirmishStop;
-    const skReview = $('#skirmish-review'); if (skReview) skReview.onclick = skirmishReview;
-    const skQuick = $('#skirmish-quick'); if (skQuick) skQuick.onclick = skirmishQuick;
-    const navIn = $('#nav-hermes-in'); if (navIn) navIn.onclick = navHermesClose;
-    const navOff = $('#nav-hermes-off'); if (navOff) navOff.onclick = navHermesStand;
-    const nskCreate = $('#nsk-create'); if (nskCreate) nskCreate.onclick = createSkirmishFromForm;
-    loadHostiles();
-    const ownApply = $('#own-apply'); if (ownApply) ownApply.onclick = async ()=>{
-      const sp = Number(($('#own-speed').value||'').trim());
-      const cr = Number(($('#own-course').value||'').trim());
-      const parts=[];
-      if(!Number.isNaN(cr)) parts.push(`heading=${encodeURIComponent(cr)}`);
-      if(!Number.isNaN(sp)) parts.push(`speed=${encodeURIComponent(sp)}`);
-      if(!parts.length){ appendConsole('[nav] ERR missing values'); return; }
-      try{
-        const cmd = `/nav set ${parts.join(' ')}`;
-        const j = await doGET(`/api/command?cmd=${encodeURIComponent(cmd)}`);
-        appendConsole(`[nav] ${j.ok?'OK':'ERR'} ${j.result||''}`);
-      }catch(e){ appendConsole(`[nav] ERR ${e}`); }
-    };
-        // Enable Lock button when an ID is typed; lock nearest when none typed
-        const lockIdEl = $('#lock-id');
-        if (lockIdEl) {
-          lockIdEl.addEventListener('input', ()=>{
-            const v = (lockIdEl.value||'').trim();
-            const btnLock = $('#btn-lock'); if (btnLock) btnLock.disabled = !v;
-          });
-          lockIdEl.addEventListener('keydown', (e)=>{
-            if(e.key === 'Enter'){
-              e.preventDefault();
-              lockNow();
-            }
-          });
-        }
-
-    // ---------- Radio source fallback ----------
-    async function loadRadio(){
-      try{
-        const j = await getJSON('/flight/tail?n=20');
-        const lines = (j.lines||[]).map(x=>{
-          const route = x.route||'';
-          if(route==='/radio.officer'){
-            return {ts:(x.ts||'').slice(11,19), role:(x.response?.role||'OFF'), text:(x.response?.text||'')};
-          }
-          return null;
-        }).filter(Boolean);
-        return lines;
-      }catch{ return []; }
-    }
-
-    // ---------- Main poll ----------
-    async function poll(){
-      try{
-        const j = await getJSON('/api/status');
-        lastOK = !!j.ok;
-        setHUD(j);
-        renderOwnFleet(j.ownfleet);
-        renderPrimary(j.primary);
-        renderWeapons(j.weapons);
-        renderCAP(j.cap);
-        // Enable/disable CAP header buttons
-        try{
-          const hasPrimary = !!j.primary;
-          const ready = !!(j.cap && j.cap.ready);
-          const capIntBtn = $('#cap-int-btn'); if (capIntBtn) { capIntBtn.disabled = !(hasPrimary && ready); capIntBtn.classList.toggle('danger', hasPrimary && ready); }
-          const cellEl = $('#cap-head-cell'); const capHeadLaunch = $('#cap-head-launch');
-          if (capHeadLaunch) capHeadLaunch.disabled = !(ready && (cellEl && (cellEl.value||'').trim().length>0));
-        }catch(_){ }
-        // Enable CAP button only if a primary exists and CAP reports available
-        try{
-          const capBtn = $('#btn-cap-request');
-          if (capBtn) capBtn.disabled = !(j.primary && j.cap && j.cap.ready);
-        }catch(_){ }
-
-        // radio: prefer status.radio; else from recorder
-        if (Array.isArray(j.radio) && j.radio.length){
-          renderRadio(j.radio);
-        } else {
-          const r = await loadRadio();
-          renderRadio(r);
-        }
-
-        renderRadar(j.contacts);
-
-      }catch(e){
-        lastOK=false;
-        $('#hud-dot').classList.remove('ok');
-      }
-    }
-    poll();
-    setInterval(poll, 1500);
   </script>
-  <script src="/static/sound.js"></script>
 </body>
 </html>
