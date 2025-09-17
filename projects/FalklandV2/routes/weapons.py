@@ -13,7 +13,8 @@ def _lazy():
         RADAR, PENDING_EVENTS, STATE_LOCK, AUDIO_STATE,
         compute_in_range, get_own_xy, contact_to_ui, save_ammo,
         TARGET_CLASS_BY_NAME, _sound_key_for_weapon, ENG,
-        load_ammo, load_arming, voice_emit, officer_say
+        load_ammo, load_arming, voice_emit, officer_say,
+        record_event
     )
     return locals()
 
@@ -69,6 +70,13 @@ def weapons_arm():
                 L['PENDING_EVENTS'].append({'due': time.time()+5.0, 'kind': 'arming_ready', 'weapon': name})
             except Exception:
                 pass
+        try:
+            if state == 'Armed':
+                L['record_event']('weapon.arm', {'name': name})
+            else:
+                L['record_event']('weapon.safe', {'name': name})
+        except Exception:
+            pass
         return jsonify({'ok': True, 'name': name, 'state': disp_state})
     except Exception as e:
         logging.exception("/weapons/arm error: %s", e)
@@ -161,6 +169,10 @@ def weapons_fire():
                     pass
             # Apply cooldown
             _set_cooldown_until(name, now + _cooldown_seconds_by_class(name))
+            try:
+                L['record_event']('weapon.fire', {'name': name, 'mode': 'test'})
+            except Exception:
+                pass
             return jsonify({'ok': True, 'result': 'TEST', 'name': name, 'ammo': ammo[name]})
 
         # Real fire path
@@ -228,6 +240,15 @@ def weapons_fire():
             pass
         # Apply cooldown
         _set_cooldown_until(name, now + _cooldown_seconds_by_class(name))
+        try:
+            L['record_event']('weapon.fire', {
+                'name': name,
+                'mode': 'real',
+                'target': primary.get('name'),
+                'target_id': primary.get('id')
+            })
+        except Exception:
+            pass
         return jsonify({'ok': True, 'result': 'FIRED', 'name': name, 'ammo': ammo[name]})
     except Exception as e:
         logging.exception("/weapons/fire error: %s", e)

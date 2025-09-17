@@ -21,6 +21,7 @@ def api_command():
         STATE_LOCK,
         NAV_STATE,
         record_flight,
+        record_event,
         voice_emit,
         officer_say,
         ship_cell_from_state,
@@ -177,6 +178,11 @@ def api_command():
                 officer_say('Fire Control', 'unlocked', {})
             except Exception:
                 pass
+            try:
+                record_event('radar.target.unlocked', {})
+                record_event('weapon.target.unlocked', {})
+            except Exception:
+                pass
             payload = {"ok": True, "result": "UNLOCKED"}
             record_flight({"route": route, "method": request.method, "status": 200,
                            "duration_ms": int((time.time()-t0)*1000),
@@ -281,12 +287,31 @@ def api_command():
                 own_x, own_y = get_own_xy(st)
                 ui = contact_to_ui(target, (own_x, own_y))
                 try:
+                    record_event('radar.target.locked', {
+                        'id': tid,
+                        'name': ui.get('name'),
+                        'speed': ui.get('speed'),
+                        'range_nm': ui.get('range_nm'),
+                        'tti': ui.get('tti')
+                    })
+                    record_event('weapon.target.locked', {
+                        'id': tid,
+                        'name': ui.get('name')
+                    })
+                except Exception:
+                    pass
+                try:
                     officer_say('Fire Control','locked',{'name': ui.get('name'), 'id': tid, 'range_nm': ui.get('range_nm')})
                 except Exception:
                     pass
             except Exception:
                 try:
                     officer_say('Fire Control','locked',{'id': tid})
+                except Exception:
+                    pass
+                try:
+                    record_event('radar.target.locked', {'id': tid})
+                    record_event('weapon.target.locked', {'id': tid})
                 except Exception:
                     pass
             payload = {"ok": True, "result": f"LOCKED id={tid}"}
@@ -351,7 +376,7 @@ def api_nav_set():
     Applies to both minimal V3 Engine (set_course/set_speed) and Falklands Engine (exec_slash).
     """
     # Late imports
-    from ..webdash import ENG, STATE_LOCK, NAV_STATE, voice_emit, record_flight
+    from ..webdash import ENG, STATE_LOCK, NAV_STATE, voice_emit, record_flight, record_event
     t0 = time.time(); route = "/api/nav/set"
     try:
         data = request.get_json(silent=True) or {}
@@ -391,6 +416,7 @@ def api_nav_set():
                     NAV_STATE['turn_target'] = float(hdg)
                     NAV_STATE['turn_hold_since'] = 0.0
                 voice_emit('nav.set.course.ack', {'hdg': round(float(hdg)), 'spd': round(float(spd_now or spd or 0))}, fallback=f'Course set {round(float(hdg))}°, making {round(float(spd_now or spd or 0))} knots.', role='Navigation')
+                record_event('nav.course.set', {'heading': round(float(hdg))})
             elif spd is not None:
                 # If only speed changed
                 try:
@@ -400,6 +426,10 @@ def api_nav_set():
                 except Exception:
                     hdg3 = float(hdg or 0)
                 voice_emit('nav.set.speed.ack', {'spd': round(float(spd)), 'hdg': round(float(hdg3))}, fallback=f'Speed now {round(float(spd))} knots; heading {round(float(hdg3))}°.', role='Navigation')
+                record_event('nav.speed.set', {'speed': round(float(spd))})
+            if spd is not None and hdg is not None:
+                # ensure speed event recorded even when both provided
+                record_event('nav.speed.set', {'speed': round(float(spd))})
         except Exception:
             pass
         payload = {"ok": True}

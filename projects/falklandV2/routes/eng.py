@@ -8,7 +8,7 @@ bp = Blueprint("eng", __name__)
 
 
 def _lazy():
-    from ..webdash import STATE_LOCK, record_flight, _load_json, _save_json
+    from ..webdash import STATE_LOCK, record_flight, _load_json, _save_json, record_event
     from ..subsystems.webcore import load_eng_sys, save_eng_sys
     from ..subsystems.webcore import HEALTH_PATH, _load_health, _save_health
     return locals()
@@ -42,6 +42,14 @@ def eng_assign():
                 # start repair timer if damaged
                 if str(s.get('status')) == 'Damaged' and int(s.get('timer_s', 0)) <= 0:
                     s['timer_s'] = 120
+                    try:
+                        L['record_event']('eng.system.timer', {'system': s.get('name','System'), 'seconds': s.get('timer_s', 0)})
+                    except Exception:
+                        pass
+                try:
+                    L['record_event']('eng.repair.deployed', {'system': s.get('name','System')})
+                except Exception:
+                    pass
                 break
         L['save_eng_sys'](st)
         L['record_flight']({"route": route, "method": "POST", "status": 200, "duration_ms": int((time.time()-t0)*1000), "request": {"id": sys_id}, "response": {"ok": True}})
@@ -70,4 +78,3 @@ def eng_release():
         return jsonify({"ok": True, **st})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
-

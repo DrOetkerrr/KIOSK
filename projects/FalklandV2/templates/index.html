@@ -27,14 +27,11 @@
       <button class="btn" data-st="SYS">SYS</button>
     </div>
 
-    <div class="radio-box">
-      <h3 style="margin:0 0 6px">Radio</h3>
-      <div id="radio-list" class="scroll" style="max-height:120px"></div>
-      <div class="row" style="margin-top:8px">
-        <input id="radio-input" class="input mono" placeholder="Type to an officer (e.g., 'Radar, nearest contact?')" style="flex:1;min-width:200px" />
-        <button id="radio-send" class="btn">Send</button>
-      </div>
+    <div class="event-box">
+      <h3 class="event-title">Event Console</h3>
+      <div id="event-log" class="event-log mono"></div>
     </div>
+
   </div>
 
   <script src="{{ url_for('static', filename='sound.js', v=app_version|default('dev')) }}"></script>

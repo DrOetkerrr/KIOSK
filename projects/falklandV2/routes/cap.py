@@ -12,7 +12,7 @@ def _lazy():
     # Import late from webdash to avoid circular imports
     from ..webdash import (
         CAP, CAP_META, RADAR, ENG,
-        voice_emit, officer_say, record_flight,
+        voice_emit, officer_say, record_flight, record_event,
         radar_xy_from_state, world_to_cell, cell_to_world,
         stamp_cap_launch
     )
@@ -234,6 +234,10 @@ def cap_request():
                 L['voice_emit']('pilot.vector', {'cell': cell}, fallback='Vectoring to %s.' % (cell,), role='Pilot')
             except Exception:
                 pass
+            try:
+                L['record_event']('cap.intercept.launch', {'id': tid, 'name': getattr(tgt, 'name', ''), 'cell': cell})
+            except Exception:
+                pass
             L['record_flight']({"route": route, "method": request.method, "status": 200,
                                "duration_ms": int((time.time()-t0)*1000),
                                "request": {"id": tid, "cell": cell, "range_nm": round(rng_nm, 2), "vector": True}, "response": payload})
@@ -253,6 +257,10 @@ def cap_request():
                 L['voice_emit']('pilot.intercept.launch', {'cell': cell}, fallback='Hermes, intercept bogey, vector to %s.' % (cell,), role='Pilot')
                 # Generic CAP launch fallback (kept for compatibility)
                 L['voice_emit']('pilot.cap.launch', {'cell': cell}, fallback='Hermes, proceeding to CAP station at %s.' % (cell,), role='Pilot')
+            except Exception:
+                pass
+            try:
+                L['record_event']('cap.launch', {'cell': cell})
             except Exception:
                 pass
             try:
@@ -315,6 +323,10 @@ def cap_launch_to():
                 pass
             try:
                 L['voice_emit']('pilot.cap.launch', {'cell': cell}, fallback='Hermes, proceeding to CAP station at %s.' % (cell,), role='Pilot')
+            except Exception:
+                pass
+            try:
+                L['record_event']('cap.launch', {'cell': cell})
             except Exception:
                 pass
             try:

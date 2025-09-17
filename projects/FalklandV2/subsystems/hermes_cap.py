@@ -82,7 +82,7 @@ class CAPMission:
 
 class HermesCAP:
     """Manages pool/cooldowns and missions; looks like a long-reach weapon to callers."""
-    def __init__(self, data_path: Path):
+    def __init__(self, data_path: Path, event_hook=None):
         self.data_path = data_path
         self.cfg = self._load_cfg()
         self.airframe_pool_total = int(self.cfg.get("airframe_pool_total", 8))
@@ -94,6 +94,7 @@ class HermesCAP:
         self.last_scramble: float = 0.0
         self.missions: List[CAPMission] = []
         self._next_id = 1
+        self._event_hook = event_hook
 
         # Sidewinder engagement params (can be overridden by cap_config.json)
         wcfg = (self.cfg.get("weapons") or {}).get("aim9", {})
@@ -103,6 +104,13 @@ class HermesCAP:
         self.pk_pts: List[Tuple[float, float]] = wcfg.get("pk_points") or [
             (1.0, 0.30), (2.0, 0.55), (2.5, 0.65), (3.0, 0.55), (4.0, 0.35), (5.0, 0.20)
         ]
+
+    def _emit_event(self, event_id: str, data: Dict[str, Any] | None = None) -> None:
+        if callable(self._event_hook):
+            try:
+                self._event_hook(event_id, data or {})
+            except Exception:
+                pass
 
     # ---------- config
     def _load_cfg(self) -> Dict[str, Any]:
@@ -164,6 +172,7 @@ class HermesCAP:
                     m.status = "onstation"
                     m.ts["onstation"] = t
                     m.ts["etd_rtb"] = t + m.onstation_s
+                    self._emit_event('cap.onstation', {'mission_id': m.id, 'cell': m.target_cell})
             elif m.status == "onstation":
                 if t >= (m.ts.get("etd_rtb") or t):
                     m.status = "rtb"
@@ -214,6 +223,8 @@ class HermesCAP:
         pk = self._pk_for_range(float(distance_nm))
         hit1 = random.random() < pk
         m.missiles_left = max(0, m.missiles_left - 1)
+        self._emit_event('cap.weapon.fire', {'mission_id': m.id, 'weapon': 'AIM-9', 'shot': 1, 'target_id': locked_target_id, 'range_nm': float(distance_nm)})
+        self._emit_event('cap.weapon.hit' if hit1 else 'cap.weapon.miss', {'mission_id': m.id, 'weapon': 'AIM-9', 'shot': 1, 'target_id': locked_target_id})
 
         result = {
             "when": t,
@@ -231,6 +242,8 @@ class HermesCAP:
             result["shots"] = 2
             result["hit"] = hit2  # overall result: if second hits, we count as hit
             result["second_fired"] = True
+            self._emit_event('cap.weapon.fire', {'mission_id': m.id, 'weapon': 'AIM-9', 'shot': 2, 'target_id': locked_target_id, 'range_nm': float(distance_nm)})
+            self._emit_event('cap.weapon.hit' if hit2 else 'cap.weapon.miss', {'mission_id': m.id, 'weapon': 'AIM-9', 'shot': 2, 'target_id': locked_target_id})
 
         m.last_engagement = result
         m.last_engagement_s = t

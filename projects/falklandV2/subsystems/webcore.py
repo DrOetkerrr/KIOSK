@@ -47,6 +47,7 @@ CREW_PATH = DATA_DIR / "crew.json"
 ALARM_CFG_PATH = DATA_DIR / "alarms.json"
 HEALTH_PATH = STATE_DIR / "health.json"
 VOICE_EVENTS_PATH = DATA_DIR / "voice_events.json"
+EVENT_TEMPLATES_PATH = DATA_DIR / "event_console.json"
 SKIRMISHES_PATH = STATE_DIR / "skirmishes.json"
 ROADMAP_PATH = STATE_DIR / "roadmap.json"
 TTS_DIR = STATE_DIR / "tts"; TTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -660,6 +661,28 @@ def _load_voice_events() -> Dict[str, Dict[str, Any]]:
 VOICE_EVENTS: Dict[str, Dict[str, Any]] = _load_voice_events()
 
 
+def _load_event_templates() -> Dict[str, str]:
+    try:
+        raw = _load_json(EVENT_TEMPLATES_PATH, [])
+        if isinstance(raw, dict):
+            raw = raw.get('events')
+        templates: Dict[str, str] = {}
+        if isinstance(raw, list):
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                eid = str(item.get('id') or '').strip()
+                if not eid:
+                    continue
+                templates[eid] = str(item.get('text') or '')
+        return templates
+    except Exception:
+        return {}
+
+
+EVENT_TEMPLATES: Dict[str, str] = _load_event_templates()
+
+
 def _crew_voice(role: str) -> str:
     try:
         from .. import webdash as wd  # type: ignore
@@ -687,6 +710,21 @@ def voice_emit(event_id: str, ctx: Dict[str, Any] | None = None, *, fallback: st
             wd.record_officer(str(r), txt)
     except Exception:
         pass
+
+
+def format_event_text(event_id: str, ctx: Dict[str, Any] | None = None) -> str:
+    template = EVENT_TEMPLATES.get(str(event_id))
+    if not template:
+        return str(event_id).replace('.', ' ')
+
+    class _Safe(dict):
+        def __missing__(self, key):  # type: ignore[override]
+            return '—'
+
+    try:
+        return template.format_map(_Safe(**(ctx or {})))
+    except Exception:
+        return template
 
 
 def _tts_synthesize(text: str, role: str) -> str | None:
@@ -1021,6 +1059,14 @@ def engine_thread_run(wd) -> None:
                         with wd.STATE_LOCK:
                             wd.AUDIO_STATE['last_result'] = {'event': ('hit' if hit else 'miss'), 'ts': time.time()}
                         try:
+                            wd.record_event('weapon.result.hit' if hit else 'weapon.result.miss', {
+                                'weapon': weapon,
+                                'target_id': tgt_id,
+                                'range_nm': rng
+                            })
+                        except Exception:
+                            pass
+                        try:
                             record_flight({
                                 'route': '/weapons.resolve', 'method': 'INT', 'status': 200, 'duration_ms': 0,
                                 'request': {'weapon': weapon, 'rng': rng, 'target_id': tgt_id},
@@ -1053,18 +1099,39 @@ def engine_thread_run(wd) -> None:
                             if int(hlth.get('lives', 1)) > 0:
                                 hlth['lives'] = int(hlth.get('lives', 1)) - 1
                                 _save_health(hlth)
-                                # mark a system damaged (random)
                                 try:
-                                    eng = load_eng_sys()
-                                    sys_list = [s for s in eng.get('systems', []) if s.get('status') == 'OK']
-                                    if sys_list:
-                                        s = _rand.choice(sys_list)
-                                        s['status'] = 'Damaged'
-                                        s['timer_s'] = 120
-                                        s['last_damaged_ts'] = now
-                                        save_eng_sys(eng)
+                                    wd.record_event('enemy.bomb.hit', {
+                                        'contact_id': int(getattr(c, 'id', -1)),
+                                        'name': getattr(c, 'name', ''),
+                                        'range_nm': round(dist, 2)
+                                    })
                                 except Exception:
                                     pass
+                            else:
+                                try:
+                                    wd.record_event('enemy.bomb.miss', {
+                                        'contact_id': int(getattr(c, 'id', -1)),
+                                        'name': getattr(c, 'name', ''),
+                                        'range_nm': round(dist, 2)
+                                    })
+                                except Exception:
+                                    pass
+                            # mark a system damaged (random)
+                            try:
+                                eng = load_eng_sys()
+                                sys_list = [s for s in eng.get('systems', []) if s.get('status') == 'OK']
+                                if sys_list:
+                                    s = _rand.choice(sys_list)
+                                    s['status'] = 'Damaged'
+                                    s['timer_s'] = 120
+                                    s['last_damaged_ts'] = now
+                                    save_eng_sys(eng)
+                                    try:
+                                        wd.record_event('eng.system.timer', {'system': s.get('name','System'), 'seconds': s.get('timer_s', 0)})
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
                 except Exception:
                     continue
         except Exception:
@@ -1093,6 +1160,10 @@ def engine_thread_run(wd) -> None:
                             if int(hl.get('lives', 1)) > 0:
                                 hl['lives'] = int(hl.get('lives', 1)) - 1; _save_health(hl)
                             changed = True
+                            try:
+                                wd.record_event('eng.system.offline', {'system': s.get('name','System')})
+                            except Exception:
+                                pass
                 except Exception:
                     continue
             if changed:

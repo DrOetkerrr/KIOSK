@@ -154,6 +154,12 @@ def _bind_runtime(rt: GameRuntime) -> None:
 
     RADAR = rt.radar
     CAP = rt.cap
+    hook = globals().get('record_event')
+    if CAP is not None and callable(hook):
+        try:
+            CAP._event_hook = hook  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
 
 _bind_runtime(RUNTIME)
@@ -183,10 +189,38 @@ voice_emit = core.voice_emit
 _crew_voice = core._crew_voice
 _tts_synthesize = core._tts_synthesize
 _sound_key_for_weapon = core._sound_key_for_weapon
+format_event_text = core.format_event_text
 
 # Radio queues
 RADIO_QUEUE: list[Dict[str, Any]] = []
 RADIO_STATE: Dict[str, Any] = {"busy_until": 0.0}
+
+# Event feed for stations console
+EVENT_QUEUE: list[Dict[str, Any]] = []
+EVENT_MAX = 64
+
+
+def record_event(event_id: str, data: Dict[str, Any] | None = None, *, text: str | None = None) -> None:
+    try:
+        payload = {
+            'id': str(event_id),
+            'ts': time.time(),
+            'data': dict(data or {})
+        }
+        payload['text'] = text or format_event_text(event_id, payload['data'])
+        with STATE_LOCK:
+            EVENT_QUEUE.append(payload)
+            if len(EVENT_QUEUE) > EVENT_MAX:
+                del EVENT_QUEUE[0:len(EVENT_QUEUE)-EVENT_MAX]
+    except Exception:
+        pass
+
+
+if CAP is not None:
+    try:
+        CAP._event_hook = record_event  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 # NAV and CAP runtime
 DEFENSE_STATE: Dict[str, Any] = {"chaff_until": 0.0, "turn_until": 0.0}
@@ -217,6 +251,35 @@ class _RecorderLike:
                 "request": {},
                 "response": {"event": event, **(data or {})},
             })
+            if event == "radar.contact.new":
+                try:
+                    cid = (data or {}).get('id')
+                    name = (data or {}).get('name')
+                    speed = (data or {}).get('speed_kts')
+                    wx, wy = None, None
+                    try:
+                        coords = (data or {}).get('world_xy') or []
+                        if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                            wx, wy = float(coords[0]), float(coords[1])
+                    except Exception:
+                        wx, wy = None, None
+                    rng = None
+                    if wx is not None and wy is not None:
+                        try:
+                            st = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+                            ox, oy = radar_xy_from_state(st)
+                            rng = round(((wx-ox)**2 + (wy-oy)**2) ** 0.5, 1)
+                        except Exception:
+                            rng = None
+                    record_event('radar.contact.spawn', {
+                        'id': cid,
+                        'name': name,
+                        'class_name': (data or {}).get('allegiance') or '',
+                        'range_nm': rng,
+                        'speed': speed
+                    })
+                except Exception:
+                    pass
             if event == "ship.alarm.threat_close":
                 cfg = load_alarm_cfg()
                 auto = (cfg.get('auto') or {}).get('threat_close') or {}

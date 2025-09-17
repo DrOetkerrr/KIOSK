@@ -10,6 +10,7 @@ Usage from webdash:
 """
 
 from typing import Any, Dict
+from datetime import datetime, timezone
 
 
 def build() -> Dict[str, Any]:
@@ -196,18 +197,48 @@ def build() -> Dict[str, Any]:
     try:
         ammo = wd.load_ammo(); arming = wd.load_arming()
         primary_ui = payload.get('primary') if isinstance(payload.get('primary'), dict) else None
+        if primary_ui is None:
+            try:
+                if locked_id is not None:
+                    primary_ui = next((d for d in radar_list if int(d.get('id', -1)) == int(locked_id)), None)
+            except Exception:
+                primary_ui = None
         def _order_key(rec: Dict[str,Any]):
             nm = rec.get('name',''); cls = rec.get('class','Other')
             if nm == 'MM38 Exocet': return (0, nm)
             cls_rank = {'Missile':1, 'SAM':2, 'Gun':3, 'Decoy':4}.get(cls, 5)
             return (cls_rank, nm)
+        arming_raw = wd._load_json(wd.ARMING_PATH, {})
+
+        def _arming_record(nm: str) -> Dict[str, Any]:
+            if isinstance(arming_raw, dict):
+                weapons_section = arming_raw.get('weapons')
+                if isinstance(weapons_section, dict):
+                    rec = weapons_section.get(nm)
+                    if isinstance(rec, dict):
+                        return rec
+                rec = arming_raw.get(nm)
+                if isinstance(rec, dict):
+                    return rec
+            return {}
+
         def _cooldown_left_s(nm: str) -> int:
             try:
-                raw = wd._load_json(wd.ARMING_PATH, {})
-                rec = (raw or {}).get(nm) if isinstance(raw, dict) else None
-                if isinstance(rec, dict):
+                rec = _arming_record(nm)
+                if rec:
                     cu = float(rec.get('cooldown_until', 0.0) or 0.0)
                     left = int(max(0.0, cu - time.time()))
+                    return left
+            except Exception:
+                pass
+            return 0
+
+        def _arming_left_s(nm: str) -> int:
+            try:
+                rec = _arming_record(nm)
+                if rec and not bool(rec.get('armed')):
+                    au = float(rec.get('arming_until', 0.0) or 0.0)
+                    left = int(max(0.0, au - time.time()))
                     return left
             except Exception:
                 pass
@@ -221,6 +252,7 @@ def build() -> Dict[str, Any]:
                 'min_nm': w.get('min_nm'),
                 'max_nm': w.get('max_nm'),
                 'armed': arming.get(nm, 'Safe'),
+                'arming_s': _arming_left_s(nm),
                 'ammo': ammo.get(nm, 0),
                 'in_range': wd.compute_in_range(nm, primary_ui),
                 'cooldown_s': _cooldown_left_s(nm),
@@ -261,5 +293,29 @@ def build() -> Dict[str, Any]:
         payload['nav'] = {'turn_target': float(wd.NAV_STATE.get('turn_target')) if wd.NAV_STATE.get('turn_target') is not None else None}
     except Exception:
         pass
+
+    try:
+        events_raw = []
+        with wd.STATE_LOCK:
+            events_raw = list(getattr(wd, 'EVENT_QUEUE', [])[-10:])
+        formatted = []
+        for ev in events_raw:
+            if not isinstance(ev, dict):
+                continue
+            ts = ev.get('ts')
+            try:
+                iso = datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
+            except Exception:
+                iso = None
+            formatted.append({
+                'id': ev.get('id'),
+                'text': ev.get('text'),
+                'ts': ts,
+                'iso': iso,
+                'data': ev.get('data') or {}
+            })
+        payload['events'] = formatted
+    except Exception:
+        payload['events'] = []
 
     return payload

@@ -3,9 +3,132 @@ const $$ = (sel)=>document.querySelectorAll(sel);
 const text = (el, s)=>{ if(el) el.textContent = s; };
 const fmt = (v, d)=> (v===undefined||v===null||Number.isNaN(Number(v))) ? '—' : Number(v).toFixed(d||0);
 
-let ST = { active: 'NAV', test: false, nav: { desiredHeading: '', desiredSpeed: '' }, wpn: { lockInput: '' } };
+let ST = {
+  active: 'NAV',
+  test: false,
+  nav: { desiredHeading: '', desiredSpeed: '' },
+  wpn: { lockInput: '' },
+  events: [],
+  eventKeys: { launch: null, result: null, cap: null }
+};
 
 function setActive(id){ ST.active=id; $$('.toolbar .btn').forEach(b=> b.classList.toggle('active', b.dataset.st===id)); render(window._status||{}); }
+
+const WEAPON_LABELS = {
+  exocet_mm38: 'MM38 Exocet',
+  seacat: 'Sea Dart',
+  gun_4_5in: '4.5in Gun',
+  oerlikon_20mm: '20mm Oerlikon',
+  gam_bo1_20mm: '20mm GAM-BO1',
+  corvus_chaff: 'Corvus Chaff',
+  weapon_launch: 'Weapon'
+};
+
+function formatWeaponLabel(key){
+  if(!key) return '';
+  if(WEAPON_LABELS[key]) return WEAPON_LABELS[key];
+  try{
+    return String(key).replace(/[._-]+/g,' ').replace(/\b\w/g, function(s){ return s.toUpperCase(); });
+  }catch(_){
+    return String(key);
+  }
+}
+
+function eventTimestamp(){
+  try{
+    return new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false});
+  }catch(_){
+    return new Date().toISOString().slice(11,19);
+  }
+}
+
+function formatEventTs(ts){
+  try{
+    if(ts===undefined || ts===null) return eventTimestamp();
+    const num = Number(ts);
+    if(!Number.isFinite(num)) return eventTimestamp();
+    const date = new Date(num * 1000);
+    if(Number.isNaN(date.getTime())) return eventTimestamp();
+    return date.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false});
+  }catch(_){ return eventTimestamp(); }
+}
+
+function renderEventConsole(){
+  const box=$('#event-log');
+  if(!box) return;
+  box.innerHTML='';
+  const list=Array.isArray(ST.events)? ST.events.slice().reverse(): [];
+  if(!list.length){
+    const row=document.createElement('div'); row.className='event-line muted';
+    const label=document.createElement('div'); label.className='event-label'; label.textContent='No recent events';
+    row.appendChild(label);
+    box.appendChild(row);
+    return;
+  }
+  list.forEach(function(ev){
+    const row=document.createElement('div'); row.className='event-line';
+    const label=document.createElement('div'); label.className='event-label'; label.textContent=ev.text || '';
+    row.appendChild(label);
+    if(ev.time){
+      const tm=document.createElement('div'); tm.className='event-time'; tm.textContent=ev.time; row.appendChild(tm);
+    }
+    box.appendChild(row);
+  });
+}
+
+function pushEvent(kind, text){
+  if(!Array.isArray(ST.events)) ST.events=[];
+  ST.events.push({ kind, text, time: eventTimestamp() });
+  if(ST.events.length>5) ST.events = ST.events.slice(-5);
+  renderEventConsole();
+}
+
+function trackEvents(j){
+  try{
+    if(!ST.eventKeys) ST.eventKeys = { launch: null, result: null, cap: null };
+    if(Array.isArray(j.events) && j.events.length){
+      ST.events = j.events.slice(-5).map(function(ev){
+        const text = String((ev && ev.text) || '—');
+        return {
+          kind: ev && ev.id,
+          text,
+          time: formatEventTs(ev && ev.ts)
+        };
+      });
+      renderEventConsole();
+    }
+    const audio = (j && j.audio) || {};
+    const launch = audio.last_launch;
+    if(launch && launch.ts){
+      const key = String(launch.ts)+':'+String(launch.weapon||'');
+      if(ST.eventKeys.launch !== key){
+        ST.eventKeys.launch = key;
+        const label = formatWeaponLabel(launch.weapon || '');
+        pushEvent('launch', label?`Missile fired: ${label}`:'Missile fired');
+      }
+    }
+    const cap = audio.cap_launch;
+    if(cap && cap.ts){
+      const key = 'cap:'+String(cap.ts);
+      if(ST.eventKeys.cap !== key){
+        ST.eventKeys.cap = key;
+        pushEvent('cap','Aircraft launched (CAP)');
+      }
+    }
+    const result = audio.last_result;
+    if(result && result.ts){
+      const key = String(result.ts)+':'+String(result.event||'');
+      if(ST.eventKeys.result !== key){
+        ST.eventKeys.result = key;
+        if(String(result.event||'').toLowerCase()==='miss'){
+          pushEvent('miss','Enemy bomb missed');
+        }else if(String(result.event||'').toLowerCase()==='hit'){
+          pushEvent('hit','Target hit');
+        }
+      }
+    }
+  }catch(_){ }
+}
 
 function renderNAV(j){
   // Avoid stomping user typing: if NAV inputs are focused, skip re-render
@@ -14,7 +137,6 @@ function renderNAV(j){
     if(aid==='nav-speed' || aid==='nav-course') return;
   }catch(_){ }
   const p=$('#station-panel'); p.innerHTML='';
-  const h=document.createElement('h2'); h.textContent='NAVIGATION CONSOLE:'; p.appendChild(h);
 
   let fleet = Array.isArray(j.ownfleet)? j.ownfleet.slice() : [];
   if(!fleet.length){
@@ -130,7 +252,6 @@ function colorTag(kind){ const s=document.createElement('span'); s.className='ta
 
 function renderRADAR(j){
   const p=$('#station-panel'); p.innerHTML='';
-  const title=document.createElement('h2'); title.textContent='RADAR CONSOLE:'; p.appendChild(title);
   const lockedId = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id): null;
   const primary = (j.primary && typeof j.primary==='object')? j.primary : null;
   const contacts = Array.isArray(j.contacts)? j.contacts.slice(): [];
@@ -212,8 +333,6 @@ function computeTTI(contact){
 
 function renderWPN(j){
   const p=$('#station-panel'); p.innerHTML='';
-  const h=document.createElement('h2'); h.textContent='FIRE CONTROL RADAR CONSOLE:'; p.appendChild(h);
-
   if(!ST.wpn) ST.wpn = { lockInput: '' };
 
   const contacts = Array.isArray(j.contacts)? j.contacts.slice(): [];
@@ -297,32 +416,105 @@ function renderWPN(j){
   const btn=document.createElement('button'); btn.className='btn'; btn.textContent=ST.test?'ON':'OFF'; btn.onclick=function(){ ST.test=!ST.test; btn.textContent=ST.test?'ON':'OFF'; };
   row.appendChild(lab); row.appendChild(btn); p.appendChild(row);
   const tbl=document.createElement('table'); const thead=document.createElement('thead'); const trh=document.createElement('tr');
-  ['Weapon','Ammo','Range (nm)','Status','Arm','Fire'].forEach(function(k){ const th=document.createElement('th'); if(k!=='Weapon') th.className = (k.indexOf('Ammo')>=0||k.indexOf('Range')>=0)?'num':''; th.textContent=k; trh.appendChild(th); }); thead.appendChild(trh); tbl.appendChild(thead);
+  ['Weapon','Ammo','Range (nm)','Status','Arm','ARM Status','Timer','Fire'].forEach(function(k){
+    const th=document.createElement('th');
+    if(k==='Ammo' || k.startsWith('Range') || k==='Timer') th.className='num';
+    th.textContent=k;
+    trh.appendChild(th);
+  });
+  thead.appendChild(trh); tbl.appendChild(thead);
   const tb=document.createElement('tbody');
   const weaponsList = Array.isArray(j.weapons)? j.weapons : [];
-  const lockedIdWpn = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id): null;
-  const primaryWpn = (lockedIdWpn!=null) ? (Array.isArray(j.contacts)? j.contacts.find(c=>Number(c.id)===lockedIdWpn): null) : null;
 
   function weaponReadyToFire(w){
     if(!w) return false;
-    if(String(w.armed||'Safe')!=='Armed') return false;
-    if(Number(w.ammo||0) <= 0) return false;
+    const state = String(w.armed||'Safe');
+    if(state !== 'Armed') return false;
+    if(Number(w.arming_s||0) > 0) return false;
     if(Number(w.cooldown_s||0) > 0) return false;
+    if(Number(w.ammo||0) <= 0) return false;
     if(ST.test) return true;
-    if(lockedIdWpn===null || !primaryWpn) return false;
     return !!w.in_range;
   }
 
   weaponsList.forEach(function(w){
     const tr=document.createElement('tr');
-    const st=String(w.armed||'Safe');
+    const state=String(w.armed||'Safe');
+    const isArmed = state==='Armed';
+    const isArming = state==='Arming';
+    const ammo = Number(w.ammo||0);
+    const cooldownLeft = Math.max(0, Number(w.cooldown_s||0));
+    const armingLeft = Math.max(0, Number(w.arming_s||0));
+    const inRange = !!w.in_range;
+
     const tdN=document.createElement('td'); tdN.textContent=String(w.name||'—');
-    const tdA=document.createElement('td'); tdA.className='num'; tdA.textContent=String(w.ammo||0);
+    const tdA=document.createElement('td'); tdA.className='num'; tdA.textContent=String(ammo);
     const tdR=document.createElement('td'); tdR.className='num'; tdR.textContent=fmt(w.min_nm,0)+'–'+fmt(w.max_nm,0);
-    const tdS=document.createElement('td'); const dot=document.createElement('span'); dot.className='statdot'+(st==='Armed'?' on':''); tdS.appendChild(dot);
-    const tdArm=document.createElement('td'); const ab=document.createElement('button'); ab.className='btn'; ab.textContent=(st==='Armed')?'Safe':'Arm'; ab.onclick=async function(){ const next=(st==='Armed')?'Safe':'Armed'; await fetch('/weapons/arm',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:w.name, state: next})}); }; tdArm.appendChild(ab);
-    const tdF=document.createElement('td'); const fb=document.createElement('button'); fb.className='btn'; fb.textContent=ST.test?'Test':'Fire';
+
+    const tdStatus=document.createElement('td');
+    const statusBadge=document.createElement('span'); statusBadge.className='status-badge '+(inRange?'on':'off');
+    statusBadge.textContent=inRange?'IN RANGE':'OUT OF RANGE';
+    tdStatus.appendChild(statusBadge);
+
+    const tdArm=document.createElement('td');
+    const armBtn=document.createElement('button'); armBtn.className='btn toggle-btn';
+    armBtn.setAttribute('aria-pressed', isArmed || isArming ? 'true' : 'false');
+    if(isArmed) armBtn.classList.add('on');
+    if(isArming) armBtn.classList.add('pending');
+    armBtn.textContent=isArming?'ARMING':'ARM';
+    armBtn.title = isArmed ? 'Click to safe weapon' : (isArming ? 'Click to cancel arming' : 'Click to arm weapon');
+    armBtn.onclick=async function(){
+      const next=(state==='Safe')?'Armed':'Safe';
+      armBtn.disabled=true;
+      msg.textContent = (next==='Armed')?'ARMING...':'SAFING...';
+      msg.className='wpn-msg muted';
+      try{
+        const res=await fetch('/weapons/arm',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:w.name, state: next})});
+        const payload=await res.json().catch(()=>({}));
+        if(payload && payload.ok){
+          const stLabel = String(payload.state || next || 'OK').toUpperCase();
+          msg.textContent=stLabel;
+          msg.className='wpn-msg ok';
+          await poll().catch(()=>{});
+        }else{
+          msg.textContent = payload && payload.error ? String(payload.error) : 'ERR';
+          msg.className='wpn-msg err';
+        }
+      }catch(_){
+        msg.textContent='ERR';
+        msg.className='wpn-msg err';
+      }finally{
+        armBtn.disabled=false;
+      }
+    };
+    tdArm.appendChild(armBtn);
+
+    const tdArmStatus=document.createElement('td');
+    const armDot=document.createElement('span'); armDot.className='statdot';
+    if(isArmed) armDot.classList.add('on');
+    else if(isArming) armDot.classList.add('pending');
+    tdArmStatus.appendChild(armDot);
+
+    const tdTimer=document.createElement('td'); tdTimer.className='num';
+    let timerLabel='—';
+    if(armingLeft>0){
+      timerLabel = `ARM ${armingLeft}s`;
+      tdTimer.classList.add('timer-await');
+    }else if(cooldownLeft>0){
+      timerLabel = `${cooldownLeft}s`;
+      tdTimer.classList.add('timer-await');
+    }else if(isArmed){
+      timerLabel = 'READY';
+    }
+    tdTimer.textContent=timerLabel;
+
+    const tdF=document.createElement('td');
+    const fb=document.createElement('button'); fb.className='btn'; fb.textContent=ST.test?'TEST FIRE':'FIRE';
+    const ready = weaponReadyToFire(w);
+    fb.disabled = !ready;
+    fb.classList.toggle('ready', ready);
     fb.onclick=async function(){
+      if(fb.disabled) return;
       const body={name:w.name, mode:(ST.test?'test':'real')};
       const r=await fetch('/weapons/fire',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
       const payload=await r.json().catch(()=>({}));
@@ -334,15 +526,21 @@ function renderWPN(j){
       await poll().catch(()=>{});
     };
     tdF.appendChild(fb);
-    tr.appendChild(tdN); tr.appendChild(tdA); tr.appendChild(tdR); tr.appendChild(tdS); tr.appendChild(tdArm); tr.appendChild(tdF); tb.appendChild(tr);
+    tr.appendChild(tdN);
+    tr.appendChild(tdA);
+    tr.appendChild(tdR);
+    tr.appendChild(tdStatus);
+    tr.appendChild(tdArm);
+    tr.appendChild(tdArmStatus);
+    tr.appendChild(tdTimer);
+    tr.appendChild(tdF);
+    tb.appendChild(tr);
   });
   tbl.appendChild(tb); p.appendChild(tbl);
 }
 
 function renderRADIO(j){
   const p=$('#station-panel'); p.innerHTML='';
-  const h=document.createElement('h2'); h.textContent='COMMS CONSOLE:'; p.appendChild(h);
-
   const fleet = Array.isArray(j.ownfleet)? j.ownfleet : [];
   const flagship = fleet.find(u=>String(u.name||'').toLowerCase().includes('hermes'))
                   || fleet.find(u=>String(u.id||'')!=='own') || null;
@@ -504,7 +702,7 @@ function renderRADIO(j){
 }
 
 function renderENG(j){
-  const p=$('#station-panel'); p.innerHTML=''; const h=document.createElement('h2'); h.textContent='ENG (Engineering)'; p.appendChild(h);
+  const p=$('#station-panel'); p.innerHTML='';
   const systems=['Hull','Engines','Weapons','Fire Control','Navigation']; const sec=document.createElement('div');
   systems.forEach(function(s){ const r=document.createElement('div'); r.className='row'; const nm=document.createElement('div'); nm.style.minWidth='140px'; nm.textContent=s; const ind=document.createElement('div'); const d=document.createElement('span'); d.className='statdot on'; ind.appendChild(d); r.appendChild(nm); r.appendChild(ind); sec.appendChild(r); });
   p.appendChild(sec);
@@ -513,7 +711,7 @@ function renderENG(j){
 }
 
 function renderSYS(j){
-  const p=$('#station-panel'); p.innerHTML=''; const h=document.createElement('h2'); h.textContent='SYS'; p.appendChild(h);
+  const p=$('#station-panel'); p.innerHTML='';
   const row=document.createElement('div'); row.className='row section';
   const bScan=document.createElement('button'); bScan.className='btn'; bScan.textContent='Scan'; bScan.onclick=async function(){ await fetch('/api/command?cmd='+encodeURIComponent('/radar scan')); };
   const bAir=document.createElement('button'); bAir.className='btn'; bAir.textContent='Spawn Near Aircraft'; bAir.onclick=async function(){ await fetch('/radar/force_spawn_near?class=Aircraft&range=2.5'); };
@@ -547,9 +745,7 @@ async function poll(){
     const j=await r.json();
     window._status=j;
     render(j);
-    try{
-      if(typeof renderRadioBox === 'function') renderRadioBox(j);
-    }catch(_){ }
+    trackEvents(j);
   }catch(e){}
 }
 
@@ -557,10 +753,9 @@ function playKlik(){ try{ const a=new Audio('/data/sounds/klik.m4a'); a.volume=0
 
 function wire(){
   $$('.toolbar .btn').forEach(function(b){ b.addEventListener('click', function(ev){ playKlik(); setActive(b.dataset.st); }); });
-  const rs=$('#radio-send'); const ri=$('#radio-input'); if(rs) rs.onclick=async function(){ const s=(ri.value||'').trim(); if(!s) return; await fetch('/radio/ask',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text:s})}); ri.value=''; };
-  if(ri) ri.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); const btn=$('#radio-send'); if(btn) btn.click(); }});
   // Global KLIK on all button presses
   document.addEventListener('click', function(ev){ const t=ev.target; if(t && t.matches && t.matches('button.btn')){ playKlik(); } }, true);
+  renderEventConsole();
   setActive('NAV'); poll(); setInterval(poll, 1500);
 }
 

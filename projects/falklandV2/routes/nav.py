@@ -10,7 +10,7 @@ def _lazy():
     from ..webdash import (
         ENG, ship_cell_from_state, _load_json, DATA_DIR,
         radar_xy_from_state, board_to_cell, cell_to_world, clamp,
-        BOARD_N, voice_emit, record_flight,
+        BOARD_N, voice_emit, record_flight, record_event,
     )
     import math as _m  # local alias
     return locals()
@@ -45,6 +45,10 @@ def nav_hermes_close_in():
         rec_hdg = brg
         try:
             L['voice_emit']('nav.hermes.close_in.request', {'ref_brg': brg, 'ref_rng': round(rng,1), 'rec_hdg': rec_hdg}, fallback=f'Recommend closing on Hermes: bearing {brg}°, range {rng:.1f} nm. New course {rec_hdg}°.', role='Navigation')
+        except Exception:
+            pass
+        try:
+            L['record_event']('nav.hermes.close_in', {'cell': hermes_cell})
         except Exception:
             pass
         payload = {"ok": True, "bearing": brg, "range_nm": round(rng,1), "recommend_hdg": rec_hdg}
@@ -86,10 +90,13 @@ def nav_hermes_stand_off():
             L['voice_emit']('nav.hermes.stand_off.request', {'ref_brg': brg, 'ref_rng': round(rng,1), 'standoff_nm': standoff}, fallback=f'Recommend Hermes stand-off {standoff} nm; current bearing {brg}°, range {rng:.1f} nm.', role='Navigation')
         except Exception:
             pass
+        try:
+            L['record_event']('nav.hermes.stand_off', {'cell': hermes_cell})
+        except Exception:
+            pass
         payload = {"ok": True, "bearing": brg, "range_nm": round(rng,1), "standoff_nm": standoff}
         L['record_flight']({"route": route, "method": "GET", "status": 200, "duration_ms": int((__import__('time').time()-t0)*1000), "request": {}, "response": payload})
         return jsonify(payload)
     except Exception as e:
         logging.exception("/nav/hermes/stand_off error: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
-

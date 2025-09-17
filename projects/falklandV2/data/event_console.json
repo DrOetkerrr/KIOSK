@@ -1,0 +1,29 @@
+{
+  "events": [
+    {"id": "nav.course.set", "text": "Course change Sheffield: heading {heading}°"},
+    {"id": "nav.speed.set", "text": "Speed change Sheffield: {speed} kn"},
+    {"id": "radar.target.locked", "text": "Primary target locked #{id} {name} — {range_nm} nm, {speed} kn, TTI {tti}s"},
+    {"id": "radar.target.unlocked", "text": "Primary target unlocked"},
+    {"id": "radar.contact.spawn", "text": "New radar contact: #{id} {name} {class_name} at {range_nm} nm"},
+    {"id": "weapon.target.locked", "text": "Weapons primary set #{id} {name}"},
+    {"id": "weapon.target.unlocked", "text": "Weapons target cleared"},
+    {"id": "weapon.arm", "text": "Weapon {name} armed"},
+    {"id": "weapon.safe", "text": "Weapon {name} safed"},
+    {"id": "weapon.fire", "text": "Weapon fired: {name}"},
+    {"id": "weapon.result.hit", "text": "Target hit: {weapon}"},
+    {"id": "weapon.result.miss", "text": "Target missed: {weapon}"},
+    {"id": "nav.hermes.close_in", "text": "Hermes closing: grid {cell}"},
+    {"id": "nav.hermes.stand_off", "text": "Hermes standing off: grid {cell}"},
+    {"id": "cap.launch", "text": "CAP launched to {cell}"},
+    {"id": "cap.intercept.launch", "text": "Intercept launched on #{id} {name}"},
+    {"id": "cap.onstation", "text": "CAP on station around {cell}"},
+    {"id": "cap.weapon.fire", "text": "SHAR fired {weapon}"},
+    {"id": "cap.weapon.hit", "text": "SHAR hit target with {weapon}"},
+    {"id": "cap.weapon.miss", "text": "SHAR missed target with {weapon}"},
+    {"id": "enemy.bomb.hit", "text": "Enemy bomb hit Sheffield"},
+    {"id": "enemy.bomb.miss", "text": "Enemy bomb missed"},
+    {"id": "eng.system.offline", "text": "System offline: {system}"},
+    {"id": "eng.repair.deployed", "text": "Repair team dispatched to {system}"},
+    {"id": "eng.system.timer", "text": "Repair timer {system}: {seconds}s"}
+  ]
+}

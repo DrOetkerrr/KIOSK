@@ -8,13 +8,11 @@
     "arming_until": 0
   },
   "20mm GAM-BO1 (twin)": {
-    "armed": true,
-    "arming_until": 0,
-    "cooldown_until": 1757611873.13972
+    "armed": false,
+    "arming_until": 0
   },
   "20mm Oerlikon": {
-    "armed": true,
-    "arming_until": 0,
-    "cooldown_until": 1757611874.755997
+    "armed": false,
+    "arming_until": 0
   }
 }
