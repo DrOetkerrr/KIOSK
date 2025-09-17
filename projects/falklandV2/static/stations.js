@@ -461,8 +461,12 @@ function renderWPN(j){
     armBtn.setAttribute('aria-pressed', isArmed || isArming ? 'true' : 'false');
     if(isArmed) armBtn.classList.add('on');
     if(isArming) armBtn.classList.add('pending');
-    armBtn.textContent=isArming?'ARMING':'ARM';
-    armBtn.title = isArmed ? 'Click to safe weapon' : (isArming ? 'Click to cancel arming' : 'Click to arm weapon');
+    let armLabel='ARM';
+    if(isArming){ armLabel='ARMING'; }
+    else if(isArmed){ armLabel='SAFE'; }
+    armBtn.textContent=armLabel;
+    armBtn.title = isArmed ? 'Click to safe weapon' : (isArming ? 'Arming in progress' : 'Click to arm weapon');
+    if(isArming) armBtn.disabled = true;
     armBtn.onclick=async function(){
       const next=(state==='Safe')?'Armed':'Safe';
       armBtn.disabled=true;
