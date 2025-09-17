@@ -77,7 +77,6 @@ class MainWindow(QMainWindow):
         self.tbl_contacts.verticalHeader().setVisible(False)
         radar_box = QVBoxLayout(); radar_box.addLayout(rdr_row); radar_box.addWidget(self.rdr_alert); radar_box.addWidget(self.tbl_contacts)
         radar_w = QWidget(); radar_w.setLayout(radar_box)
-        self.tabs.addTab(radar_w, "RDR")
 
         # Weapons tab + Lock panel
         self.lock_label = QLabel('Primary: —')
@@ -97,7 +96,6 @@ class MainWindow(QMainWindow):
         self.tbl_weapons.verticalHeader().setVisible(False)
         weapons_box = QVBoxLayout(); weapons_box.addLayout(lock_row); weapons_box.addWidget(self.tbl_weapons)
         weapons_w = QWidget(); weapons_w.setLayout(weapons_box)
-        self.tabs.addTab(weapons_w, "WPN/FCR")
 
         # NAV tab
         self.tbl_nav_fleet = QTableWidget(0, 4)
@@ -126,7 +124,6 @@ class MainWindow(QMainWindow):
         row4 = QHBoxLayout(); row4.addWidget(self.nav_btn_close); row4.addWidget(self.nav_btn_stand); row4.addStretch(1)
         for r in (row1,row2,row3,row4): nav_box.addLayout(r)
         nav_w = QWidget(); nav_w.setLayout(nav_box)
-        self.tabs.addTab(nav_w, "NAV")
 
         # COMMS/RADIO tab (CAP controls minimal)
         from PySide6.QtWidgets import QLineEdit
@@ -163,7 +160,6 @@ class MainWindow(QMainWindow):
         comms_box.addWidget(self.cap_tasks)
         comms_box.addLayout(r4)
         comms_w = QWidget(); comms_w.setLayout(comms_box)
-        self.tabs.addTab(comms_w, "COMMS")
 
         # ENG tab (systems + health)
         self.eng_health = QLabel('Ship: —%  Hermes: —%   Teams: —/—')
@@ -173,7 +169,26 @@ class MainWindow(QMainWindow):
         self.tbl_eng.verticalHeader().setVisible(False)
         eng_box = QVBoxLayout(); eng_box.addWidget(self.eng_health); eng_box.addWidget(self.tbl_eng); eng_box.addStretch(1)
         eng_w = QWidget(); eng_w.setLayout(eng_box)
+
+        # Add tabs in desired order: NAV, RDR, WPN/FCR, COMMS, ENG, MENU (rightmost)
+        self.tabs.addTab(nav_w, "NAV")
+        self.tabs.addTab(radar_w, "RDR")
+        self.tabs.addTab(weapons_w, "WPN/FCR")
+        self.tabs.addTab(comms_w, "COMMS")
         self.tabs.addTab(eng_w, "ENG")
+
+        # MENU tab (rightmost)
+        menu_box = QVBoxLayout()
+        from PySide6.QtWidgets import QPushButton
+        self.menu_selftest = QPushButton('Self Test')
+        self.menu_reset = QPushButton('Reset Runtime')
+        self.menu_selftest.clicked.connect(lambda _=False: self._get('/diag/selftest'))
+        self.menu_reset.clicked.connect(lambda _=False: self._post('/diag/reset', {}))
+        menu_box.addWidget(self.menu_selftest)
+        menu_box.addWidget(self.menu_reset)
+        menu_box.addStretch(1)
+        menu_w = QWidget(); menu_w.setLayout(menu_box)
+        self.tabs.addTab(menu_w, "MENU")
 
         top.addWidget(self.tabs)
         root = QWidget(); root.setLayout(top)
@@ -223,7 +238,17 @@ class MainWindow(QMainWindow):
         self._get("/api/command?cmd=%2Fradar%20scan")
 
     def lock_nearest(self):
-        self._get("/api/command?cmd=%2Fradar%20lock%20nearest")
+        # Prefer locking by current top_threat_id to avoid backend 'nearest' ambiguities
+        j = self._get('/api/status')
+        tid = None
+        try:
+            tid = (j.get('top_threat_id') if isinstance(j, dict) else None)
+        except Exception:
+            tid = None
+        if tid:
+            self._get(f"/api/command?cmd=%2Fradar%20lock%20{tid}")
+        else:
+            self._get("/api/command?cmd=%2Fradar%20lock%20nearest")
 
     def lock_picker(self):
         # Build a simple selection dialog from current contacts
@@ -754,14 +779,62 @@ class MainWindow(QMainWindow):
 
 
 def main(argv: List[str]) -> int:
+    # Robust logging for packaged app
+    log_path = _log_setup(); _install_excepthook(log_path)
     # Ensure Qt can find platform plugins (macOS: 'cocoa')
     try:
         try:
             plugins = QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)
+            libs = QLibraryInfo.path(QLibraryInfo.LibraryPath.LibrariesPath)
         except Exception:
-            plugins = None
-        if plugins:
-            QCoreApplication.addLibraryPath(plugins)
+            plugins = None; libs = None
+        # Set both env and Qt runtime paths for robustness
+        if plugins and isinstance(plugins, str):
+            try:
+                import os as _os
+                _os.environ['QT_PLUGIN_PATH'] = plugins
+                plat = str(Path(plugins) / 'platforms')
+                _os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = plat
+                # For macOS: ensure frameworks path is visible to the process
+                if libs and isinstance(libs, str):
+                    _os.environ.setdefault('DYLD_FRAMEWORK_PATH', libs)
+                    _os.environ.setdefault('DYLD_LIBRARY_PATH', libs)
+            except Exception:
+                pass
+            # Hard set library paths (overwrites) rather than add/append
+            try:
+                QCoreApplication.setLibraryPaths([plugins])
+            except Exception:
+                QCoreApplication.addLibraryPath(plugins)
+    except Exception:
+        pass
+    # Ensure backend server is reachable; if not, start embedded server
+    try:
+        import time
+        port = _env_port(); base = f"http://127.0.0.1:{port}"
+        ok = False
+        try:
+            r = requests.get(base + '/health', timeout=0.4)
+            ok = r.ok
+        except Exception:
+            ok = False
+        if not ok:
+            try:
+                import threading
+                from projects.falklandV2 import webdash as _wd
+                def _run():
+                    try: _wd.app.run(host='127.0.0.1', port=port, debug=False, threaded=True)
+                    except Exception: pass
+                t = threading.Thread(target=_run, daemon=True); t.start()
+                for _ in range(25):
+                    time.sleep(0.2)
+                    try:
+                        if requests.get(base + '/health', timeout=0.25).ok:
+                            ok = True; break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
     except Exception:
         pass
     app = QApplication(argv)

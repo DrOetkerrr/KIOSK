@@ -84,28 +84,85 @@ function colorTag(kind){ const s=document.createElement('span'); s.className='ta
 
 function renderRADAR(j){
   const p=$('#station-panel'); p.innerHTML='';
-  const h=document.createElement('h2'); h.textContent='RADAR + FIRE CONTROL'; p.appendChild(h);
-  const form=document.createElement('div'); form.className='row section';
-  const pid=document.createElement('input'); pid.className='input mono'; pid.placeholder='#ID'; pid.style.width='90px';
-  const bL=document.createElement('button'); bL.className='btn'; bL.textContent='Lock';
-  const bU=document.createElement('button'); bU.className='btn'; bU.textContent='Unlock';
-  bL.onclick=async function(){ const v=(pid.value||'').trim(); const cmd=v?('/radar lock '+v):('/radar lock nearest'); await fetch('/api/command?cmd='+encodeURIComponent(cmd)); };
-  bU.onclick=async function(){ await fetch('/api/command?cmd='+encodeURIComponent('/radar unlock')); };
-  form.appendChild(pid); form.appendChild(bL); form.appendChild(bU); p.appendChild(form);
-  const tbl=document.createElement('table'); const thead=document.createElement('thead'); const trh=document.createElement('tr');
-  ['Name','Type','Cell','Range','CRS','SPD'].forEach(k=>{ const th=document.createElement('th'); th.textContent=k; trh.appendChild(th); }); thead.appendChild(trh); tbl.appendChild(thead);
-  const tb=document.createElement('tbody');
-  (Array.isArray(j.contacts)? j.contacts : []).slice().sort(function(a,b){ return (a.range_nm||1e9)-(b.range_nm||1e9); }).forEach(function(c){
-    const tr=document.createElement('tr');
-    const tdN=document.createElement('td'); tdN.textContent=String(c.name||'—');
-    const tdT=document.createElement('td'); tdT.appendChild(colorTag(String(c.type||'Unknown')));
-    const tdC=document.createElement('td'); tdC.textContent=String(c.cell||'—');
-    const tdR=document.createElement('td'); tdR.className='num'; tdR.textContent=fmt(c.range_nm,2);
-    const tdCr=document.createElement('td'); tdCr.className='num'; tdCr.textContent=fmt(c.course,0);
-    const tdS=document.createElement('td'); tdS.className='num'; tdS.textContent=fmt(c.speed,0);
-    tr.appendChild(tdN); tr.appendChild(tdT); tr.appendChild(tdC); tr.appendChild(tdR); tr.appendChild(tdCr); tr.appendChild(tdS); tb.appendChild(tr);
+  const title=document.createElement('h2'); title.textContent='RADAR CONSOLE:'; p.appendChild(title);
+  const lockedId = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id): null;
+  const primary = (j.primary && typeof j.primary==='object')? j.primary : null;
+  const contacts = Array.isArray(j.contacts)? j.contacts.slice(): [];
+  const lockedContact = contacts.find(c=>Number(c.id)===lockedId) || null;
+  const primaryBox=document.createElement('div'); primaryBox.className='primary-box';
+  const primFields=[
+    ['#ID', lockedContact ? String(lockedContact.id).padStart(2,'0') : '—'],
+    ['Name', lockedContact ? String(lockedContact.name||'') : (primary? String(primary.name||''): '—')],
+    ['Range', lockedContact && lockedContact.range_nm!=null ? `${fmt(lockedContact.range_nm,1)} nm` : (primary&&primary.range_nm!=null? `${fmt(primary.range_nm,1)} nm` : '—')],
+    ['Speed', lockedContact && lockedContact.speed!=null ? `${fmt(lockedContact.speed,0)} kn` : '—'],
+    ['TTI', (function(){ const t=lockedContact?computeTTI(lockedContact):null; return t!==null? `${t}s` : '—'; })()]
+  ];
+  primFields.forEach(function(pair){
+    const box=document.createElement('div'); box.className='primary-field';
+    const lab=document.createElement('span'); lab.className='primary-label'; lab.textContent=pair[0];
+    const val=document.createElement('span'); val.className='primary-value'; val.textContent=pair[1];
+    box.appendChild(lab); box.appendChild(val); primaryBox.appendChild(box);
   });
+  p.appendChild(primaryBox);
+  const tbl=document.createElement('table'); const thead=document.createElement('thead'); const trh=document.createElement('tr');
+  ['#','Status','Type','Name','Range','Speed','TTI','ID','Lock'].forEach(function(k){ const th=document.createElement('th'); th.textContent=k; trh.appendChild(th); });
+  thead.appendChild(trh); tbl.appendChild(thead);
+
+  const tb=document.createElement('tbody');
+  const list = contacts.sort(function(a,b){ return (a.range_nm||1e9)-(b.range_nm||1e9); });
+  const lockContact = async (id)=>{ if(id===undefined||id===null) return; await fetch('/api/command?cmd='+encodeURIComponent(`/radar lock ${id}`)); await poll().catch(()=>{}); };
+  list.forEach(function(c, idx){
+    const tr=document.createElement('tr');
+    if(String(c.type||'').toLowerCase()==='hostile'){ tr.classList.add('hostile-row'); }
+    if(lockedId!==null && Number(c.id)===lockedId){ tr.classList.add('locked-row'); }
+    const tdIdx=document.createElement('td'); tdIdx.className='num'; tdIdx.textContent=String(idx+1);
+    const tdStatus=document.createElement('td'); tdStatus.appendChild(colorTag(String(c.type||'—')));
+    const tdType=document.createElement('td'); tdType.textContent=String(c.class||c.meta_class||c.meta?.cap?.class||'—');
+    const tdName=document.createElement('td'); tdName.textContent=String(c.name||'—');
+    const tdRange=document.createElement('td'); tdRange.className='num'; tdRange.textContent=(c.range_nm!==undefined&&c.range_nm!==null)?`${fmt(c.range_nm,1)} nm`:'—';
+    const tdSpeed=document.createElement('td'); tdSpeed.className='num'; tdSpeed.textContent=(c.speed!==undefined&&c.speed!==null)?`${fmt(c.speed,0)} kn`:'—';
+    const tti = computeTTI(c);
+    const tdTTI=document.createElement('td'); tdTTI.className='num'; tdTTI.textContent = (tti!==null)? `${tti}s` : '—';
+    const tdId=document.createElement('td'); tdId.className='num'; tdId.textContent=(c.id!==undefined&&c.id!==null)?String(c.id).padStart(2,'0'):'—';
+    const tdLock=document.createElement('td');
+    const btn=document.createElement('button'); btn.className='btn'; btn.textContent='LOCK';
+    if(c.id===undefined||c.id===null){ btn.disabled=true; }
+    btn.onclick=function(){ lockContact(c.id); };
+    tdLock.appendChild(btn);
+    [tdIdx,tdStatus,tdType,tdName,tdRange,tdSpeed,tdTTI,tdId,tdLock].forEach(function(td){ tr.appendChild(td); });
+    tb.appendChild(tr);
+  });
+  // Pad to ten rows for layout consistency
+  for(let i=list.length; i<10; i+=1){
+    const tr=document.createElement('tr');
+    for(let jdx=0;jdx<9;jdx+=1){
+      const td=document.createElement('td');
+      if(jdx===0) td.className='num';
+      tr.appendChild(td);
+    }
+    tb.appendChild(tr);
+  }
   tbl.appendChild(tb); p.appendChild(tbl);
+
+  const controls=document.createElement('div'); controls.className='row section radar-controls';
+  const scanBtn=document.createElement('button'); scanBtn.className='btn'; scanBtn.textContent='SCAN';
+  scanBtn.onclick=async function(){ await fetch('/api/command?cmd='+encodeURIComponent('/radar scan')); await poll().catch(()=>{}); };
+  const lockNearest=document.createElement('button'); lockNearest.className='btn'; lockNearest.textContent='GO';
+  lockNearest.onclick=async function(){ await fetch('/api/command?cmd='+encodeURIComponent('/radar lock nearest')); await poll().catch(()=>{}); };
+  const unlockBtn=document.createElement('button'); unlockBtn.className='btn'; unlockBtn.textContent='UNLOCK';
+  unlockBtn.onclick=async function(){ await fetch('/api/command?cmd='+encodeURIComponent('/radar unlock')); await poll().catch(()=>{}); };
+  controls.appendChild(scanBtn); controls.appendChild(lockNearest); controls.appendChild(unlockBtn); p.appendChild(controls);
+}
+
+function computeTTI(contact){
+  try{
+    if(String(contact.type||'').toLowerCase()!=='hostile') return null;
+    const rng = Number(contact.range_nm);
+    const spd = Number(contact.speed);
+    if(!Number.isFinite(rng) || !Number.isFinite(spd) || spd <= 0){ return null; }
+    const sec = Math.max(0, Math.round((rng * 3600) / spd));
+    return sec;
+  }catch(_){ return null; }
 }
 
 function renderWPN(j){
@@ -183,12 +240,6 @@ function render(j){
   if(ST.active==='RADIO') return renderRADIO(j);
   if(ST.active==='ENG') return renderENG(j);
   if(ST.active==='SYS') return renderSYS(j);
-}
-
-function renderRadioBox(j){
-  const list=$('#radio-list'); if(!list) return; list.innerHTML='';
-  const lines=Array.isArray(j.radio)? j.radio.slice(-12) : [];
-  lines.forEach(function(l){ const row=document.createElement('div'); row.className='row'; const ts=document.createElement('span'); ts.className='badge mono'; ts.textContent=String(l.ts||'--:--:--'); const rl=document.createElement('span'); rl.className='badge'; rl.textContent=String(l.role||'OFF'); const tx=document.createElement('div'); tx.textContent=String(l.text||''); row.appendChild(ts); row.appendChild(rl); row.appendChild(tx); list.appendChild(row); });
 }
 
 async function poll(){

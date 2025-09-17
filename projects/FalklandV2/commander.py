@@ -13,15 +13,23 @@ from __future__ import annotations
 import sys, time, re, select, contextlib, json
 from pathlib import Path
 
-# Local imports
+# Local imports (prefer package-qualified paths for case-safe usage)
 ROOT = Path(__file__).resolve().parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+REPO_ROOT = ROOT.parent
+for p in (str(REPO_ROOT), str(ROOT)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
-from engine import Engine
-from subsystems import radar as rdar
-from subsystems import nav as navi
-from subsystems import weapons as weap
+try:
+    from projects.falklandV2.engine import Engine  # type: ignore
+    from projects.falklandV2.subsystems import radar as rdar  # type: ignore
+    from projects.falklandV2.subsystems import nav as navi  # type: ignore
+    from projects.falklandV2.subsystems import weapons as weap  # type: ignore
+except Exception:  # pragma: no cover - fallback for direct script execution
+    from engine import Engine
+    from subsystems import radar as rdar
+    from subsystems import nav as navi
+    from subsystems import weapons as weap
 
 DATA = ROOT / "data"
 

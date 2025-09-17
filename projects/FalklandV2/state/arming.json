@@ -5,9 +5,8 @@
     "cooldown_until": 1757612457.543745
   },
   "Sea Dart SAM": {
-    "armed": true,
-    "arming_until": 0,
-    "cooldown_until": 1757611882.786359
+    "armed": false,
+    "arming_until": 0
   },
   "20mm GAM-BO1 (twin)": {
     "armed": true,

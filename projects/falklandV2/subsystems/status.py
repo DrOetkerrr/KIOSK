@@ -62,13 +62,56 @@ def build() -> Dict[str, Any]:
         except Exception:
             payload["hud"] = wd.ENG.hud_line() if hasattr(wd.ENG, "hud_line") else "OK"
 
-    # Own fleet snapshot
+    # Own fleet snapshot (leader + escorts with formation and delay)
     try:
-        st_state = dict(payload.get('state', {})) if isinstance(payload.get('state', {}), dict) else {}
-        hlth = wd._load_health()
-        st_state['lives'] = int(hlth.get('lives', 3))
-        st_state['max_lives'] = int(hlth.get('max_lives', 3))
-        payload['ownfleet'] = wd._ownfleet_snapshot(st_state)
+        st = payload.get('state') if isinstance(payload.get('state'), dict) else {}
+        ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
+        # Leader cell via adapter
+        try:
+            own_cell = wd.ship_cell_from_state(st)
+        except Exception:
+            own_cell = 'K13'
+        # Build own row
+        own_row = {
+            'id': 'own',
+            'name': wd._load_json(wd.DATA_DIR / 'ship.json', {}).get('name', 'HMS Sheffield'),
+            'class': wd._load_json(wd.DATA_DIR / 'ship.json', {}).get('class', 'DD'),
+            'cell': own_cell,
+            'speed': ship.get('speed'),
+            'heading': ship.get('heading'),
+            'status': {}
+        }
+        # Escorts via Convoy.update (rotated offsets + lagged course/speed)
+        try:
+            try:
+                from projects.falklandV2.subsystems.convoy import Convoy  # type: ignore
+            except Exception:
+                Convoy = None  # type: ignore
+            convoy = getattr(wd, 'CONVOY', None)
+            if convoy is None and Convoy is not None:
+                convoy = Convoy.load(wd.DATA_DIR)  # type: ignore
+            sx, sy = wd.radar_xy_from_state(st)
+            crs = float(ship.get('heading', 0.0) or 0.0)
+            spd = float(ship.get('speed', 0.0) or 0.0)
+            escorts = []
+            if convoy is not None:
+                try:
+                    snaps = convoy.update(float(sx), float(sy), crs, spd, None)  # type: ignore
+                    for s in snaps:
+                        escorts.append({
+                            'id': s.id,
+                            'name': s.name,
+                            'class': s.klass,
+                            'cell': s.cell,
+                            'speed': s.speed_kts,
+                            'heading': s.course_deg,
+                            'status': {}
+                        })
+                except Exception:
+                    escorts = []
+            payload['ownfleet'] = [own_row] + escorts
+        except Exception:
+            payload['ownfleet'] = [own_row]
     except Exception:
         payload['ownfleet'] = []
 

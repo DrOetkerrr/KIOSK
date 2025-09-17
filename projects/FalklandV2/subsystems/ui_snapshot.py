@@ -12,10 +12,10 @@ from typing import Any, Dict, List, Optional
 import json
 
 # Local subsystems
-from subsystems import radar as rdar
-from subsystems import contacts as cons
-from subsystems import nav as navi
-from subsystems import weapons as weap
+from projects.falklandV2.subsystems import radar as rdar
+from projects.falklandV2.subsystems import contacts as cons
+from projects.falklandV2.subsystems import nav as navi
+from projects.falklandV2.subsystems import weapons as weap
 
 
 # ---------- small helpers

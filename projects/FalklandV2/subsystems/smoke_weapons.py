@@ -1,8 +1,17 @@
-from subsystems import engage as e
-from pathlib import Path, PurePath
 import json
+from pathlib import Path
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = ROOT.parent
+for p in (REPO_ROOT, ROOT):
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
+
+try:
+    from projects.falklandV2.subsystems import engage as e  # type: ignore
+except Exception:  # pragma: no cover - dev convenience script
+    from subsystems import engage as e
 ship = json.loads((ROOT / "data" / "ship.json").read_text())
 def show(cap): print(f"{cap['key']:<12} ready={cap['ready']} valid={cap['valid']} inrng={cap['in_range']} reason={cap['reason']}")
 

@@ -13,13 +13,21 @@ from typing import Any, Dict, Optional
 
 import sys
 ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+REPO_ROOT = ROOT.parent
+for p in (REPO_ROOT, ROOT):
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
 
-from engine import Engine
-from subsystems.hermes_cap import HermesCAP
-from subsystems.convoy import Convoy
-from subsystems import contacts as cons  # for distance and cell formatting helpers
+try:
+    from projects.falklandV2.engine import Engine  # type: ignore
+    from projects.falklandV2.subsystems.hermes_cap import HermesCAP  # type: ignore
+    from projects.falklandV2.subsystems.convoy import Convoy  # type: ignore
+    from projects.falklandV2.subsystems import contacts as cons  # type: ignore
+except Exception:  # pragma: no cover - fallback when executed relatively
+    from engine import Engine
+    from subsystems.hermes_cap import HermesCAP
+    from subsystems.convoy import Convoy
+    from subsystems import contacts as cons  # for distance and cell formatting helpers
 
 # Globals
 ENG: Optional[Engine] = None

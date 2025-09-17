@@ -18,8 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from subsystems import nav as navi
-from subsystems import contacts as cons
+from projects.falklandV2.subsystems import nav as navi
+from projects.falklandV2.subsystems import contacts as cons
 
 DELAY_S = 30  # adopt new course/speed after this delay
 

@@ -102,7 +102,16 @@ TOP_ID="$(curl -sS "$BASE/api/status" | ${PY:-python3} - <<'PY'
 import sys, json
 try:
     j=json.load(sys.stdin)
-    print(j.get("top_threat_id") or "")
+    ttid = j.get("top_threat_id") or None
+    if not ttid:
+        threats = j.get("threats") or []
+        if threats:
+            ttid = threats[0].get("id")
+    if not ttid:
+        contacts = j.get("contacts") or []
+        if contacts:
+            ttid = contacts[0].get("id")
+    print(ttid or "")
 except Exception:
     print("")
 PY

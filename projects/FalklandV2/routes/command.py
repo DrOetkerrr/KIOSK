@@ -212,20 +212,46 @@ def api_command():
             if str(arg).lower() in ("nearest","primary"):
                 tid = getattr(RADAR, 'priority_id', None)
                 target = next((c for c in RADAR.contacts if int(getattr(c,'id',-1)) == int(tid)), None) if tid is not None else None
+                # Fallback: compute nearest now if priority not yet selected
+                if target is None:
+                    try:
+                        st2 = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+                        ox, oy = get_own_xy(st2)
+                        best = None; bestd = 1e99
+                        clist = list(getattr(RADAR, 'contacts', []) or [])
+                        for c in clist:
+                            try:
+                                dx = float(getattr(c,'x',0.0)) - float(ox)
+                                dy = float(getattr(c,'y',0.0)) - float(oy)
+                                d = dx*dx + dy*dy
+                                if d < bestd:
+                                    bestd = d; best = c
+                            except Exception:
+                                continue
+                        target = best or (clist[0] if clist else None)
+                    except Exception:
+                        target = None
             else:
                 target = _radar_find_by_id(arg)
             if target is None:
+                # Last-chance fallback: pick the first listed contact if any
                 try:
-                    avail = [int(getattr(c,'id',-1)) for c in RADAR.contacts]
+                    clist = list(getattr(RADAR, 'contacts', []) or [])
+                    target = clist[0] if clist else None
                 except Exception:
-                    avail = []
-                payload = {"ok": False, "error": "contact not found", "available_ids": avail[:10]}
-                record_flight({
-                    "route": route, "method": request.method, "status": 404,
-                    "duration_ms": int((time.time()-t0)*1000),
-                    "request": {"cmd": cmd}, "response": payload,
-                })
-                return jsonify(payload), 404
+                    target = None
+                if target is None:
+                    try:
+                        avail = [int(getattr(c,'id',-1)) for c in RADAR.contacts]
+                    except Exception:
+                        avail = []
+                    payload = {"ok": False, "error": "contact not found", "available_ids": avail[:10]}
+                    record_flight({
+                        "route": route, "method": request.method, "status": 404,
+                        "duration_ms": int((time.time()-t0)*1000),
+                        "request": {"cmd": cmd}, "response": payload,
+                    })
+                    return jsonify(payload), 404
             tid = int(getattr(target, 'id', 0))
             try:
                 globals()['PRIMARY_ID'] = tid

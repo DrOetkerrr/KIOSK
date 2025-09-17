@@ -25,6 +25,7 @@ function rowEl(cells){
 function badge(txt, cls='badge'){ const span=document.createElement('span'); span.className=cls; span.textContent=txt; return span;}
 
 let lastOK=false, lastPoll=0, pendingLockId=null;
+let __serverVersion=null;
 
 // ---------- Poll status ----------
 async function getJSON(url){
@@ -36,6 +37,16 @@ async function getJSON(url){
 }
 
 function setHUD(j){
+  // Auto-reload when backend version changes to ensure new assets/logic are visible
+  try{
+    const sv = j.server_version || j.serverVersion || null;
+    if(__serverVersion===null && sv){ __serverVersion = sv; }
+    else if(sv && __serverVersion && sv!==__serverVersion){
+      console.log('[version] server changed', __serverVersion, '->', sv, 'reloading…');
+      location.reload();
+      return;
+    }
+  }catch(_){ }
   $('#hud-dot').classList.toggle('ok', !!j.ok);
   text($('#hud-poll'), `poll: ${lastPoll} ms`);
   const ship = j.state?.ship || {};

@@ -24,6 +24,10 @@ from projects.falklandV2.runtime_service import GameRuntime
 from projects.falklands.core.engine import Engine
 from projects.falklandV2.radar import Radar, Contact, HOSTILES, WORLD_N, HOSTILE_SPEED_SCALE  # noqa: F401
 from projects.falklandV2.subsystems.hermes_cap import HermesCAP
+try:
+    from projects.falklandV2.subsystems.convoy import Convoy
+except Exception:
+    Convoy = None  # type: ignore
 
 # Engine adapter helpers used by routes and status
 try:
@@ -178,6 +182,7 @@ VOICE_EVENTS = core.VOICE_EVENTS
 voice_emit = core.voice_emit
 _crew_voice = core._crew_voice
 _tts_synthesize = core._tts_synthesize
+_sound_key_for_weapon = core._sound_key_for_weapon
 
 # Radio queues
 RADIO_QUEUE: list[Dict[str, Any]] = []
@@ -189,6 +194,7 @@ MOTION_STATE: Dict[str, Any] = {"last_heading": None, "last_ts": 0.0}
 SKIRMISH_ACTIVE: Dict[str, Any] = {"id": None, "started_ts": None}
 NAV_STATE: Dict[str, Any] = {"last_cell": None, "turn_target": None, "turn_hold_since": 0.0, "boundary_cooldown_until": 0.0}
 CAP: HermesCAP | None = RUNTIME.cap
+CONVOY = (Convoy.load(DATA_DIR) if Convoy is not None else None)
 CAP_META: Dict[int, Dict[str, Any]] = {}
 PENDING_EVENTS: list[Dict[str, Any]] = []
 ATTACK_STATE: Dict[int, float] = {}
@@ -246,6 +252,16 @@ def _spawn_initial_friendlies() -> None:
 def _spawn_hostile_by_name(own_x: float, own_y: float, *, name: str, range_nm: float, bearing_deg: float) -> Contact:
     return core.spawn_hostile_by_name(sys.modules[__name__], own_x, own_y, name=name, range_nm=range_nm, bearing_deg=bearing_deg)  # type: ignore
 
+
+# ---- Helpers ----
+def _radar_summary_ctx(own_x: float, own_y: float) -> Dict[str, Any]:
+    try:
+        total = len(getattr(RADAR, 'contacts', []) or [])
+        hostiles = len([c for c in RADAR.contacts if str(getattr(c,'allegiance','')).lower()=='hostile'])
+        friendlies = len([c for c in RADAR.contacts if str(getattr(c,'allegiance','')).lower()=='friendly'])
+        return {"contacts": total, "hostiles": hostiles, "friendlies": friendlies}
+    except Exception:
+        return {"contacts": 0, "hostiles": 0, "friendlies": 0}
 
 # ---- Fire resolution scheduler ----
 def _schedule_shot_result(weapon: str, target_id: int, target_name: str, target_class: str, range_nm: float) -> None:
@@ -411,6 +427,9 @@ def _arg_or_json(request, key: str, default: str | None = None) -> str | None:
     return v if v is not None else default
 
 
+ENGINE_THREAD: threading.Thread | None = None
+
+
 def engine_thread() -> None:
     try:
         core.engine_thread_run(sys.modules[__name__])  # type: ignore
@@ -418,12 +437,30 @@ def engine_thread() -> None:
         pass
 
 
+def _ensure_engine_thread() -> None:
+    global ENGINE_THREAD
+    try:
+        if ENGINE_THREAD is None or not ENGINE_THREAD.is_alive():
+            t = threading.Thread(target=engine_thread, daemon=True)
+            t.start()
+            ENGINE_THREAD = t
+    except Exception:
+        ENGINE_THREAD = None
+
+
+@app.before_request
+def _kick_engine_thread() -> None:  # pragma: no cover - runtime bootstrap
+    _ensure_engine_thread()
+
+
+# Start immediately when module is imported (covers python -m usage)
+try:
+    _ensure_engine_thread()
+except Exception:
+    pass
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     print(f"[webdash] templates -> {TPL_DIR}")
-    try:
-        _t = threading.Thread(target=engine_thread, daemon=True)
-        _t.start()
-    except Exception:
-        pass
     app.run(host="127.0.0.1", port=PORT, debug=False, threaded=True)
