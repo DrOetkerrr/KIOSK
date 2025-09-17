@@ -159,7 +159,6 @@ function renderRADAR(j){
   const lockContact = async (id)=>{ if(id===undefined||id===null) return; await fetch('/api/command?cmd='+encodeURIComponent(`/radar lock ${id}`)); await poll().catch(()=>{}); };
   list.forEach(function(c, idx){
     const tr=document.createElement('tr');
-    if(String(c.type||'').toLowerCase()==='hostile'){ tr.classList.add('hostile-row'); }
     if(lockedId!==null && Number(c.id)===lockedId){ tr.classList.add('locked-row'); }
     const tdIdx=document.createElement('td'); tdIdx.className='num'; tdIdx.textContent=String(idx+1);
     const tdStatus=document.createElement('td'); tdStatus.appendChild(colorTag(String(c.type||'—')));
@@ -341,17 +340,167 @@ function renderWPN(j){
 }
 
 function renderRADIO(j){
-  const p=$('#station-panel'); p.innerHTML=''; const h=document.createElement('h2'); h.textContent='RADIO / HERMES CAP'; p.appendChild(h);
-  const row=document.createElement('div'); row.className='row section';
-  const bI=document.createElement('button'); bI.className='btn'; bI.textContent='Intercept'; bI.onclick=async function(){ await fetch('/cap/request',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})}); };
-  const cell=document.createElement('input'); cell.className='input mono'; cell.placeholder='Cell'; cell.style.width='80px';
-  const min=document.createElement('input'); min.type='range'; min.min='5'; min.max='30'; min.step='1'; min.value='10'; min.style.width='120px';
-  const rad=document.createElement('input'); rad.type='range'; rad.min='2'; rad.max='20'; rad.step='1'; rad.value='10'; rad.style.width='120px';
-  const bC=document.createElement('button'); bC.className='btn'; bC.textContent='CAP to Cell'; bC.onclick=async function(){ const c=(cell.value||'').trim().toUpperCase(); if(!c) return; const body={cell:c, station_minutes:Number(min.value||'10'), radius_nm:Number(rad.value||'10')}; await fetch('/cap/launch_to',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}); };
-  row.appendChild(bI); row.appendChild(cell); row.appendChild(min); row.appendChild(rad); row.appendChild(bC); p.appendChild(row);
-  const mini=document.createElement('div'); mini.className='row section'; const cap=j.cap||{};
-  [ 'READY '+(cap.ready?'YES':'NO'), 'pairs '+(cap.pairs||0), 'airframes '+(cap.airframes||0), 'committed '+(cap.committed||0) ].forEach(function(s){ const b=document.createElement('span'); b.className='badge'; b.textContent=s; b.style.marginRight='6px'; mini.appendChild(b); });
-  p.appendChild(mini);
+  const p=$('#station-panel'); p.innerHTML='';
+  const h=document.createElement('h2'); h.textContent='COMMS CONSOLE:'; p.appendChild(h);
+
+  const fleet = Array.isArray(j.ownfleet)? j.ownfleet : [];
+  const flagship = fleet.find(u=>String(u.name||'').toLowerCase().includes('hermes'))
+                  || fleet.find(u=>String(u.id||'')!=='own') || null;
+  const lockedId = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id): null;
+  const primaryContact = (lockedId!=null && Array.isArray(j.contacts))? j.contacts.find(c=>Number(c.id)===lockedId): null;
+
+  const table=document.createElement('table'); table.className='comms-table';
+  const head=document.createElement('tr');
+  ['Flagship','Grid','Spd','Course'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; head.appendChild(th); });
+  table.appendChild(head);
+  const data=document.createElement('tr');
+  const flagshipName = flagship? String(flagship.name||'—'): '—';
+  const flagshipCell = flagship? String(flagship.cell||'—'): '—';
+  const flagshipSpd = flagship && flagship.speed!=null? fmt(flagship.speed,0): '—';
+  const flagshipCourse = flagship && flagship.heading!=null? fmt(flagship.heading,0): '—';
+  [flagshipName, flagshipCell, flagshipSpd, flagshipCourse].forEach(function(val, idx){
+    const td=document.createElement('td');
+    if(idx>=2) td.className='num';
+    td.textContent=val;
+    data.appendChild(td);
+  });
+  table.appendChild(data); p.appendChild(table);
+
+  const actions=document.createElement('div'); actions.className='comms-actions';
+  const consoleMsg=document.createElement('div'); consoleMsg.className='comms-msg muted';
+  async function hermesCmd(url){
+    consoleMsg.textContent='...'; consoleMsg.className='comms-msg muted';
+    try{
+      const r=await fetch(url); const res=await r.json();
+      if(res && res.ok){
+        const bearings = [];
+        if(res.bearing!==undefined) bearings.push(`brg ${res.bearing}\u00b0`);
+        if(res.range_nm!==undefined) bearings.push(`${res.range_nm} nm`);
+        if(res.recommend_hdg!==undefined) bearings.push(`rec ${res.recommend_hdg}\u00b0`);
+        if(res.standoff_nm!==undefined) bearings.push(`stand-off ${res.standoff_nm} nm`);
+        consoleMsg.textContent = bearings.length? bearings.join(' • ') : 'OK';
+        consoleMsg.className='comms-msg ok';
+      }else{
+        consoleMsg.textContent = res && res.error ? String(res.error) : 'ERR';
+        consoleMsg.className='comms-msg err';
+      }
+    }catch(e){
+      consoleMsg.textContent='ERR'; consoleMsg.className='comms-msg err';
+    }
+  }
+  const closeBtn=document.createElement('button'); closeBtn.className='btn'; closeBtn.textContent='CLOSE UP';
+  closeBtn.onclick=()=>hermesCmd('/nav/hermes/close_in');
+  const standBtn=document.createElement('button'); standBtn.className='btn'; standBtn.textContent='MOVE AWAY';
+  standBtn.onclick=()=>hermesCmd('/nav/hermes/stand_off');
+  actions.appendChild(closeBtn); actions.appendChild(standBtn); p.appendChild(actions); p.appendChild(consoleMsg);
+
+  const capHeader=document.createElement('h3'); capHeader.className='comms-subhead'; capHeader.textContent='SHAR menu:'; p.appendChild(capHeader);
+  const cap=j.cap || {};
+  const sharSummary=document.createElement('div'); sharSummary.className='shar-summary';
+  const readyTag=document.createElement('span'); readyTag.className='shar-ready ' + (cap.ready?'ok':'err'); readyTag.textContent=cap.ready? 'READY':'STANDBY'; sharSummary.appendChild(readyTag);
+  const summaryItems=[`pairs: ${cap.pairs ?? 0}`, `airframes: ${cap.airframes ?? 0}`, `cooldown: ${cap.cooldown_s ? fmt(cap.cooldown_s,0)+'s' : '—'}`, `committed: ${cap.committed ?? 0}`];
+  summaryItems.forEach(function(txt){ const span=document.createElement('span'); span.className='badge'; span.textContent=txt; sharSummary.appendChild(span); });
+  p.appendChild(sharSummary);
+
+  const launchTable=document.createElement('table'); launchTable.className='comms-launch-table';
+  const launchHead=document.createElement('tr');
+  ['Flight','Callsign / Cell','Grid','Action'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; launchHead.appendChild(th); });
+  launchTable.appendChild(launchHead);
+
+  const capRow=document.createElement('tr');
+  const capFlight=document.createElement('td'); capFlight.textContent='CAP'; capRow.appendChild(capFlight);
+  const capCellTd=document.createElement('td');
+  const capCellInput=document.createElement('input'); capCellInput.className='input mono'; capCellInput.placeholder='Cell'; capCellInput.style.width='90px'; capCellTd.appendChild(capCellInput); capRow.appendChild(capCellTd);
+  const capGridTd=document.createElement('td'); capGridTd.textContent='—'; capRow.appendChild(capGridTd);
+  const capActionTd=document.createElement('td'); capActionTd.className='num';
+  const capLaunchBtn=document.createElement('button'); capLaunchBtn.className='btn'; capLaunchBtn.textContent='LAUNCH';
+  capActionTd.appendChild(capLaunchBtn); capRow.appendChild(capActionTd);
+  launchTable.appendChild(capRow);
+
+  const interceptRow=document.createElement('tr');
+  const interceptFlight=document.createElement('td'); interceptFlight.textContent='INTERCEPT'; interceptRow.appendChild(interceptFlight);
+  const interceptCall=document.createElement('td'); interceptCall.textContent = primaryContact ? `ID ${String(primaryContact.id).padStart(2,'0')}` : '—'; interceptRow.appendChild(interceptCall);
+  const interceptGrid=document.createElement('td'); interceptGrid.textContent = primaryContact? String(primaryContact.cell||'—'):'—'; interceptRow.appendChild(interceptGrid);
+  const interceptAction=document.createElement('td'); interceptAction.className='num';
+  const interceptBtn=document.createElement('button'); interceptBtn.className='btn'; interceptBtn.textContent='LAUNCH';
+  if(!primaryContact) interceptBtn.disabled = true;
+  interceptAction.appendChild(interceptBtn); interceptRow.appendChild(interceptAction);
+  launchTable.appendChild(interceptRow);
+  p.appendChild(launchTable);
+
+  const capMsg=document.createElement('div'); capMsg.className='comms-msg muted'; p.appendChild(capMsg);
+
+  capLaunchBtn.onclick=async function(){
+    const cell = (capCellInput.value||'').trim().toUpperCase();
+    if(!cell){ capMsg.textContent='Enter CAP grid cell'; capMsg.className='comms-msg err'; return; }
+    capMsg.textContent='Requesting CAP...'; capMsg.className='comms-msg muted';
+    try{
+      const body={cell, station_minutes: 20, radius_nm: 5};
+      const res=await fetch('/cap/launch_to',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      const data=await res.json();
+      if(data && data.ok){
+        capMsg.textContent=data.message || 'CAP launching';
+        capMsg.className='comms-msg ok';
+        capCellInput.value='';
+        await poll().catch(()=>{});
+      }else{
+        capMsg.textContent=data && data.message ? String(data.message) : (data && data.error ? String(data.error) : 'CAP request failed');
+        capMsg.className='comms-msg err';
+      }
+    }catch(e){
+      capMsg.textContent='CAP request failed'; capMsg.className='comms-msg err';
+    }
+  };
+
+  interceptBtn.onclick=async function(){
+    if(!primaryContact){ capMsg.textContent='No locked target.'; capMsg.className='comms-msg err'; return; }
+    capMsg.textContent='Vectoring intercept...'; capMsg.className='comms-msg muted';
+    try{
+      const res=await fetch('/cap/request',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: primaryContact.id})});
+      const data=await res.json();
+      if(data && data.ok){
+        capMsg.textContent=data.message || 'Intercept pair launching';
+        capMsg.className='comms-msg ok';
+        await poll().catch(()=>{});
+      }else{
+        capMsg.textContent=data && data.message ? String(data.message) : (data && data.error ? String(data.error) : 'Intercept request failed');
+        capMsg.className='comms-msg err';
+      }
+    }catch(e){
+      capMsg.textContent='Intercept request failed'; capMsg.className='comms-msg err';
+    }
+  };
+
+  const commitHeader=document.createElement('h3'); commitHeader.className='comms-subhead'; commitHeader.textContent='SHAR commit status:'; p.appendChild(commitHeader);
+  const commitTable=document.createElement('table'); commitTable.className='comms-commit-table';
+  const commitHead=document.createElement('tr');
+  ['Flight','Status','POS','Target','Range','TOT','TOS'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; commitHead.appendChild(th); });
+  commitTable.appendChild(commitHead);
+  const tasks = Array.isArray(cap.tasks)? cap.tasks : [];
+  function fmtDuration(sec){
+    if(sec===undefined || sec===null) return '—';
+    const s = Number(sec);
+    if(!Number.isFinite(s)) return '—';
+    if(s < 60) return `${Math.round(s)}s`;
+    if(s < 3600) return `${Math.round(s/60)} min`;
+    return `${Math.round(s/3600)} hr`;
+  }
+  if(!tasks.length){
+    const tr=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=7; td.textContent='No active missions'; tr.appendChild(td); commitTable.appendChild(tr);
+  }else{
+    tasks.forEach(function(t){
+      const tr=document.createElement('tr');
+      const flightTd=document.createElement('td'); flightTd.textContent = t.n!=null ? `SHAR ${t.n}` : 'SHAR —'; tr.appendChild(flightTd);
+      const statusTd=document.createElement('td'); statusTd.textContent=String(t.status||'—'); tr.appendChild(statusTd);
+      const posTd=document.createElement('td'); posTd.textContent=String(t.cur_cell||'—'); tr.appendChild(posTd);
+      const tgtTd=document.createElement('td'); tgtTd.textContent=String(t.target_cell||'—'); tr.appendChild(tgtTd);
+      const rngTd=document.createElement('td'); rngTd.className='num'; rngTd.textContent = t.range_nm!=null? `${fmt(t.range_nm,1)} nm`:'—'; tr.appendChild(rngTd);
+      const totTd=document.createElement('td'); totTd.className='num'; totTd.textContent=fmtDuration(t.tot_s); tr.appendChild(totTd);
+      const tosTd=document.createElement('td'); tosTd.className='num'; tosTd.textContent=fmtDuration(t.tos_s); tr.appendChild(tosTd);
+      commitTable.appendChild(tr);
+    });
+  }
+  p.appendChild(commitTable);
 }
 
 function renderENG(j){

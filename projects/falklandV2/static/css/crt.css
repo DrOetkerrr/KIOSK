@@ -75,6 +75,22 @@ tbody tr td:last-child{border-top-right-radius:6px;border-bottom-right-radius:6p
 .nav-control-table .input{text-align:right}
 .nav-control-table .nav-set-btn{min-width:90px}
 .nav-msg{margin-left:10px;font-size:13px}
+.comms-table{width:100%;border-collapse:separate;border-spacing:0 6px;margin-bottom:8px}
+.comms-table th{text-transform:uppercase;font-size:12px;letter-spacing:1px;color:var(--muted)}
+.comms-table td{background:rgba(3,18,7,0.85);border:1px solid var(--border);padding:6px 10px}
+.comms-actions{display:flex;gap:12px;margin-bottom:4px;flex-wrap:wrap}
+.comms-subhead{margin:16px 0 6px;font-size:16px;letter-spacing:1px;color:var(--accent);text-transform:uppercase}
+.comms-msg{margin-top:6px;font-size:13px;color:var(--muted)}
+.comms-msg.ok{color:var(--accent)}
+.comms-msg.err{color:var(--err)}
+.shar-summary{display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.shar-ready{padding:4px 12px;border-radius:6px;border:1px solid var(--border);font-weight:600;letter-spacing:1px}
+.shar-ready.ok{background:#11441e;color:var(--accent)}
+.shar-ready.err{background:#2e1212;color:#ff9a9a;border-color:#7c1d1d}
+.comms-launch-table,.comms-commit-table{width:100%;border-collapse:separate;border-spacing:0 6px;margin-bottom:10px}
+.comms-launch-table th,.comms-commit-table th{text-transform:uppercase;font-size:12px;letter-spacing:1px;color:var(--muted);text-align:left}
+.comms-launch-table td,.comms-commit-table td{background:rgba(3,18,7,0.85);border:1px solid var(--border);padding:6px 10px}
+.comms-launch-table td.num,.comms-commit-table td.num{text-align:right;font-variant-numeric:tabular-nums}
 .wpn-primary{background:rgba(3,18,7,0.85);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:16px;box-shadow:0 0 18px rgba(0,0,0,0.6)}
 .wpn-primary-title{text-transform:uppercase;font-size:14px;letter-spacing:2px;color:var(--accent);margin-bottom:8px}
 .wpn-primary-table{width:100%;border-collapse:separate;border-spacing:0 4px;margin-bottom:10px}
@@ -84,13 +100,10 @@ tbody tr td:last-child{border-top-right-radius:6px;border-bottom-right-radius:6p
 .wpn-lock-controls > span:first-child{text-transform:uppercase;letter-spacing:1px;font-size:12px;color:var(--muted)}
 .wpn-lock-input{max-width:90px;text-align:center}
 .wpn-msg{font-size:13px}
-tbody tr.hostile-row{background:rgba(35,8,8,0.85);border-color:#5a1515}
-tbody tr.hostile-row .btn{background:#2d0808;border-color:#7c1d1d;color:#ff9a9a}
-tbody tr.hostile-row .btn:hover{background:#4a1212;color:#ffd1d1}
 .primary-box{display:flex;gap:16px;margin-bottom:12px;padding:10px 12px;background:rgba(3,18,7,0.85);border:1px solid var(--border);box-shadow:0 0 18px rgba(0,0,0,0.6);border-radius:8px}
 .primary-field{display:flex;flex-direction:column;min-width:90px}
 .primary-label{font-size:13px;text-transform:uppercase;color:var(--muted);letter-spacing:1px;margin-bottom:2px}
 .primary-value{font-size:18px;color:var(--accent)}
-tbody tr.locked-row{background:rgba(6,32,14,0.9);border-color:#26c877;box-shadow:0 0 18px rgba(71,255,138,0.35)}
-tbody tr.locked-row .btn{background:#0e4d24;border-color:#26c877;color:var(--accent)}
-tbody tr.locked-row .btn:hover{background:#15733a;color:#bcffe0}
+tbody tr.locked-row{background:rgba(40,8,8,0.9);border-color:#c73d3d;box-shadow:0 0 18px rgba(255,105,105,0.35)}
+tbody tr.locked-row .btn{background:#5a1313;border-color:#c73d3d;color:#ffb4b4}
+tbody tr.locked-row .btn:hover{background:#7a1c1c;color:#ffe3e3}
