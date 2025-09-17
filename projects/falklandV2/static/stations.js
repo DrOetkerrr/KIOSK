@@ -219,7 +219,7 @@ function renderWPN(j){
 
   const contacts = Array.isArray(j.contacts)? j.contacts.slice(): [];
   const lockedId = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id): null;
-  const primary = contacts.find(c=>Number(c.id)===lockedId) || null;
+  const primaryContact = contacts.find(c=>Number(c.id)===lockedId) || null;
 
   const primaryBox=document.createElement('div'); primaryBox.className='wpn-primary';
   const primaryTitle=document.createElement('div'); primaryTitle.className='wpn-primary-title'; primaryTitle.textContent='Primary Target'; primaryBox.appendChild(primaryTitle);
@@ -229,14 +229,14 @@ function renderWPN(j){
   ['#ID','Type','Name','Range','Speed','TTI'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; headRow.appendChild(th); });
   infoTable.appendChild(headRow);
   const dataRow=document.createElement('tr');
-  const idCell=document.createElement('td'); idCell.textContent=primary? String(primary.id).padStart(2,'0') : '—'; dataRow.appendChild(idCell);
-  const typeCell=document.createElement('td'); typeCell.textContent=primary? String(primary.type || primary.class || '—') : '—'; dataRow.appendChild(typeCell);
-  const nameCell=document.createElement('td'); nameCell.textContent=primary? String(primary.name||'—') : '—'; dataRow.appendChild(nameCell);
-  const rangeCell=document.createElement('td'); rangeCell.className='num'; rangeCell.textContent=primary && primary.range_nm!=null? `${fmt(primary.range_nm,1)} nm`:'—'; dataRow.appendChild(rangeCell);
-  const speedCell=document.createElement('td'); speedCell.className='num'; speedCell.textContent=primary && primary.speed!=null? `${fmt(primary.speed,0)} kn`:'—'; dataRow.appendChild(speedCell);
+  const idCell=document.createElement('td'); idCell.textContent=primaryContact? String(primaryContact.id).padStart(2,'0') : '—'; dataRow.appendChild(idCell);
+  const typeCell=document.createElement('td'); typeCell.textContent=primaryContact? String(primaryContact.type || primaryContact.class || '—') : '—'; dataRow.appendChild(typeCell);
+  const nameCell=document.createElement('td'); nameCell.textContent=primaryContact? String(primaryContact.name||'—') : '—'; dataRow.appendChild(nameCell);
+  const rangeCell=document.createElement('td'); rangeCell.className='num'; rangeCell.textContent=primaryContact && primaryContact.range_nm!=null? `${fmt(primaryContact.range_nm,1)} nm`:'—'; dataRow.appendChild(rangeCell);
+  const speedCell=document.createElement('td'); speedCell.className='num'; speedCell.textContent=primaryContact && primaryContact.speed!=null? `${fmt(primaryContact.speed,0)} kn`:'—'; dataRow.appendChild(speedCell);
   const ttiCell=document.createElement('td'); ttiCell.className='num';
   try{
-    const tti = primary? computeTTI(primary):null;
+    const tti = primaryContact? computeTTI(primaryContact):null;
     ttiCell.textContent = (tti!==null)? `${tti}s`:'—';
   }catch(_){ ttiCell.textContent='—'; }
   dataRow.appendChild(ttiCell);
@@ -246,7 +246,7 @@ function renderWPN(j){
   const controls=document.createElement('div'); controls.className='wpn-lock-controls';
   const label=document.createElement('span'); label.textContent='PRIMARY TARGET ID'; controls.appendChild(label);
   const input=document.createElement('input'); input.type='text'; input.className='input mono wpn-lock-input'; input.placeholder='— —';
-  const preset = ST.wpn.lockInput || (primary? String(primary.id).padStart(2,'0') : '');
+  const preset = ST.wpn.lockInput || (primaryContact? String(primaryContact.id).padStart(2,'0') : '');
   if(preset) input.value=preset;
   input.addEventListener('input', function(){ ST.wpn.lockInput = (input.value||'').trim(); });
   controls.appendChild(input);
@@ -300,7 +300,21 @@ function renderWPN(j){
   const tbl=document.createElement('table'); const thead=document.createElement('thead'); const trh=document.createElement('tr');
   ['Weapon','Ammo','Range (nm)','Status','Arm','Fire'].forEach(function(k){ const th=document.createElement('th'); if(k!=='Weapon') th.className = (k.indexOf('Ammo')>=0||k.indexOf('Range')>=0)?'num':''; th.textContent=k; trh.appendChild(th); }); thead.appendChild(trh); tbl.appendChild(thead);
   const tb=document.createElement('tbody');
-  (Array.isArray(j.weapons)? j.weapons : []).forEach(function(w){
+  const weaponsList = Array.isArray(j.weapons)? j.weapons : [];
+  const lockedIdWpn = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id): null;
+  const primaryWpn = (lockedIdWpn!=null) ? (Array.isArray(j.contacts)? j.contacts.find(c=>Number(c.id)===lockedIdWpn): null) : null;
+
+  function weaponReadyToFire(w){
+    if(!w) return false;
+    if(String(w.armed||'Safe')!=='Armed') return false;
+    if(Number(w.ammo||0) <= 0) return false;
+    if(Number(w.cooldown_s||0) > 0) return false;
+    if(ST.test) return true;
+    if(lockedIdWpn===null || !primaryWpn) return false;
+    return !!w.in_range;
+  }
+
+  weaponsList.forEach(function(w){
     const tr=document.createElement('tr');
     const st=String(w.armed||'Safe');
     const tdN=document.createElement('td'); tdN.textContent=String(w.name||'—');
@@ -308,8 +322,18 @@ function renderWPN(j){
     const tdR=document.createElement('td'); tdR.className='num'; tdR.textContent=fmt(w.min_nm,0)+'–'+fmt(w.max_nm,0);
     const tdS=document.createElement('td'); const dot=document.createElement('span'); dot.className='statdot'+(st==='Armed'?' on':''); tdS.appendChild(dot);
     const tdArm=document.createElement('td'); const ab=document.createElement('button'); ab.className='btn'; ab.textContent=(st==='Armed')?'Safe':'Arm'; ab.onclick=async function(){ const next=(st==='Armed')?'Safe':'Armed'; await fetch('/weapons/arm',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:w.name, state: next})}); }; tdArm.appendChild(ab);
-    const tdF=document.createElement('td'); const fb=document.createElement('button'); fb.className='btn'; fb.textContent='Fire'; fb.disabled = !(st==='Armed') || (Number(w.ammo||0)<=0) || (Number(w.cooldown_s||0)>0);
-    fb.onclick=async function(){ const body={name:w.name, mode:(ST.test?'test':'real')}; const r=await fetch('/weapons/fire',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}); await r.json().catch(function(){}); };
+    const tdF=document.createElement('td'); const fb=document.createElement('button'); fb.className='btn'; fb.textContent=ST.test?'Test':'Fire';
+    fb.onclick=async function(){
+      const body={name:w.name, mode:(ST.test?'test':'real')};
+      const r=await fetch('/weapons/fire',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      const payload=await r.json().catch(()=>({}));
+      if(payload && payload.error){
+        msg.textContent=String(payload.error||'ERR'); msg.className='wpn-msg err';
+      }else{
+        msg.textContent='FIRED'; msg.className='wpn-msg ok';
+      }
+      await poll().catch(()=>{});
+    };
     tdF.appendChild(fb);
     tr.appendChild(tdN); tr.appendChild(tdA); tr.appendChild(tdR); tr.appendChild(tdS); tr.appendChild(tdArm); tr.appendChild(tdF); tb.appendChild(tr);
   });
@@ -369,7 +393,15 @@ function render(j){
 }
 
 async function poll(){
-  try{ const r=await fetch('/api/status',{cache:'no-store'}); const j=await r.json(); window._status=j; render(j); renderRadioBox(j);}catch(e){}
+  try{
+    const r=await fetch('/api/status',{cache:'no-store'});
+    const j=await r.json();
+    window._status=j;
+    render(j);
+    try{
+      if(typeof renderRadioBox === 'function') renderRadioBox(j);
+    }catch(_){ }
+  }catch(e){}
 }
 
 function playKlik(){ try{ const a=new Audio('/data/sounds/klik.m4a'); a.volume=0.6; a.play().catch(function(){}); }catch(e){} }
