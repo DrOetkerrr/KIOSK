@@ -243,6 +243,15 @@ try:
     RADAR.cap_effects_provider = (lambda: CAP.current_effects() if CAP is not None else {"active": False})
 except Exception:
     pass
+try:
+    st0 = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+    ox0, oy0 = radar_xy_from_state(st0)
+except Exception:
+    ox0, oy0 = (float(WORLD_N) / 2.0, float(WORLD_N) / 2.0)
+try:
+    RADAR.seed_test_contacts(float(ox0), float(oy0), count=10)
+except Exception:
+    pass
 
 
 def _spawn_initial_friendlies() -> None:

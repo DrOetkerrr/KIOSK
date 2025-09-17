@@ -14,10 +14,10 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from projects.falklands.core.engine import Engine
-from projects.falklandV2.radar import Radar
+from projects.falklandV2.radar import Radar, WORLD_N
 from projects.falklandV2.subsystems.hermes_cap import HermesCAP
 from projects.falklandV2.subsystems import webcore as core
 from projects.falklandV2.subsystems import ui_snapshot as ui_snap
@@ -126,6 +126,18 @@ class GameRuntime:
             radar.cap_effects_provider = (lambda: self.cap.current_effects() if self.cap is not None else {"active": False})
         except Exception:
             pass
+        seed_x = float(WORLD_N) / 2.0
+        seed_y = float(WORLD_N) / 2.0
+        try:
+            ox, oy = self._own_xy()
+            if isinstance(ox, (int, float)) and isinstance(oy, (int, float)):
+                seed_x, seed_y = float(ox), float(oy)
+        except Exception:
+            pass
+        try:
+            radar.seed_test_contacts(seed_x, seed_y, count=10)
+        except Exception:
+            pass
         return radar
 
     # ---------- lifecycle
@@ -171,13 +183,25 @@ class GameRuntime:
         Mirrors projects/falklandV2/subsystems/ui_snapshot.build_snapshot.
         """
         with self.state_lock:
+            contacts_ui, radar_meta = self._radar_snapshot()
             try:
                 paused = False
                 convoy = None
                 snap = ui_snap.build_snapshot(self.engine, self.cap, convoy, paused, self.data_dir)
+                snap['contacts'] = contacts_ui
+                radar_block = snap.get('radar') if isinstance(snap.get('radar'), dict) else {}
+                if not isinstance(radar_block, dict):
+                    radar_block = {}
+                radar_block.update(radar_meta)
+                snap['radar'] = radar_block
                 return snap
             except Exception:
-                return {"hud": "—", "contacts": [], "weapons": [], "cap": {}}
+                hud = "—"
+                try:
+                    hud = self.engine.hud_line()
+                except Exception:
+                    pass
+                return {"hud": hud, "contacts": contacts_ui, "weapons": [], "cap": {}, "radar": radar_meta}
 
     # ---------- simple radar controls
     def _own_xy(self) -> tuple[float, float]:
@@ -186,6 +210,48 @@ class GameRuntime:
             return core.radar_xy_from_state(st)
         except Exception:
             return (0.0, 0.0)
+
+    def _radar_snapshot(self) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        contacts_ui: List[Dict[str, Any]] = []
+        radar_meta: Dict[str, Any] = {}
+        try:
+            own_xy = self._own_xy()
+            contacts = list(getattr(self.radar, 'contacts', []))
+            contacts_ui = [contact_to_ui(c, own_xy) for c in contacts]
+            contacts_ui.sort(key=lambda d: float(d.get('range_nm', 1e9)))
+
+            try:
+                interval = int(getattr(self.radar, 'cfg', {}).get('scan_interval_s', 180))
+            except Exception:
+                interval = 180
+            try:
+                accum = float(getattr(self.radar, '_accum', 0.0))
+            except Exception:
+                accum = 0.0
+            radar_meta['scan_interval_s'] = interval
+            radar_meta['scan_left_s'] = max(0, int(round(interval - accum)))
+            radar_meta['locked_contact_id'] = getattr(self.radar, 'priority_id', None)
+
+            try:
+                from projects.falklandV2.subsystems import radar as radar_sub
+
+                class _Grid:
+                    cell_nm = 1.0
+
+                class _Pool:
+                    def __init__(self, contacts):
+                        self.contacts = contacts
+                        self.grid = _Grid()
+
+                radar_meta['status_line'] = radar_sub.status_line(
+                    _Pool(contacts), own_xy,
+                    locked_id=radar_meta['locked_contact_id'], max_list=3,
+                )
+            except Exception:
+                pass
+        except Exception:
+            contacts_ui = []
+        return contacts_ui, radar_meta
 
     def radar_scan(self) -> Dict[str, Any]:
         ox, oy = self._own_xy()
@@ -197,7 +263,10 @@ class GameRuntime:
 
     def radar_unlock(self) -> Dict[str, Any]:
         try:
-            self.radar.priority_id = None
+            if hasattr(self.radar, 'clear_manual_lock'):
+                self.radar.clear_manual_lock()
+            else:
+                self.radar.priority_id = None
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -205,9 +274,29 @@ class GameRuntime:
     def radar_lock_nearest(self) -> Dict[str, Any]:
         try:
             ox, oy = self._own_xy()
-            # ensure priority is up to date
-            self.radar._select_priority(ox, oy)
-            return {"ok": True, "id": self.radar.priority_id}
+            contacts = list(getattr(self.radar, 'contacts', []) or [])
+            if not contacts:
+                return {"ok": False, "error": "no_contacts"}
+            nearest = None
+            best = float('inf')
+            for c in contacts:
+                try:
+                    dx = float(getattr(c, 'x', 0.0)) - float(ox)
+                    dy = float(getattr(c, 'y', 0.0)) - float(oy)
+                    d = dx*dx + dy*dy
+                except Exception:
+                    continue
+                if d < best:
+                    best = d
+                    nearest = c
+            if nearest is None:
+                return {"ok": False, "error": "no_contacts"}
+            tid = int(getattr(nearest, 'id', -1))
+            if hasattr(self.radar, 'set_manual_lock'):
+                self.radar.set_manual_lock(tid)
+            else:
+                self.radar.priority_id = tid
+            return {"ok": True, "id": tid}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -215,7 +304,10 @@ class GameRuntime:
         try:
             for c in self.radar.contacts:
                 if int(getattr(c, "id", -1)) == int(cid):
-                    self.radar.priority_id = int(cid)
+                    if hasattr(self.radar, 'set_manual_lock'):
+                        self.radar.set_manual_lock(int(cid))
+                    else:
+                        self.radar.priority_id = int(cid)
                     return {"ok": True, "id": int(cid)}
             return {"ok": False, "error": "not_found"}
         except Exception as e:

@@ -145,7 +145,13 @@ def reset_runtime():
         try:
             L['RADAR'].contacts = []  # type: ignore[attr-defined]
             if hasattr(L['RADAR'], 'priority_id'):
-                L['RADAR'].priority_id = None  # type: ignore[attr-defined]
+                try:
+                    if hasattr(L['RADAR'], 'clear_manual_lock'):
+                        L['RADAR'].clear_manual_lock()  # type: ignore[attr-defined]
+                    else:
+                        L['RADAR'].priority_id = None  # type: ignore[attr-defined]
+                except Exception:
+                    L['RADAR'].priority_id = None  # type: ignore[attr-defined]
         except Exception:
             pass
         # 4) Rebuild Engine and CAP in the webdash module

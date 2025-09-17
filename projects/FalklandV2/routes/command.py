@@ -167,7 +167,10 @@ def api_command():
         # Radar lock/unlock helpers
         if s.lower().startswith("/radar unlock"):
             try:
-                RADAR.priority_id = None  # type: ignore[attr-defined]
+                if hasattr(RADAR, 'clear_manual_lock'):
+                    RADAR.clear_manual_lock()  # type: ignore[attr-defined]
+                else:
+                    RADAR.priority_id = None  # type: ignore[attr-defined]
             except Exception:
                 pass
             try:
@@ -196,16 +199,20 @@ def api_command():
             # enforce exclusive lock (must unlock before different target)
             try:
                 existing = getattr(RADAR, 'priority_id', None)
-                if existing is not None and str(arg).lower() not in ("nearest","primary"):
+                if existing is not None and str(arg).lower() not in ("nearest", "primary"):
                     try:
-                        if int(existing) != int(arg):
-                            payload = {"ok": False, "error": "LOCK_EXISTS", "id": int(existing)}
-                            record_flight({"route": route, "method": request.method, "status": 409,
-                                           "duration_ms": int((time.time()-t0)*1000),
-                                           "request": {"cmd": cmd}, "response": payload})
-                            return jsonify(payload), 409
+                        existing_i = int(existing)
+                        requested_i = int(arg)
+                        if requested_i != existing_i:
+                            if hasattr(RADAR, 'clear_manual_lock'):
+                                RADAR.clear_manual_lock()  # type: ignore[attr-defined]
+                            else:
+                                RADAR.priority_id = None
                     except Exception:
-                        pass
+                        if hasattr(RADAR, 'clear_manual_lock'):
+                            RADAR.clear_manual_lock()  # type: ignore[attr-defined]
+                        else:
+                            RADAR.priority_id = None
             except Exception:
                 pass
             # allow '/radar lock nearest' or 'primary'
@@ -258,7 +265,10 @@ def api_command():
             except Exception:
                 pass
             try:
-                RADAR.priority_id = tid  # type: ignore[attr-defined]
+                if hasattr(RADAR, 'set_manual_lock'):
+                    RADAR.set_manual_lock(tid)  # type: ignore[attr-defined]
+                else:
+                    RADAR.priority_id = tid  # type: ignore[attr-defined]
             except Exception:
                 pass
             try:

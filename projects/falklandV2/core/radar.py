@@ -89,6 +89,7 @@ class Radar:
         self._accum = 0.0
         self._next_id = 1
         self.priority_id: Optional[int] = None
+        self._manual_lock = False
 
     # API
     def tick(self, dt_s: float, own_x: float, own_y: float):
@@ -179,16 +180,47 @@ class Radar:
                 "speed_kts": c.speed_kts * HOSTILE_SPEED_SCALE
             })
 
-    def _select_priority(self, own_x: float, own_y: float):
-        if not self.contacts:
+    def set_manual_lock(self, contact_id: Optional[int]) -> None:
+        if contact_id is None:
             self.priority_id = None
+            self._manual_lock = False
             return
-        def weight_for(name: str) -> int:
-            for n, _s, w in HOSTILES:
-                if n == name: return w
-            return 1
-        self.contacts.sort(key=lambda c: (nm_distance(c.x, c.y, own_x, own_y), -weight_for(c.name)))
-        self.priority_id = self.contacts[0].id
+        try:
+            cid = int(contact_id)
+        except Exception:
+            self.priority_id = None
+            self._manual_lock = False
+            return
+        self.priority_id = cid
+        self._manual_lock = True
+
+    def clear_manual_lock(self) -> None:
+        self.priority_id = None
+        self._manual_lock = False
+
+    def _select_priority(self, own_x: float, own_y: float):
+        if self._manual_lock:
+            try:
+                pid = int(self.priority_id) if self.priority_id is not None else None
+            except Exception:
+                pid = None
+            if pid is not None:
+                current = next((c for c in self.contacts if int(getattr(c, 'id', -1)) == pid), None)
+                if current is not None:
+                    return
+            self._manual_lock = False
+            self.priority_id = None
+
+        if self.priority_id is not None:
+            try:
+                pid = int(self.priority_id)
+            except Exception:
+                pid = None
+            if pid is not None:
+                existing = next((c for c in self.contacts if int(getattr(c, 'id', -1)) == pid), None)
+                if existing is not None:
+                    return
+        self.priority_id = None
 
     def _check_close_alarm(self, own_x: float, own_y: float):
         if self.priority_id is None or not self.rec:

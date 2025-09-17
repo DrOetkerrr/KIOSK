@@ -1,8 +1,7 @@
 {
   "MM38 Exocet": {
     "armed": true,
-    "arming_until": 0,
-    "cooldown_until": 1757612457.543745
+    "arming_until": 0
   },
   "Sea Dart SAM": {
     "armed": false,

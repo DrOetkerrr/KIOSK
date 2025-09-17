@@ -3,11 +3,9 @@ const $$ = (sel)=>document.querySelectorAll(sel);
 const text = (el, s)=>{ if(el) el.textContent = s; };
 const fmt = (v, d)=> (v===undefined||v===null||Number.isNaN(Number(v))) ? '—' : Number(v).toFixed(d||0);
 
-let ST = { active: 'NAV', test: false };
+let ST = { active: 'NAV', test: false, nav: { desiredHeading: '', desiredSpeed: '' }, wpn: { lockInput: '' } };
 
 function setActive(id){ ST.active=id; $$('.toolbar .btn').forEach(b=> b.classList.toggle('active', b.dataset.st===id)); render(window._status||{}); }
-
-function rowKV(arr){ const d=document.createElement('div'); d.className='mono'; arr.forEach(x=>{ const s=document.createElement('span'); s.className='badge'; s.style.marginRight='6px'; s.textContent=x; d.appendChild(s); }); return d; }
 
 function renderNAV(j){
   // Avoid stomping user typing: if NAV inputs are focused, skip re-render
@@ -16,49 +14,97 @@ function renderNAV(j){
     if(aid==='nav-speed' || aid==='nav-course') return;
   }catch(_){ }
   const p=$('#station-panel'); p.innerHTML='';
-  const h=document.createElement('h2'); h.textContent='NAV (navigation)'; p.appendChild(h);
+  const h=document.createElement('h2'); h.textContent='NAVIGATION CONSOLE:'; p.appendChild(h);
+
   let fleet = Array.isArray(j.ownfleet)? j.ownfleet.slice() : [];
-  // Fallback: derive a minimal own row from state when ownfleet missing
   if(!fleet.length){
     try{
       const st = (j.state||{}); const ship = st.ship||{};
-      const own = { id:'own', name:'Own', cell:'—', speed: ship.speed, heading: ship.heading };
-      fleet = [own];
+      fleet = [{ id:'own', name:'Own Ship', cell:'—', speed: ship.speed, heading: ship.heading }];
     }catch(_){ fleet = []; }
   }
-  // Own ship first, then escorts (convoy)
+  if(!ST.nav) ST.nav = { desiredHeading: '', desiredSpeed: '' };
   const own = fleet.find(u=>String(u.id||'')==='own') || fleet[0] || {};
-  const escorts = fleet.filter(u=>String(u.id||'')!=='own');
+  const orderedFleet = [];
+  if(own && Object.keys(own).length){ orderedFleet.push(own); }
+  fleet.filter(u=>String(u.id||'')!=='own').forEach(u=> orderedFleet.push(u));
 
-  const sec=document.createElement('div');
-  // Own ship line
-  if(own){ sec.appendChild(rowKV([String(own.name||'Own'), String(own.cell||'—'), 'spd '+fmt(own.speed), 'hdg '+fmt(own.heading)])); }
-  // Convoy escorts (bring back explicit view)
-  if(escorts.length){ escorts.forEach(u=>{ sec.appendChild(rowKV([String(u.name||'Escort'), String(u.cell||'—'), 'spd '+fmt(u.speed), 'hdg '+fmt(u.heading)])); }); }
-  p.appendChild(sec);
+  const table=document.createElement('table'); table.className='nav-table';
+  const thead=document.createElement('thead'); const thr=document.createElement('tr');
+  ['Fleet status:', 'Grid:', 'Speed:', 'Course:'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; thr.appendChild(th); });
+  thead.appendChild(thr); table.appendChild(thead);
+  const tbody=document.createElement('tbody');
+  orderedFleet.forEach(function(unit){
+    const tr=document.createElement('tr');
+    const nameTd=document.createElement('td'); nameTd.textContent=String(unit.name||'—'); tr.appendChild(nameTd);
+    const cellTd=document.createElement('td'); cellTd.textContent=String(unit.cell||'—'); tr.appendChild(cellTd);
+    const spdTd=document.createElement('td'); spdTd.className='num'; spdTd.textContent=(unit.speed!==undefined&&unit.speed!==null)?fmt(unit.speed,0):'—'; tr.appendChild(spdTd);
+    const crsTd=document.createElement('td'); crsTd.className='num'; crsTd.textContent=(unit.heading!==undefined&&unit.heading!==null)?fmt(unit.heading,0):'—'; tr.appendChild(crsTd);
+    tbody.appendChild(tr);
+  });
+  if(!orderedFleet.length){
+    const tr=document.createElement('tr');
+    const td=document.createElement('td'); td.colSpan=4; td.className='muted'; td.textContent='No navigation data available.';
+    tr.appendChild(td); tbody.appendChild(tr);
+  }
+  table.appendChild(tbody); p.appendChild(table);
 
-  // Simple course/speed form (stabilized: POST /api/nav/set)
-  const form=document.createElement('div'); form.className='row section';
-  const speed=document.createElement('input'); speed.id='nav-speed'; speed.type='text'; speed.className='input mono'; speed.placeholder='Speed'; speed.style.width='100px';
-  const course=document.createElement('input'); course.id='nav-course'; course.type='text'; course.className='input mono'; course.placeholder='Course'; course.style.width='100px';
-  // Prefill from own ship if empty
-  const spNow = (own && typeof own.speed!== 'undefined') ? String(own.speed) : '';
-  const hdgNow = (own && typeof own.heading!== 'undefined') ? String(own.heading) : '';
-  if((speed.value||'')==='') speed.value = spNow;
-  if((course.value||'')==='') course.value = hdgNow;
-  const btn=document.createElement('button'); btn.className='btn'; btn.textContent='Apply';
-  const msg=document.createElement('span'); msg.className='mono muted'; msg.style.marginLeft='6px';
-  btn.onclick=async function(){
-    const spStr=(speed.value||'').trim(); const crStr=(course.value||'').trim();
-    const body={}; if(spStr!=='' && !Number.isNaN(Number(spStr))) body['speed']=Number(spStr); if(crStr!=='' && !Number.isNaN(Number(crStr))) body['heading']=Number(crStr);
-    if(!Object.keys(body).length){ msg.textContent=''; return; }
-    try{ const r=await fetch('/api/nav/set',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}); const j=await r.json(); msg.textContent = (j&&j.ok)?'OK':'ERR'; }
-    catch(e){ msg.textContent='ERR'; }
-  };
-  // Enter key submits
-  speed.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); btn.click(); }});
-  course.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); btn.click(); }});
-  form.appendChild(speed); form.appendChild(course); form.appendChild(btn); form.appendChild(msg); p.appendChild(form);
+  const hint=document.createElement('div'); hint.className='nav-button-hint'; hint.textContent='(BUTTON)'; p.appendChild(hint);
+
+  const controlsWrap=document.createElement('div'); controlsWrap.className='nav-controls';
+  const controlsTable=document.createElement('table'); controlsTable.className='nav-control-table';
+  const ctrlBody=document.createElement('tbody');
+  controlsTable.appendChild(ctrlBody);
+
+  const currentSpeed = (own && own.speed!=null)? String(own.speed) : '';
+  const currentHeading = (own && own.heading!=null)? String(own.heading) : '';
+  const desiredHeading = (ST.nav.desiredHeading || '').trim();
+  const desiredSpeed = (ST.nav.desiredSpeed || '').trim();
+  const coursePreset = desiredHeading !== '' ? desiredHeading : currentHeading;
+  const speedPreset = desiredSpeed !== '' ? desiredSpeed : currentSpeed;
+
+  async function sendNavUpdate(payload, msgEl){
+    if(!Object.keys(payload).length){ msgEl.textContent=''; return; }
+    try{
+      const r=await fetch('/api/nav/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      const resp=await r.json();
+      msgEl.textContent = (resp && resp.ok)?'OK':'ERR';
+      msgEl.className = 'nav-msg '+((resp && resp.ok)?'ok':'err');
+    }catch(_){
+      msgEl.textContent='ERR';
+      msgEl.className='nav-msg err';
+    }
+  }
+
+  function addControlRow(label, inputId, preset, key, stateKey){
+    const tr=document.createElement('tr');
+    const labTd=document.createElement('td'); labTd.textContent=label; tr.appendChild(labTd);
+    const inputTd=document.createElement('td');
+    const input=document.createElement('input'); input.type='text'; input.className='input mono'; input.placeholder='....'; input.id=inputId; if(preset) input.value=preset;
+    inputTd.appendChild(input); tr.appendChild(inputTd);
+    const actionTd=document.createElement('td');
+    const btn=document.createElement('button'); btn.className='btn nav-set-btn'; btn.textContent='SET';
+    const msg=document.createElement('span'); msg.className='nav-msg muted';
+    const submit=async function(){
+      const raw=(input.value||'').trim();
+      if(raw===''){ ST.nav[stateKey]=''; msg.textContent=''; msg.className='nav-msg muted'; return; }
+      const num=Number(raw);
+      if(Number.isNaN(num)){ msg.textContent='ERR'; msg.className='nav-msg err'; return; }
+      const payload={}; payload[key]=num;
+      ST.nav[stateKey]=raw;
+      await sendNavUpdate(payload, msg);
+    };
+    btn.onclick=function(){ submit(); };
+    input.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); submit(); }});
+    input.addEventListener('input', function(){ ST.nav[stateKey]=(input.value||'').trim(); });
+    actionTd.appendChild(btn); actionTd.appendChild(msg); tr.appendChild(actionTd);
+    ctrlBody.appendChild(tr);
+  }
+
+  addControlRow('Set course', 'nav-course', coursePreset, 'heading', 'desiredHeading');
+  addControlRow('Set speed', 'nav-speed', speedPreset, 'speed', 'desiredSpeed');
+
+  controlsTable.appendChild(ctrlBody); controlsWrap.appendChild(controlsTable); p.appendChild(controlsWrap);
 
   // Hermes controls moved from SYS: Close In / Stand Off
   const hrow=document.createElement('div'); hrow.className='row section';
@@ -166,7 +212,87 @@ function computeTTI(contact){
 }
 
 function renderWPN(j){
-  const p=$('#station-panel'); p.innerHTML=''; const h=document.createElement('h2'); h.textContent='WEAPONS'; p.appendChild(h);
+  const p=$('#station-panel'); p.innerHTML='';
+  const h=document.createElement('h2'); h.textContent='FIRE CONTROL RADAR CONSOLE:'; p.appendChild(h);
+
+  if(!ST.wpn) ST.wpn = { lockInput: '' };
+
+  const contacts = Array.isArray(j.contacts)? j.contacts.slice(): [];
+  const lockedId = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id): null;
+  const primary = contacts.find(c=>Number(c.id)===lockedId) || null;
+
+  const primaryBox=document.createElement('div'); primaryBox.className='wpn-primary';
+  const primaryTitle=document.createElement('div'); primaryTitle.className='wpn-primary-title'; primaryTitle.textContent='Primary Target'; primaryBox.appendChild(primaryTitle);
+
+  const infoTable=document.createElement('table'); infoTable.className='wpn-primary-table';
+  const headRow=document.createElement('tr');
+  ['#ID','Type','Name','Range','Speed','TTI'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; headRow.appendChild(th); });
+  infoTable.appendChild(headRow);
+  const dataRow=document.createElement('tr');
+  const idCell=document.createElement('td'); idCell.textContent=primary? String(primary.id).padStart(2,'0') : '—'; dataRow.appendChild(idCell);
+  const typeCell=document.createElement('td'); typeCell.textContent=primary? String(primary.type || primary.class || '—') : '—'; dataRow.appendChild(typeCell);
+  const nameCell=document.createElement('td'); nameCell.textContent=primary? String(primary.name||'—') : '—'; dataRow.appendChild(nameCell);
+  const rangeCell=document.createElement('td'); rangeCell.className='num'; rangeCell.textContent=primary && primary.range_nm!=null? `${fmt(primary.range_nm,1)} nm`:'—'; dataRow.appendChild(rangeCell);
+  const speedCell=document.createElement('td'); speedCell.className='num'; speedCell.textContent=primary && primary.speed!=null? `${fmt(primary.speed,0)} kn`:'—'; dataRow.appendChild(speedCell);
+  const ttiCell=document.createElement('td'); ttiCell.className='num';
+  try{
+    const tti = primary? computeTTI(primary):null;
+    ttiCell.textContent = (tti!==null)? `${tti}s`:'—';
+  }catch(_){ ttiCell.textContent='—'; }
+  dataRow.appendChild(ttiCell);
+  infoTable.appendChild(dataRow);
+  primaryBox.appendChild(infoTable);
+
+  const controls=document.createElement('div'); controls.className='wpn-lock-controls';
+  const label=document.createElement('span'); label.textContent='PRIMARY TARGET ID'; controls.appendChild(label);
+  const input=document.createElement('input'); input.type='text'; input.className='input mono wpn-lock-input'; input.placeholder='— —';
+  const preset = ST.wpn.lockInput || (primary? String(primary.id).padStart(2,'0') : '');
+  if(preset) input.value=preset;
+  input.addEventListener('input', function(){ ST.wpn.lockInput = (input.value||'').trim(); });
+  controls.appendChild(input);
+
+  const lockBtn=document.createElement('button'); lockBtn.className='btn nav-set-btn wpn-lock-btn'; lockBtn.textContent='LOCK';
+  const unlockBtn=document.createElement('button'); unlockBtn.className='btn wpn-unlock-btn'; unlockBtn.textContent='UNLOCK';
+  const msg=document.createElement('span'); msg.className='wpn-msg muted';
+
+  const doLock=async function(idStr){
+    const sanitized=(idStr||'').trim();
+    if(!sanitized){ msg.textContent=''; msg.className='wpn-msg muted'; return; }
+    ST.wpn.lockInput = sanitized;
+    try{
+      const res=await fetch('/api/command?cmd='+encodeURIComponent('/radar lock '+sanitized));
+      let ok=false;
+      try{
+        const payload=await res.json();
+        ok = !!(payload && payload.ok !== false);
+      }catch(_){ ok = res.ok; }
+      if(ok){ msg.textContent='LOCKED'; msg.className='wpn-msg ok'; await poll().catch(()=>{}); }
+      else{ msg.textContent='ERR'; msg.className='wpn-msg err'; }
+    }catch(_){ msg.textContent='ERR'; msg.className='wpn-msg err'; }
+  };
+
+  lockBtn.onclick=async function(){ await doLock(input.value); };
+  input.addEventListener('keydown', function(ev){ if(ev.key==='Enter'){ ev.preventDefault(); doLock(input.value); } });
+
+  unlockBtn.onclick=async function(){
+    try{
+      const res = await fetch('/api/command?cmd='+encodeURIComponent('/radar unlock'));
+      let ok=false;
+      try{
+        const payload=await res.json();
+        ok = !!(payload && payload.ok !== false);
+      }catch(_){ ok = res.ok; }
+      if(ok){ msg.textContent='UNLOCKED'; msg.className='wpn-msg ok'; ST.wpn.lockInput=''; input.value=''; await poll().catch(()=>{}); }
+      else{ msg.textContent='ERR'; msg.className='wpn-msg err'; }
+    }catch(_){ msg.textContent='ERR'; msg.className='wpn-msg err'; }
+  };
+
+  controls.appendChild(lockBtn);
+  controls.appendChild(unlockBtn);
+  controls.appendChild(msg);
+  primaryBox.appendChild(controls);
+  p.appendChild(primaryBox);
+
   const row=document.createElement('div'); row.className='row section';
   const lab=document.createElement('span'); lab.textContent='Test mode'; lab.style.marginRight='6px';
   const btn=document.createElement('button'); btn.className='btn'; btn.textContent=ST.test?'ON':'OFF'; btn.onclick=function(){ ST.test=!ST.test; btn.textContent=ST.test?'ON':'OFF'; };

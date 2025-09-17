@@ -215,6 +215,7 @@ class Radar:
         self._accum = 0.0
         self._next_id = 1
         self.priority_id: Optional[int] = None
+        self._manual_lock = False
         # Optional CAP effects provider (callable returning dict with keys: active, effects)
         self.cap_effects_provider: Optional[Callable[[], Dict[str, Any]]] = None
         # Catalog
@@ -429,17 +430,86 @@ class Radar:
                 pass
         return c
 
-    def _select_priority(self, own_x: float, own_y: float):
-        if not self.contacts:
+    def set_manual_lock(self, contact_id: Optional[int]) -> None:
+        if contact_id is None:
             self.priority_id = None
+            self._manual_lock = False
             return
-        def weight_for(name: str) -> int:
-            for n, _s, w in HOSTILES:
-                if n == name: return w
-            return 1
-        # Sort by: highest threat first, then nearest, then oldest (lower id)
-        self.contacts.sort(key=lambda c: (-weight_for(c.name), nm_distance(c.x, c.y, own_x, own_y), getattr(c, 'id', 1_000_000)))
-        self.priority_id = self.contacts[0].id
+        try:
+            cid = int(contact_id)
+        except Exception:
+            self.priority_id = None
+            self._manual_lock = False
+            return
+        self.priority_id = cid
+        self._manual_lock = True
+
+    def clear_manual_lock(self) -> None:
+        self.priority_id = None
+        self._manual_lock = False
+
+    def seed_test_contacts(self, own_x: float, own_y: float, count: int = 10) -> None:
+        """Pre-fill the contact list with a friendly/hostile mix for test runs."""
+        try:
+            target = int(count)
+        except Exception:
+            target = 0
+        if target <= 0:
+            return
+
+        max_contacts = int(self.cfg.get("max_contacts", 10) or 10)
+        target = min(target, max_contacts)
+        if len(self.contacts) >= target:
+            return
+
+        span = self.cfg.get("no_spawn_nm", [15.0, 20.0])
+        try:
+            base_min = float(span[0]) if isinstance(span, list) and span else 15.0
+        except Exception:
+            base_min = 15.0
+        try:
+            base_max = float(self.cfg.get("offboard_max_nm", 40.0))
+        except Exception:
+            base_max = 40.0
+        if base_min >= base_max:
+            base_min = max(1.0, min(base_min, base_max - 1.0))
+
+        remaining = target - len(self.contacts)
+        hostiles = max(1, (remaining + 1) // 2)
+        friendlies = max(1 if remaining > 1 else 0, remaining - hostiles)
+        mix = (["Hostile"] * hostiles) + (["Friendly"] * friendlies)
+        self.rng.shuffle(mix)
+
+        for allegiance in mix:
+            if len(self.contacts) >= target or len(self.contacts) >= max_contacts:
+                break
+            rng_nm = self.rng.uniform(base_min, base_max)
+            bearing = self.rng.uniform(0.0, 360.0)
+            self.force_spawn(own_x, own_y, allegiance, bearing, rng_nm)
+
+    def _select_priority(self, own_x: float, own_y: float):
+        if self._manual_lock:
+            try:
+                pid = int(self.priority_id) if self.priority_id is not None else None
+            except Exception:
+                pid = None
+            if pid is not None:
+                existing = next((c for c in self.contacts if int(getattr(c, 'id', -1)) == pid), None)
+                if existing is not None:
+                    return
+            self._manual_lock = False
+            self.priority_id = None
+
+        if self.priority_id is not None:
+            try:
+                pid = int(self.priority_id)
+            except Exception:
+                pid = None
+            if pid is not None:
+                existing = next((c for c in self.contacts if int(getattr(c, 'id', -1)) == pid), None)
+                if existing is not None:
+                    return
+        self.priority_id = None
 
     def _check_close_alarm(self, own_x: float, own_y: float):
         if self.priority_id is None or not self.rec:
