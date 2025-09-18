@@ -38,13 +38,18 @@ class CAPMission:
     def __init__(self, mission_id: int, target_cell: str, cfg: Dict[str, Any], *, now: float, distance_nm: float,
                  onstation_min: Optional[float] = None, station_radius_nm: Optional[float] = None,
                  origin_xy: Optional[Tuple[float, float]] = None,
-                 origin_cell: Optional[str] = None):
+                 origin_cell: Optional[str] = None,
+                 kind: str = "cap",
+                 intercept_speed_kts: Optional[float] = None,
+                 intercept_target_kts: Optional[float] = None,
+                 intercept_deck_cycle_s: Optional[int] = None):
         self.id = mission_id
         self.target_cell = target_cell
         self.distance_nm = float(distance_nm)
         self.status = "queued"
         self.ts: Dict[str, float] = {"created": now}
         self.cfg = cfg
+        self.kind = kind if kind in ("cap", "intercept") else "cap"
         if isinstance(origin_xy, (tuple, list)) and len(origin_xy) == 2:
             self.origin_xy: Optional[Tuple[float, float]] = (float(origin_xy[0]), float(origin_xy[1]))
         else:
@@ -52,8 +57,15 @@ class CAPMission:
         self.origin_cell: Optional[str] = str(origin_cell) if origin_cell else None
 
         # Static params
-        self.deck_cycle_s = int(cfg.get("deck_cycle_per_pair_s", 180))
-        self.onstation_s = int(onstation_min if onstation_min is not None else cfg.get("default_onstation_min", 20)) * 60
+        base_deck = int(cfg.get("deck_cycle_per_pair_s", 180))
+        if self.kind == "intercept":
+            self.deck_cycle_s = int(intercept_deck_cycle_s if intercept_deck_cycle_s is not None else max(15, base_deck // 6))
+        else:
+            self.deck_cycle_s = base_deck
+        if self.kind == "intercept":
+            self.onstation_s = int(onstation_min if onstation_min is not None else cfg.get("intercept_onstation_min", 2)) * 60
+        else:
+            self.onstation_s = int(onstation_min if onstation_min is not None else cfg.get("default_onstation_min", 20)) * 60
         self.bingo_rtb_buffer_s = int(cfg.get("bingo_rtb_buffer_min", 4)) * 60
         self.cruise_speed_kts = float(cfg.get("cruise_speed_kts", 420))
         self.station_radius_nm = float(station_radius_nm if station_radius_nm is not None else cfg.get("station_radius_nm", 5))
@@ -67,7 +79,15 @@ class CAPMission:
         self.last_engagement: Optional[Dict[str, Any]] = None
 
         # Transit times from distance (one way)
-        one_leg_s = int((distance_nm / max(self.cruise_speed_kts, 1.0)) * 3600.0)
+        if self.kind == "intercept":
+            dash_kts = float(intercept_speed_kts if intercept_speed_kts is not None else max(self.cruise_speed_kts, 540.0))
+            tgt_kts = float(intercept_target_kts if intercept_target_kts is not None else 350.0)
+            dash_nmps = max(dash_kts / 3600.0, 0.05)
+            tgt_nmps = max(tgt_kts / 3600.0, 0.0)
+            closure_nmps = max(dash_nmps + tgt_nmps, dash_nmps)
+            one_leg_s = int(max(1.0, distance_nm / closure_nmps))
+        else:
+            one_leg_s = int((distance_nm / max(self.cruise_speed_kts, 1.0)) * 3600.0)
         self.outbound_s = max(1, one_leg_s)
         self.inbound_s = max(1, one_leg_s)
 
@@ -83,6 +103,7 @@ class CAPMission:
             "n": self.id,
             "target_cell": self.target_cell,
             "cur_cell": self.target_cell,
+            "kind": self.kind,
             "status": self.status,
             "distance_nm": self.distance_nm,
             "station_radius_nm": self.station_radius_nm,
@@ -101,6 +122,7 @@ class HermesCAP:
         self.airframe_pool_total = int(self.cfg.get("airframe_pool_total", 8))
         self.ready_pairs_max = int(self.cfg.get("max_ready_pairs", 2))
         self.ready_pairs = self.ready_pairs_max
+        self.cruise_speed_kts = float(self.cfg.get("cruise_speed_kts", 420))
         self.pair_rearm_refuel_s = int(self.cfg.get("pair_rearm_refuel_min", 25)) * 60
         self.scramble_cooldown_s = int(self.cfg.get("scramble_cooldown_min", 10)) * 60
         self.min_launch_interval_s = int(self.cfg.get("min_launch_interval_s", 30))
@@ -108,6 +130,12 @@ class HermesCAP:
         self.missions: List[CAPMission] = []
         self._next_id = 1
         self._event_hook = event_hook
+
+        # Intercept tuning defaults
+        self.intercept_speed_kts = float(self.cfg.get("intercept_speed_kts", 600))
+        self.intercept_target_kts = float(self.cfg.get("intercept_target_kts", 350))
+        base_deck = int(self.cfg.get("deck_cycle_per_pair_s", 180))
+        self.intercept_deck_cycle_s = int(self.cfg.get("intercept_deck_cycle_s", max(15, base_deck // 6)))
 
         # Sidewinder engagement params (can be overridden by cap_config.json)
         wcfg = (self.cfg.get("weapons") or {}).get("aim9", {})
@@ -150,7 +178,8 @@ class HermesCAP:
     def request_cap_to_cell(self, target_cell: str, *, distance_nm: float, now: Optional[float] = None,
                             station_minutes: Optional[float] = None, radius_nm: Optional[float] = None,
                             origin_xy: Optional[Tuple[float, float]] = None,
-                            origin_cell: Optional[str] = None) -> Dict[str, Any]:
+                            origin_cell: Optional[str] = None,
+                            mission_kind: str = "cap") -> Dict[str, Any]:
         t = now or time.time()
         if (t - self.last_scramble) < self.min_launch_interval_s:
             return {"ok": False, "message": "Deck cycle in progress"}
@@ -164,7 +193,11 @@ class HermesCAP:
         m = CAPMission(self._next_id, target_cell, self.cfg, now=t, distance_nm=float(distance_nm),
                        onstation_min=(float(station_minutes) if station_minutes is not None else None),
                        station_radius_nm=(float(radius_nm) if radius_nm is not None else None),
-                       origin_xy=origin_xy, origin_cell=origin_cell)
+                       origin_xy=origin_xy, origin_cell=origin_cell,
+                       kind=mission_kind,
+                       intercept_speed_kts=self.intercept_speed_kts if mission_kind == 'intercept' else None,
+                       intercept_target_kts=self.intercept_target_kts if mission_kind == 'intercept' else None,
+                       intercept_deck_cycle_s=self.intercept_deck_cycle_s if mission_kind == 'intercept' else None)
         self._next_id += 1
         self.missions.append(m)
         self.ready_pairs -= 1

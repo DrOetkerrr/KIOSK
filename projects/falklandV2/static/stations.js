@@ -272,7 +272,7 @@ function renderRADAR(j){
   });
   p.appendChild(primaryBox);
   const tbl=document.createElement('table'); const thead=document.createElement('thead'); const trh=document.createElement('tr');
-  ['#','Status','Type','Name','Range','Speed','TTI','ID','Lock'].forEach(function(k){ const th=document.createElement('th'); th.textContent=k; trh.appendChild(th); });
+  ['#','Status','Type','Name','Grid','Range','Speed','TTI','ID','Lock'].forEach(function(k){ const th=document.createElement('th'); th.textContent=k; trh.appendChild(th); });
   thead.appendChild(trh); tbl.appendChild(thead);
 
   const tb=document.createElement('tbody');
@@ -285,6 +285,7 @@ function renderRADAR(j){
     const tdStatus=document.createElement('td'); tdStatus.appendChild(colorTag(String(c.type||'—')));
     const tdType=document.createElement('td'); tdType.textContent=String(c.class||c.meta_class||c.meta?.cap?.class||'—');
     const tdName=document.createElement('td'); tdName.textContent=String(c.name||'—');
+    const tdCell=document.createElement('td'); tdCell.textContent = c.cell ? String(c.cell) : '—';
     const tdRange=document.createElement('td'); tdRange.className='num'; tdRange.textContent=(c.range_nm!==undefined&&c.range_nm!==null)?`${fmt(c.range_nm,1)} nm`:'—';
     const tdSpeed=document.createElement('td'); tdSpeed.className='num'; tdSpeed.textContent=(c.speed!==undefined&&c.speed!==null)?`${fmt(c.speed,0)} kn`:'—';
     const tti = computeTTI(c);
@@ -295,7 +296,7 @@ function renderRADAR(j){
     if(c.id===undefined||c.id===null){ btn.disabled=true; }
     btn.onclick=function(){ lockContact(c.id); };
     tdLock.appendChild(btn);
-    [tdIdx,tdStatus,tdType,tdName,tdRange,tdSpeed,tdTTI,tdId,tdLock].forEach(function(td){ tr.appendChild(td); });
+    [tdIdx,tdStatus,tdType,tdName,tdCell,tdRange,tdSpeed,tdTTI,tdId,tdLock].forEach(function(td){ tr.appendChild(td); });
     tb.appendChild(tr);
   });
   // Pad to ten rows for layout consistency
@@ -344,12 +345,13 @@ function renderWPN(j){
 
   const infoTable=document.createElement('table'); infoTable.className='wpn-primary-table';
   const headRow=document.createElement('tr');
-  ['#ID','Type','Name','Range','Speed','TTI'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; headRow.appendChild(th); });
+  ['#ID','Type','Name','Cell','Range','Speed','TTI'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; headRow.appendChild(th); });
   infoTable.appendChild(headRow);
   const dataRow=document.createElement('tr');
   const idCell=document.createElement('td'); idCell.textContent=primaryContact? String(primaryContact.id).padStart(2,'0') : '—'; dataRow.appendChild(idCell);
   const typeCell=document.createElement('td'); typeCell.textContent=primaryContact? String(primaryContact.type || primaryContact.class || '—') : '—'; dataRow.appendChild(typeCell);
   const nameCell=document.createElement('td'); nameCell.textContent=primaryContact? String(primaryContact.name||'—') : '—'; dataRow.appendChild(nameCell);
+  const cellCell=document.createElement('td'); cellCell.textContent=primaryContact && primaryContact.cell ? String(primaryContact.cell) : '—'; dataRow.appendChild(cellCell);
   const rangeCell=document.createElement('td'); rangeCell.className='num'; rangeCell.textContent=primaryContact && primaryContact.range_nm!=null? `${fmt(primaryContact.range_nm,1)} nm`:'—'; dataRow.appendChild(rangeCell);
   const speedCell=document.createElement('td'); speedCell.className='num'; speedCell.textContent=primaryContact && primaryContact.speed!=null? `${fmt(primaryContact.speed,0)} kn`:'—'; dataRow.appendChild(speedCell);
   const ttiCell=document.createElement('td'); ttiCell.className='num';
@@ -418,7 +420,7 @@ function renderWPN(j){
   if(rawShots.length){
     const shotsTable=document.createElement('table'); shotsTable.className='wpn-flight-table';
     const head=document.createElement('thead'); const hr=document.createElement('tr');
-    ['Weapon','Target','ETA','Pk','Result','Range'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; hr.appendChild(th); });
+    ['Weapon','Target','Grid','ETA','Pk','Result','Range'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; hr.appendChild(th); });
     head.appendChild(hr); shotsTable.appendChild(head);
     const body=document.createElement('tbody');
     const shots = rawShots.slice().sort(function(a,b){ return Number(a.eta_s||0) - Number(b.eta_s||0); });
@@ -427,6 +429,7 @@ function renderWPN(j){
       const weaponCell=document.createElement('td'); weaponCell.textContent=String(shot.weapon||'—'); tr.appendChild(weaponCell);
       const tgtLabel = shot.target ? String(shot.target) : (shot.target_id!=null ? `Target ${shot.target_id}` : '—');
       const tgtCell=document.createElement('td'); tgtCell.textContent=tgtLabel; tr.appendChild(tgtCell);
+      const cellCell=document.createElement('td'); cellCell.textContent = shot.cell ? String(shot.cell) : '—'; tr.appendChild(cellCell);
       const etaCell=document.createElement('td'); etaCell.className='num';
       const eta = Number(shot.eta_s||0);
       const resultRaw = String(shot.result||'').trim().toLowerCase();
@@ -752,7 +755,7 @@ function renderRADIO(j){
     if(sec===undefined || sec===null) return '—';
     const s = Number(sec);
     if(!Number.isFinite(s)) return '—';
-    if(s < 60) return `${Math.round(s)}s`;
+    if(s < 120) return `${Math.round(s)}s`;
     if(s < 3600) return `${Math.round(s/60)} min`;
     return `${Math.round(s/3600)} hr`;
   }

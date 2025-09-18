@@ -4,14 +4,18 @@
     "cruise_speed_kts": 420,
     "min_launch_interval_s": 30,
     "deck_cycle_per_pair_s": 180,
+    "intercept_deck_cycle_s": 30,
     "max_ready_pairs": 2,
     "airframe_pool_total": 8,
     "pair_rearm_refuel_min": 25,
     "scramble_cooldown_min": 2,
     "default_pair_size": 2,
     "default_onstation_min": 20,
+    "intercept_onstation_min": 2,
     "bingo_rtb_buffer_min": 4,
     "station_radius_nm": 5,
+    "intercept_speed_kts": 600,
+    "intercept_target_kts": 340,
     "effects": {
       "spawn_weight_multiplier": {
         "A-4 Skyhawk": 0.6,

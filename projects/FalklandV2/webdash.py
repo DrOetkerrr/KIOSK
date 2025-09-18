@@ -336,7 +336,7 @@ def _radar_summary_ctx(own_x: float, own_y: float) -> Dict[str, Any]:
         return {"contacts": 0, "hostiles": 0, "friendlies": 0}
 
 # ---- Fire resolution scheduler ----
-def _schedule_shot_result(weapon: str, target_id: int, target_name: str, target_class: str, range_nm: float) -> None:
+def _schedule_shot_result(weapon: str, target_id: int, target_name: str, target_class: str, range_nm: float, target_cell: str | None = None) -> None:
     try:
         nm = str(weapon or '')
         # class-based flight time & Pk defaults
@@ -369,7 +369,8 @@ def _schedule_shot_result(weapon: str, target_id: int, target_name: str, target_
             'shot_id': shot_id,
             'target_name': target_name,
             'target_class': target_class,
-            'fired_ts': fired_ts
+            'fired_ts': fired_ts,
+            'target_cell': target_cell
         })
         try:
             with STATE_LOCK:
@@ -388,7 +389,8 @@ def _schedule_shot_result(weapon: str, target_id: int, target_name: str, target_
                     'due_ts': due_ts,
                     'result': None,
                     'result_ts': 0.0,
-                    'cleanup_ts': 0.0
+                    'cleanup_ts': 0.0,
+                    'target_cell': target_cell
                 }
                 AUDIO_STATE['shots_in_flight'] = list(shots) + [entry]
         except Exception:

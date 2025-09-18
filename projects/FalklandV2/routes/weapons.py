@@ -264,8 +264,9 @@ def weapons_fire():
             rng = float(primary.get('range_nm', 0.0))
             tname = str(primary.get('name', 'Target'))
             tclass = L['TARGET_CLASS_BY_NAME'].get(tname) or 'Ship'
+            tcell = primary.get('cell')
             from ..webdash import _schedule_shot_result  # late import
-            _schedule_shot_result(name, tid, tname, tclass, rng)
+            _schedule_shot_result(name, tid, tname, tclass, rng, tcell)
         except Exception:
             pass
         # Apply cooldown

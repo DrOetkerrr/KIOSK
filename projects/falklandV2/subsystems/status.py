@@ -295,6 +295,7 @@ def build() -> Dict[str, Any]:
                     shot_id = str(item.get('id') or '')
                     weapon = str(item.get('weapon') or '')
                     target_label = str(item.get('target_name') or item.get('target') or '')
+                    target_cell = str(item.get('target_cell') or item.get('cell') or '')
                     target_id = item.get('target_id')
                     target_class = str(item.get('target_class') or '')
                     try:
@@ -340,6 +341,7 @@ def build() -> Dict[str, Any]:
                         'target': target_label,
                         'target_id': target_id,
                         'target_class': target_class,
+                        'cell': target_cell,
                         'range_nm': round(range_nm, 1),
                         'eta_s': eta,
                         'elapsed_s': elapsed,
@@ -366,6 +368,7 @@ def build() -> Dict[str, Any]:
                         continue
                     weapon = str(ev.get('weapon') or '')
                     target_label = str(ev.get('target_name') or ev.get('target') or '')
+                    target_cell = str(ev.get('target_cell') or ev.get('cell') or '')
                     target_id = ev.get('target_id')
                     target_class = str(ev.get('target_class') or '')
                     try:
@@ -392,6 +395,7 @@ def build() -> Dict[str, Any]:
                         'target': target_label,
                         'target_id': target_id,
                         'target_class': target_class,
+                        'cell': target_cell,
                         'range_nm': round(range_nm, 1),
                         'eta_s': eta,
                         'elapsed_s': elapsed,

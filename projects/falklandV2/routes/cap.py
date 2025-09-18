@@ -235,7 +235,9 @@ def cap_request():
                                   'timestamps': getattr(m,'ts',{}), 'outbound_s': getattr(m,'outbound_s',600)}
                         cx, cy = _mission_pos(snap_m)
                         dist_nm = ((tx - cx)**2 + (ty - cy)**2) ** 0.5
-                        spd = float(getattr(L['CAP'], 'cruise_speed_kts', 420.0) or 420.0)
+                        base_spd = float(getattr(L['CAP'], 'cruise_speed_kts', 420.0) or 420.0)
+                        dash_spd = float(getattr(L['CAP'], 'intercept_speed_kts', base_spd))
+                        spd = dash_spd if getattr(m, 'kind', 'cap') == 'intercept' else base_spd
                         eta_s = int(max(1.0, (dist_nm / max(1.0, spd)) * 3600.0))
                         setattr(m, 'target_cell', cell)
                         try:
@@ -267,7 +269,7 @@ def cap_request():
             return jsonify(payload)
 
         # Fallback: launch a fresh pair
-        res = L['CAP'].request_cap_to_cell(cell, distance_nm=float(rng_nm), origin_xy=(hx, hy), origin_cell=hermes_cell)
+        res = L['CAP'].request_cap_to_cell(cell, distance_nm=float(rng_nm), origin_xy=(hx, hy), origin_cell=hermes_cell, mission_kind='intercept')
         status = 200 if res.get("ok") else 400
         payload = {"ok": bool(res.get("ok")), "message": res.get("message"), "mission": res.get("mission")}
         if res.get('ok'):
