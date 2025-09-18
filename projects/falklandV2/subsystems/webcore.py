@@ -724,9 +724,12 @@ def _crew_voice(role: str) -> str:
     """
     try:
         from .. import webdash as wd  # type: ignore
-        r = (wd.CREW.get('roles') or {}).get(role)
+        crew = wd.CREW
+        r = (crew.get('roles') or {}).get(role)
         v = (r or {}).get('voice')
-        raw = (str(v) if v else os.environ.get('OPENAI_TTS_VOICE', 'alloy'))
+        defaults = crew.get('defaults') or {}
+        default_voice = defaults.get('voice')
+        raw = str(v or default_voice or os.environ.get('OPENAI_TTS_VOICE', 'alloy'))
         s = (raw or '').strip()
         if ':' in s:
             # Keep exact case for model id; only provider name is case-insensitive

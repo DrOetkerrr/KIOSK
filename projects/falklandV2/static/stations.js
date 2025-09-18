@@ -9,8 +9,67 @@ let ST = {
   nav: { desiredHeading: '', desiredSpeed: '' },
   wpn: { lockInput: '' },
   events: [],
-  eventKeys: { launch: null, result: null, cap: null }
+  eventKeys: { launch: null, result: null, cap: null },
+  muteRoles: {}
 };
+
+const STATION_ROLE_MAP = {
+  NAV: ['Navigation'],
+  RADAR: ['Radar'],
+  WPN: ['Weapons', 'Fire Control'],
+  RADIO: ['Pilot'],
+  ENG: ['Engineering'],
+  SYS: ['Ensign']
+};
+
+try {
+  const savedMute = localStorage.getItem('muteRoles');
+  if (savedMute) {
+    ST.muteRoles = JSON.parse(savedMute) || {};
+  }
+} catch (_) {
+  ST.muteRoles = {};
+}
+if (!ST.muteRoles || typeof ST.muteRoles !== 'object') ST.muteRoles = {};
+window.__stationMute = ST.muteRoles;
+
+function _isRoleMuted(role){
+  try { return !!(ST.muteRoles || {})[role]; } catch(_) { return false; }
+}
+
+function _setRoleMuted(role, muted){
+  if (!ST.muteRoles || typeof ST.muteRoles !== 'object') ST.muteRoles = {};
+  if (muted) ST.muteRoles[role] = true;
+  else delete ST.muteRoles[role];
+  try { localStorage.setItem('muteRoles', JSON.stringify(ST.muteRoles)); } catch(_){ }
+  window.__stationMute = ST.muteRoles;
+}
+
+function createStationControls(stationKey){
+  const roles = STATION_ROLE_MAP[stationKey] || [];
+  if (!roles.length) return null;
+  const bar=document.createElement('div'); bar.className='station-controls';
+  const btn=document.createElement('button'); btn.className='btn mute-btn';
+  function update(){
+    const muted = roles.every(_isRoleMuted);
+    btn.textContent = muted ? 'RADIO OFF' : 'RADIO ON';
+    btn.classList.toggle('muted', muted);
+    btn.title = muted ? 'Enable radio for this station' : 'Silence radio for this station';
+  }
+  btn.onclick=function(){
+    const muted = roles.every(_isRoleMuted);
+    roles.forEach(function(role){ _setRoleMuted(role, !muted); });
+    update();
+  };
+  update();
+  bar.appendChild(btn);
+  return bar;
+}
+
+function addStationControls(p, key){
+  const ctrl = createStationControls(key);
+  if (ctrl) p.appendChild(ctrl);
+}
 
 function setActive(id){ ST.active=id; $$('.toolbar .btn').forEach(b=> b.classList.toggle('active', b.dataset.st===id)); render(window._status||{}); }
 
@@ -137,6 +196,7 @@ function renderNAV(j){
     if(aid==='nav-speed' || aid==='nav-course') return;
   }catch(_){ }
   const p=$('#station-panel'); p.innerHTML='';
+  addStationControls(p,'NAV');
 
   let fleet = Array.isArray(j.ownfleet)? j.ownfleet.slice() : [];
   if(!fleet.length){
@@ -258,8 +318,9 @@ function engSystemStatus(j, systemId){
   }catch(_){ return 'OK'; }
 }
 
-function renderStationOffline(p, label){
+function renderStationOffline(p, label, stationKey){
   p.innerHTML='';
+  addStationControls(p, stationKey || 'SYS');
   const pane=document.createElement('div'); pane.className='station-offline'; pane.textContent=label || 'SYSTEM OFFLINE';
   p.appendChild(pane);
   return true;
@@ -267,9 +328,10 @@ function renderStationOffline(p, label){
 
 function renderRADAR(j){
   const p=$('#station-panel'); p.innerHTML='';
+  addStationControls(p,'RADAR');
   const radarStatus = engSystemStatus(j,'Radar');
   if(radarStatus && radarStatus.toLowerCase()!=='ok'){
-    renderStationOffline(p,'SYSTEM OFFLINE');
+    renderStationOffline(p,'SYSTEM OFFLINE','RADAR');
     return;
   }
   const lockedId = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id): null;
@@ -354,9 +416,10 @@ function computeTTI(contact){
 
 function renderWPN(j){
   const p=$('#station-panel'); p.innerHTML='';
+  addStationControls(p,'WPN');
   const weaponsStatus = engSystemStatus(j,'FireControl_Weapons');
   if(weaponsStatus && weaponsStatus.toLowerCase()!=='ok'){
-    renderStationOffline(p,'SYSTEM OFFLINE');
+    renderStationOffline(p,'SYSTEM OFFLINE','WPN');
     return;
   }
   if(!ST.wpn) ST.wpn = { lockInput: '' };
@@ -647,9 +710,10 @@ function renderWPN(j){
 
 function renderRADIO(j){
   const p=$('#station-panel'); p.innerHTML='';
+  addStationControls(p,'RADIO');
   const commsStatus = engSystemStatus(j,'COMMS');
   if(commsStatus && commsStatus.toLowerCase()!=='ok'){
-    renderStationOffline(p,'SYSTEM OFFLINE');
+    renderStationOffline(p,'SYSTEM OFFLINE','RADIO');
     return;
   }
   const fleet = Array.isArray(j.ownfleet)? j.ownfleet : [];
@@ -778,7 +842,7 @@ function renderRADIO(j){
   const commitHeader=document.createElement('h3'); commitHeader.className='comms-subhead'; commitHeader.textContent='SHAR commit status:'; p.appendChild(commitHeader);
   const commitTable=document.createElement('table'); commitTable.className='comms-commit-table';
   const commitHead=document.createElement('tr');
-  ['Flight','Status','POS','Target','Range','TOT','TOS','VEC'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; commitHead.appendChild(th); });
+  ['Flight','Status','POS','Target','Range','TOT','TOS','VEC','ENGAGE'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; commitHead.appendChild(th); });
   commitTable.appendChild(commitHead);
   const tasks = Array.isArray(cap.tasks)? cap.tasks : (Array.isArray(cap.missions)? cap.missions : []);
   function fmtDuration(sec){
@@ -790,7 +854,7 @@ function renderRADIO(j){
     return `${Math.round(s/3600)} hr`;
   }
   if(!tasks.length){
-    const tr=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=8; td.textContent='No active missions'; tr.appendChild(td); commitTable.appendChild(tr);
+    const tr=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=9; td.textContent='No active missions'; tr.appendChild(td); commitTable.appendChild(tr);
   }else{
     tasks.forEach(function(t){
       const tr=document.createElement('tr');
@@ -817,6 +881,35 @@ function renderRADIO(j){
         }catch(_){ capMsg.textContent='Vector failed'; capMsg.className='comms-msg err'; }
       };
       vecTd.appendChild(vecBtn); tr.appendChild(vecTd);
+      const permTd=document.createElement('td'); permTd.className='num';
+      const missionId = (t.id!=null)? t.id : (t.n!=null? t.n : null);
+      const perm = (t.permission && typeof t.permission==='object')? t.permission : {};
+      if(perm.required){
+        if(perm.authorized){
+          permTd.textContent='CLEARED'; permTd.classList.add('ok');
+        }else{
+          const engageBtn=document.createElement('button'); engageBtn.className='btn'; engageBtn.textContent='ENGAGE';
+          if(missionId==null){ engageBtn.disabled=true; }
+          engageBtn.onclick = async function(){
+            if(missionId==null){ capMsg.textContent='Unknown mission id'; capMsg.className='comms-msg err'; return; }
+            capMsg.textContent='Authorizing…'; capMsg.className='comms-msg muted';
+            try{
+              const res=await fetch('/cap/authorize',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: missionId, authorize: true})});
+              const data=await res.json();
+              if(data && data.ok){
+                capMsg.textContent='Engagement authorized'; capMsg.className='comms-msg ok';
+                await poll().catch(()=>{});
+              }else{
+                capMsg.textContent=(data && data.error)? String(data.error) : 'Authorization failed'; capMsg.className='comms-msg err';
+              }
+            }catch(_){ capMsg.textContent='Authorization failed'; capMsg.className='comms-msg err'; }
+          };
+          permTd.appendChild(engageBtn);
+        }
+      }else{
+        permTd.textContent='—';
+      }
+      tr.appendChild(permTd);
       commitTable.appendChild(tr);
     });
   }
@@ -825,6 +918,7 @@ function renderRADIO(j){
 
 function renderENG(j){
   const p=$('#station-panel'); p.innerHTML='';
+  addStationControls(p,'ENG');
   const eng = j.eng || {};
   const capReady = (j.cap && j.cap.readiness) || {};
   const systems = Array.isArray(eng.systems) ? eng.systems : [];
@@ -936,6 +1030,7 @@ function renderENG(j){
 
 function renderSYS(j){
   const p=$('#station-panel'); p.innerHTML='';
+  addStationControls(p,'SYS');
   if(!ST.sys) ST.sys = {};
   const row=document.createElement('div'); row.className='row section';
   const bScan=document.createElement('button'); bScan.className='btn'; bScan.textContent='Scan'; bScan.onclick=async function(){ await fetch('/api/command?cmd='+encodeURIComponent('/radar scan')); };

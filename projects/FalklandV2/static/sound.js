@@ -32,6 +32,25 @@
   const BASE = "/data/sounds/";
   let unlocked = false;
 
+  function getMuteMap(){
+    try {
+      if (window.__stationMute) return window.__stationMute;
+      const raw = localStorage.getItem('muteRoles');
+      if (raw) return JSON.parse(raw) || {};
+    } catch (_) {}
+    return {};
+  }
+
+  function roleMuted(role){
+    if(!role) return false;
+    try {
+      const map = getMuteMap();
+      return !!map[String(role)];
+    } catch (_) {
+      return false;
+    }
+  }
+
   // ---- Ambient bridge loop (starts on first user gesture) ----
   let bridgeAudio = null;
   function startBridge() {
@@ -156,9 +175,8 @@
         const ts2 = res.ts || 0;
         if (!lastResult || lastResult.ts !== ts2 || lastResult.event !== evt) {
           lastResult = { event: evt, ts: ts2 };
-          if (unlocked) {
-            if (evt === 'hit') playOne(SOUND_MAP.hit);
-            else if (evt === 'miss') playOne(SOUND_MAP.miss);
+          if (unlocked && evt === 'hit') {
+            playOne(SOUND_MAP.hit);
           }
         }
       }
@@ -169,15 +187,13 @@
         const ts3 = rs.ts || 0;
         const durMs = Math.max(200, Math.min(8000, Number(rs.dur||1.2)*1000));
         if (!lastRadio || lastRadio.ts !== ts3) {
-          lastRadio = { ts: ts3 };
-          if (unlocked) {
-            // Always use radio beeps around the transmission for immersion
-            playOne('radio_on.wav');
+          const roleLabel = String(rs.role || '').trim();
+          lastRadio = { ts: ts3, role: roleLabel };
+          if (!roleMuted(roleLabel) && unlocked) {
             if (rs.file) {
               // Play synthesized voice via radio filter for realism
               playRadio(rs.file, {vol: 0.8, fadeOutMs: 250});
             }
-            setTimeout(()=> playOne('radio_off.wav'), durMs);
           }
         }
       }

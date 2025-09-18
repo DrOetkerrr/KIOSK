@@ -6,7 +6,7 @@
     "missile_launch": {"file": "missile_launch.wav", "loop": false, "duration_s": 5},
     "missile_tracking": {"file": "tracking.wav", "loop": false, "duration_s": 3},
     "hit": {"file": "missile hit.wav", "loop": false, "duration_s": 2},
-    "splash": {"file": "miss.wav", "loop": false, "duration_s": 2},
+    "splash": {"file": "splash.wav", "loop": false, "duration_s": 2},
     "chaff": {"file": "chaff.wav", "loop": false, "duration_s": 2},
     "flyby": {"file": "flyby.wav", "loop": false, "duration_s": 2}
   }

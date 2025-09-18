@@ -177,8 +177,9 @@ def build() -> Dict[str, Any]:
     seen: set[tuple] = set()
     for d in (radar_list or []):
         k = _identity_key(d)
-        if (k in seen) and (k[2] == ''):
-            # drop duplicates without disambiguators
+        typ = str(d.get('type') or d.get('class') or '').strip().lower()
+        if (k in seen) and (k[2] == '') and typ != 'hostile':
+            # drop duplicate friendlies unless they have disambiguating metadata
             continue
         seen.add(k)
         dedup.append(d)

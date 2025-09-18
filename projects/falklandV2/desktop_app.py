@@ -640,7 +640,8 @@ class MainWindow(QMainWindow):
                 if evt == 'hit':
                     self._play_sound('hit.wav')
                 elif evt == 'miss':
-                    self._play_sound('miss.wav')
+                    # Own ordnance misses are radio-only; no SFX
+                    pass
         except Exception:
             pass
         try:

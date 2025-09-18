@@ -44,6 +44,9 @@ body{
 .toggle-btn.on{background:#11441e;border-color:#1aa357;color:var(--accent)}
 .toggle-btn.pending{background:#3a2c10;border-color:#a67c1a;color:#ffe16a}
 .panel{padding:10px}
+.station-controls{display:flex;justify-content:flex-end;align-items:center;margin-bottom:8px}
+.btn.mute-btn{min-width:90px;font-size:11px;letter-spacing:1px}
+.btn.mute-btn.muted{background:#3a2c10;border-color:#a67c1a;color:#ffe16a}
 h2{margin:0 0 8px;font-size:15px;color:var(--accent);text-transform:uppercase;letter-spacing:1px}
 table{width:100%;border-collapse:separate;border-spacing:0 6px;color:var(--text)}
 th,td{padding:5px 8px;vertical-align:middle;font-size:12px}
