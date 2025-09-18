@@ -4,52 +4,52 @@
   "systems": [
     {
       "id": "Navigation",
-      "status": "Offline",
-      "timer_s": 120,
+      "status": "OK",
+      "timer_s": 0,
       "team_assigned": false,
-      "last_damaged_ts": 1758186975.0128949
+      "last_damaged_ts": 0.0
     },
     {
       "id": "Radar",
-      "status": "Offline",
-      "timer_s": 120,
+      "status": "OK",
+      "timer_s": 0,
       "team_assigned": false,
-      "last_damaged_ts": 1758186529.217171
+      "last_damaged_ts": 0.0
     },
     {
       "id": "FireControl_Weapons",
-      "status": "Offline",
-      "timer_s": 120,
+      "status": "OK",
+      "timer_s": 0,
       "team_assigned": false,
-      "last_damaged_ts": 1758186529.217171
+      "last_damaged_ts": 0.0
     },
     {
       "id": "COMMS",
-      "status": "Offline",
-      "timer_s": 120,
+      "status": "OK",
+      "timer_s": 0,
       "team_assigned": false,
-      "last_damaged_ts": 1758186529.217171
+      "last_damaged_ts": 0.0
     },
     {
       "id": "Engine_Propulsion",
-      "status": "Offline",
-      "timer_s": 120,
+      "status": "OK",
+      "timer_s": 0,
       "team_assigned": false,
-      "last_damaged_ts": 1758186529.217171
+      "last_damaged_ts": 0.0
     },
     {
       "id": "Rudder_Steering",
-      "status": "Offline",
-      "timer_s": 120,
+      "status": "OK",
+      "timer_s": 0,
       "team_assigned": false,
-      "last_damaged_ts": 1758186529.217171
+      "last_damaged_ts": 0.0
     },
     {
       "id": "Hull",
-      "status": "Offline",
-      "timer_s": 120,
+      "status": "OK",
+      "timer_s": 0,
       "team_assigned": false,
-      "last_damaged_ts": 1758186529.217171
+      "last_damaged_ts": 0.0
     }
   ]
 }

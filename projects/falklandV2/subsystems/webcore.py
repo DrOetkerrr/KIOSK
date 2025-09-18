@@ -1177,12 +1177,13 @@ def engine_thread_run(wd) -> None:
                                         pass
                                     try:
                                         eng = load_eng_sys()
-                                        sys_list = [s for s in eng.get('systems', []) if s.get('status') == 'OK']
+                                        sys_list = [s for s in eng.get('systems', []) if str(s.get('status')) == 'OK']
                                         if sys_list:
                                             s = _rand.choice(sys_list)
-                                            s['status'] = 'Damaged'
-                                            s['timer_s'] = 120
+                                            s['status'] = 'Offline'
+                                            s['timer_s'] = 0
                                             s['last_damaged_ts'] = now
+                                            s['response_deadline_ts'] = now + 120.0
                                             save_eng_sys(eng)
                                             try:
                                                 wd.record_event('eng.system.timer', {'system': s.get('name','System'), 'seconds': s.get('timer_s', 0)})
@@ -1215,30 +1216,45 @@ def engine_thread_run(wd) -> None:
         try:
             eng = load_eng_sys()
             changed = False
-            rules = _load_json(BASE_DIR / 'templates' / 'Validation.json', {})
-            loss_after = int((rules.get('repair_rules') or {}).get('permanent_loss_if_unrepaired_after_s', 120))
+            teams_total = int(eng.get('teams_total', 0) or 0)
             for s in eng.get('systems', []) or []:
                 try:
-                    if bool(s.get('team_assigned')) and int(s.get('timer_s', 0)) > 0:
-                        s['timer_s'] = max(0, int(s.get('timer_s', 0)) - int(dt))
-                        changed = True
-                        if s['timer_s'] == 0:
+                    status = str(s.get('status', 'OK'))
+                    assigned = bool(s.get('team_assigned'))
+                    timer = int(s.get('timer_s', 0) or 0)
+                    resp_deadline = float(s.get('response_deadline_ts', 0.0) or 0.0)
+
+                    if status == 'Offline':
+                        if assigned and timer <= 0:
+                            s['status'] = 'Damaged'
+                            s['timer_s'] = 120
+                            s['last_damaged_ts'] = now
+                            s['response_deadline_ts'] = 0.0
+                            changed = True
+                            status = 'Damaged'
+                            timer = 120
+                        elif not assigned and resp_deadline and now >= resp_deadline:
+                            s['status'] = 'Damaged'
+                            s['response_deadline_ts'] = 0.0
+                            changed = True
+                            status = 'Damaged'
+
+                    if assigned and timer > 0:
+                        new_timer = max(0, timer - int(dt))
+                        if new_timer != timer:
+                            s['timer_s'] = new_timer
+                            changed = True
+                        if new_timer == 0:
                             s['status'] = 'OK'
                             s['last_damaged_ts'] = 0.0
-                    elif str(s.get('status')) == 'Damaged' and not bool(s.get('team_assigned')):
-                        t0 = float(s.get('last_damaged_ts') or now)
-                        if now - t0 >= loss_after:
-                            s['status'] = 'Offline'
-                            s['last_damaged_ts'] = now
-                            # reduce life on permanent loss
-                            hl = _load_health();
-                            if int(hl.get('lives', 1)) > 0:
-                                hl['lives'] = int(hl.get('lives', 1)) - 1; _save_health(hl)
+                            s['response_deadline_ts'] = 0.0
+                            if assigned:
+                                s['team_assigned'] = False
+                                current_free = int(eng.get('teams_free', 0) or 0)
+                                eng['teams_free'] = min(teams_total, current_free + 1)
                             changed = True
-                            try:
-                                wd.record_event('eng.system.offline', {'system': s.get('name','System')})
-                            except Exception:
-                                pass
+                    else:
+                        s['timer_s'] = timer
                 except Exception:
                     continue
             if changed:

@@ -250,8 +250,28 @@ function renderNAV(j){
 
 function colorTag(kind){ const s=document.createElement('span'); s.className='tag '+(kind==='Friendly'?'green': kind==='Hostile'?'red':'grey'); s.textContent=kind||'—'; return s; }
 
+function engSystemStatus(j, systemId){
+  try{
+    const systems = (j && j.eng && Array.isArray(j.eng.systems))? j.eng.systems : [];
+    const rec = systems.find(function(s){ return String(s.id||'')===String(systemId||''); });
+    return rec ? String(rec.status||'OK') : 'OK';
+  }catch(_){ return 'OK'; }
+}
+
+function renderStationOffline(p, label){
+  p.innerHTML='';
+  const pane=document.createElement('div'); pane.className='station-offline'; pane.textContent=label || 'SYSTEM OFFLINE';
+  p.appendChild(pane);
+  return true;
+}
+
 function renderRADAR(j){
   const p=$('#station-panel'); p.innerHTML='';
+  const radarStatus = engSystemStatus(j,'Radar');
+  if(radarStatus && radarStatus.toLowerCase()!=='ok'){
+    renderStationOffline(p,'SYSTEM OFFLINE');
+    return;
+  }
   const lockedId = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id): null;
   const primary = (j.primary && typeof j.primary==='object')? j.primary : null;
   const contacts = Array.isArray(j.contacts)? j.contacts.slice(): [];
@@ -334,6 +354,11 @@ function computeTTI(contact){
 
 function renderWPN(j){
   const p=$('#station-panel'); p.innerHTML='';
+  const weaponsStatus = engSystemStatus(j,'FireControl_Weapons');
+  if(weaponsStatus && weaponsStatus.toLowerCase()!=='ok'){
+    renderStationOffline(p,'SYSTEM OFFLINE');
+    return;
+  }
   if(!ST.wpn) ST.wpn = { lockInput: '' };
 
   const contacts = Array.isArray(j.contacts)? j.contacts.slice(): [];
@@ -622,6 +647,11 @@ function renderWPN(j){
 
 function renderRADIO(j){
   const p=$('#station-panel'); p.innerHTML='';
+  const commsStatus = engSystemStatus(j,'COMMS');
+  if(commsStatus && commsStatus.toLowerCase()!=='ok'){
+    renderStationOffline(p,'SYSTEM OFFLINE');
+    return;
+  }
   const fleet = Array.isArray(j.ownfleet)? j.ownfleet : [];
   const flagship = fleet.find(u=>String(u.name||'').toLowerCase().includes('hermes'))
                   || fleet.find(u=>String(u.id||'')!=='own') || null;
@@ -779,11 +809,113 @@ function renderRADIO(j){
 
 function renderENG(j){
   const p=$('#station-panel'); p.innerHTML='';
-  const systems=['Hull','Engines','Weapons','Fire Control','Navigation']; const sec=document.createElement('div');
-  systems.forEach(function(s){ const r=document.createElement('div'); r.className='row'; const nm=document.createElement('div'); nm.style.minWidth='140px'; nm.textContent=s; const ind=document.createElement('div'); const d=document.createElement('span'); d.className='statdot on'; ind.appendChild(d); r.appendChild(nm); r.appendChild(ind); sec.appendChild(r); });
-  p.appendChild(sec);
-  const lives=Number(((j.state||{}).lives)||0); const maxl=Number(((j.state||{}).max_lives)||0); const pct = maxl>0 ? Math.round(100*lives/maxl) : 100;
-  const info=document.createElement('div'); info.className='row section mono'; const a=document.createElement('span'); a.textContent='Ship State: '+pct+'%'; const b=document.createElement('span'); b.textContent='Repair teams: 0/0'; info.appendChild(a); info.appendChild(b); p.appendChild(info);
+  const eng = j.eng || {};
+  const capReady = (j.cap && j.cap.readiness) || {};
+  const systems = Array.isArray(eng.systems) ? eng.systems : [];
+  const teamsTotal = Number(eng.teams_total ?? 0);
+  const teamsFree = Number(eng.teams_free ?? teamsTotal);
+  const teamsUsed = Math.max(0, teamsTotal - teamsFree);
+  const shipPct = eng.ship_pct != null ? Number(eng.ship_pct) : null;
+
+  const fleet = Array.isArray(j.ownfleet) ? j.ownfleet : [];
+  let flagship = fleet.find(u=>String(u.name||'').toLowerCase().includes('hermes'));
+  if(!flagship && fleet.length) flagship = fleet[0];
+  const flagshipName = flagship ? String(flagship.name||'Flagship') : 'HMS Hermes';
+
+  const wrap=document.createElement('div'); wrap.className='eng-wrap';
+
+  const title=document.createElement('h2'); title.className='eng-title'; title.textContent='Engineering Console'; wrap.appendChild(title);
+
+  const summary=document.createElement('table'); summary.className='eng-summary';
+  const head=document.createElement('tr');
+  ['Flagship','Status','SHAR','Repair team'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; head.appendChild(th); });
+  summary.appendChild(head);
+  const shipClass = shipPct==null ? 'status-ok' : (shipPct < 40 ? 'status-err' : (shipPct < 70 ? 'status-warn' : 'status-ok'));
+  const row=document.createElement('tr');
+  const tdName=document.createElement('td'); tdName.textContent=flagshipName; row.appendChild(tdName);
+  const tdShip=document.createElement('td'); tdShip.textContent = shipPct!=null ? `${shipPct}%` : '—'; tdShip.className=`eng-pill-value ${shipClass}`; row.appendChild(tdShip);
+  const sharTd=document.createElement('td');
+  const sharReady = capReady.available ? 'READY' : 'STANDBY';
+  sharTd.textContent = sharReady;
+  sharTd.className = 'eng-pill-value ' + (capReady.available ? 'status-ok' : 'status-warn');
+  row.appendChild(sharTd);
+  const teamTd=document.createElement('td');
+  teamTd.className='eng-pill-value ' + (teamsFree > 0 ? 'status-ok' : 'status-err');
+  teamTd.textContent = `(${teamsUsed}/${teamsTotal})`;
+  row.appendChild(teamTd);
+  summary.appendChild(row);
+  wrap.appendChild(summary);
+
+  const sub=document.createElement('h3'); sub.className='eng-subtitle'; sub.textContent='ENG Status'; wrap.appendChild(sub);
+
+  function timerLabel(sec){
+    if(sec===undefined || sec===null) return '—';
+    const n = Number(sec);
+    if(!Number.isFinite(n) || n<=0) return '—';
+    if(n < 120) return `${Math.round(n)}s`;
+    return `${Math.round(n/60)} min`;
+  }
+
+  async function toggleTeam(id, assign){
+    try{
+      const res = await fetch(assign?'/eng/assign':'/eng/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+      const payload = await res.json().catch(()=>({}));
+      if(!(payload && payload.ok)){ console.warn('ENG action failed', payload); }
+    }catch(err){ console.error('ENG action error', err); }
+    await poll().catch(()=>{});
+  }
+
+  const table=document.createElement('table'); table.className='eng-table';
+  const thead=document.createElement('tr');
+  ['#','Systems','Status','Timer','Repair'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; thead.appendChild(th); });
+  table.appendChild(thead);
+
+  if(!systems.length){
+    const tr=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=5; td.textContent='No engineering data available'; tr.appendChild(td); table.appendChild(tr);
+  }else{
+    systems.forEach(function(sys){
+      const tr=document.createElement('tr');
+      const idxTd=document.createElement('td'); idxTd.className='index'; idxTd.textContent=String(sys.index||sys.id||''); tr.appendChild(idxTd);
+      const nameTd=document.createElement('td'); nameTd.className='system-name'; nameTd.textContent=String(sys.label||sys.id||'System'); tr.appendChild(nameTd);
+      const statusTd=document.createElement('td');
+      const status = String(sys.status||'OK');
+      const statusKey = status.toLowerCase();
+      let statusClass = 'ok';
+      if(statusKey==='offline') statusClass='offline';
+      else if(statusKey==='damaged') statusClass = sys.team_assigned ? 'repair' : 'damaged';
+      statusTd.className='eng-status '+statusClass;
+      statusTd.textContent=status;
+      tr.appendChild(statusTd);
+      const timerTd=document.createElement('td'); timerTd.className='timer';
+      timerTd.textContent = timerLabel(sys.timer_s);
+      tr.appendChild(timerTd);
+      const actTd=document.createElement('td'); actTd.className='num';
+      const btn=document.createElement('button'); btn.className='btn eng-commit';
+      const assigned = Boolean(sys.team_assigned);
+      btn.textContent = assigned ? 'RELEASE' : 'COMMIT';
+      const canCommit = !assigned && statusKey !== 'ok';
+      const teamsAvailable = teamsFree > 0;
+      if(assigned){
+        btn.disabled = false;
+      }else{
+        btn.disabled = !(canCommit && teamsAvailable);
+      }
+      btn.onclick=function(){ if(!btn.disabled){ toggleTeam(sys.id || sys.label || '', !assigned); } };
+      actTd.appendChild(btn);
+      if(assigned){
+        const badge=document.createElement('span'); badge.className='eng-pill-value status-ok'; badge.textContent='1'; badge.style.marginLeft='8px';
+        actTd.appendChild(badge);
+      }
+      tr.appendChild(actTd);
+      if(statusKey==='offline') tr.classList.add('eng-row-offline');
+      else if(statusKey==='damaged' && !assigned) tr.classList.add('eng-row-damaged');
+      else if(assigned) tr.classList.add('eng-row-repair');
+      table.appendChild(tr);
+    });
+  }
+
+  wrap.appendChild(table);
+  p.appendChild(wrap);
 }
 
 function renderSYS(j){

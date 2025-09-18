@@ -37,6 +37,7 @@ body{
 .btn[disabled]{opacity:.4;cursor:not-allowed}
 .btn.ready{background:#0c471a;border-color:#1aa357;color:var(--accent)}
 .btn.ready:hover{background:#115a22;color:var(--accent)}
+.station-offline{display:flex;align-items:center;justify-content:center;min-height:320px;background:#020402;color:#47ff8a;font-size:22px;text-transform:uppercase;letter-spacing:3px;box-shadow:inset 0 0 25px rgba(0,0,0,0.8)}
 .btn.danger{background:#451414;border-color:#c73d3d;color:#ffbfbf}
 .btn.danger:hover{background:#6a1c1c;color:#ffe3e3}
 .toggle-btn{text-transform:uppercase;min-width:70px;letter-spacing:1px}
@@ -159,6 +160,9 @@ tbody tr.locked-row .btn:hover{background:#7a1c1c;color:#ffe3e3}
 .eng-status.offline{background:#240909;border-color:#a32929;color:#ff9a9a}
 .eng-status.damaged{background:#402a04;border-color:#a97f29;color:#ffe16a}
 .eng-status.repair{background:#0c2f3f;border-color:#1aa3c6;color:#8fe9ff}
+.eng-row-offline td{background:rgba(36,9,9,0.65);}
+.eng-row-damaged td{background:rgba(64,42,4,0.5);}
+.eng-row-repair td{background:rgba(12,47,63,0.45);}
 .eng-row.warn td{box-shadow:inset 0 0 25px rgba(169,127,41,0.35)}
 .eng-row.critical td{box-shadow:inset 0 0 30px rgba(195,69,69,0.4)}
 .eng-table td.timer{text-align:center;font-variant-numeric:tabular-nums}

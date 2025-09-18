@@ -39,9 +39,12 @@ def eng_assign():
                     return jsonify({"ok": True, **st})
                 s['team_assigned'] = True
                 st['teams_free'] = max(0, int(st.get('teams_free', 0)) - 1)
-                # start repair timer if damaged
-                if str(s.get('status')) == 'Damaged' and int(s.get('timer_s', 0)) <= 0:
+                status = str(s.get('status'))
+                if status in ('Offline', 'Damaged') and int(s.get('timer_s', 0)) <= 0:
+                    s['status'] = 'Damaged'
                     s['timer_s'] = 120
+                    s['last_damaged_ts'] = time.time()
+                    s['response_deadline_ts'] = 0.0
                     try:
                         L['record_event']('eng.system.timer', {'system': s.get('name','System'), 'seconds': s.get('timer_s', 0)})
                     except Exception:
@@ -71,7 +74,7 @@ def eng_release():
             if str(s.get('id')) == sys_id:
                 if bool(s.get('team_assigned')):
                     s['team_assigned'] = False
-                    st['teams_free'] = int(st.get('teams_free', 0)) + 1
+                    st['teams_free'] = min(int(st.get('teams_total', 0) or 0), int(st.get('teams_free', 0)) + 1)
                 break
         L['save_eng_sys'](st)
         L['record_flight']({"route": route, "method": "POST", "status": 200, "duration_ms": int((time.time()-t0)*1000), "request": {"id": sys_id}, "response": {"ok": True}})
