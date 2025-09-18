@@ -4,6 +4,7 @@ import os, sys, time, threading, logging, hashlib
 from pathlib import Path
 from typing import Any, Dict
 from datetime import datetime, timezone
+from collections import deque
 
 from flask import Flask, jsonify, send_from_directory  # type: ignore
 
@@ -194,10 +195,51 @@ format_event_text = core.format_event_text
 # Radio queues
 RADIO_QUEUE: list[Dict[str, Any]] = []
 RADIO_STATE: Dict[str, Any] = {"busy_until": 0.0}
+RADIO_HISTORY: deque[Dict[str, Any]] = deque(maxlen=32)
 
 # Event feed for stations console
 EVENT_QUEUE: list[Dict[str, Any]] = []
 EVENT_MAX = 64
+RADIO_SCRIPT_PATH = DATA_DIR / "radio.md"
+
+
+def _load_radio_script() -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    try:
+        if RADIO_SCRIPT_PATH.exists():
+            for raw_line in RADIO_SCRIPT_PATH.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if " – " in line:
+                    event_id, msg = line.split(" – ", 1)
+                elif " - " in line:
+                    event_id, msg = line.split(" - ", 1)
+                else:
+                    continue
+                event_id = event_id.strip()
+                msg = msg.strip().strip(' "\u201c\u201d')
+                if event_id and msg:
+                    mapping[event_id] = msg
+    except Exception:
+        pass
+    return mapping
+
+
+RADIO_EVENTS: Dict[str, str] = _load_radio_script()
+
+
+def _emit_radio_event(event_id: str, ctx: Dict[str, Any]) -> None:
+    tpl = RADIO_EVENTS.get(str(event_id))
+    if not tpl:
+        return
+    safe_ctx = {k: ("—" if v is None else v) for k, v in (ctx or {}).items()}
+    try:
+        text = tpl.format_map(safe_ctx)
+    except Exception:
+        text = tpl
+    if text:
+        record_officer('Bridge', text)
 
 
 def record_event(event_id: str, data: Dict[str, Any] | None = None, *, text: str | None = None) -> None:
@@ -212,6 +254,10 @@ def record_event(event_id: str, data: Dict[str, Any] | None = None, *, text: str
             EVENT_QUEUE.append(payload)
             if len(EVENT_QUEUE) > EVENT_MAX:
                 del EVENT_QUEUE[0:len(EVENT_QUEUE)-EVENT_MAX]
+        try:
+            _emit_radio_event(event_id, payload['data'])
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -341,6 +387,42 @@ def _radar_summary_ctx(own_x: float, own_y: float) -> Dict[str, Any]:
         return {"contacts": 0, "hostiles": 0, "friendlies": 0}
 
 # ---- Fire resolution scheduler ----
+def _pk_from_range(weapon_name: str, weapon_class: str, range_nm: float, wrec: dict | None) -> float:
+    try:
+        mn = float((wrec or {}).get('min_nm', 0.0) or 0.0)
+    except Exception:
+        mn = 0.0
+    try:
+        mx = float((wrec or {}).get('max_nm', mn))
+    except Exception:
+        mx = mn
+    span = max(1e-6, mx - mn) if mx > mn else max(1.0, mx if mx > 0.0 else 1.0)
+    norm = (range_nm - mn) / span if span else 0.0
+    norm = max(0.0, min(1.0, norm))
+
+    cls = (weapon_class or '').title()
+    if cls in ('Sam', 'Missile'):
+        close_pk, far_pk = 0.82, 0.35
+    elif cls in ('Gun',):
+        close_pk, far_pk = 0.58, 0.22
+    elif cls in ('Decoy',):
+        close_pk, far_pk = 0.55, 0.25
+    else:
+        close_pk, far_pk = 0.6, 0.3
+
+    pk = close_pk - (close_pk - far_pk) * norm
+
+    if mn > 0.0 and range_nm < mn:
+        below = max(0.0, mn - range_nm)
+        pk *= max(0.25, 1.0 - (below / span))
+
+    if mx > mn and range_nm > mx:
+        over = min(1.0, (range_nm - mx) / span)
+        pk = max(0.05, far_pk * (1.0 - 0.7 * over))
+
+    return max(0.05, min(0.95, pk))
+
+
 def _schedule_shot_result(weapon: str, target_id: int, target_name: str, target_class: str, range_nm: float, target_cell: str | None = None) -> None:
     try:
         nm = str(weapon or '')
@@ -353,13 +435,11 @@ def _schedule_shot_result(weapon: str, target_id: int, target_name: str, target_
         if cls in ('Missile','SAM'):
             # Mach 3 ≈ 1,000 m/s ≈ 1.94 nm/s. add 3 s boost phase.
             delay = 3.0 + (float(range_nm) / 1.94)
-            pk = 0.75
         elif cls in ('Gun',):
             delay = 2.0 * float(range_nm)
-            pk = 0.5
         else:
             delay = 3.0 * float(range_nm)
-            pk = 0.4
+        pk = _pk_from_range(nm, cls, float(range_nm), wrec)
         fired_ts = time.time()
         target_id_int = int(target_id)
         due_ts = fired_ts + delay
@@ -523,7 +603,13 @@ def record_officer(role: str, text: str) -> None:
     role_str = str(role or "OFFICER"); msg = str(text or ""); low = msg.lower()
     prio = (role_str in ("Fire Control",)) or any(w in low for w in ("priority", "threat", "hit", "miss", "locked", "destroyed"))
     with STATE_LOCK:
-        RADIO_QUEUE.append({"role": role_str, "text": msg, "prio": bool(prio), "enq_ts": time.time()})
+        ts = time.time()
+        entry = {"role": role_str, "text": msg, "prio": bool(prio), "enq_ts": ts}
+        RADIO_QUEUE.append(entry)
+        try:
+            RADIO_HISTORY.append({"ts": ts, "role": role_str, "text": msg})
+        except Exception:
+            pass
 
 
 def officer_say(role: str, key: str, ctx: Dict[str, Any] | None = None, fallback: str | None = None) -> None:

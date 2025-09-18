@@ -778,7 +778,7 @@ function renderRADIO(j){
   const commitHeader=document.createElement('h3'); commitHeader.className='comms-subhead'; commitHeader.textContent='SHAR commit status:'; p.appendChild(commitHeader);
   const commitTable=document.createElement('table'); commitTable.className='comms-commit-table';
   const commitHead=document.createElement('tr');
-  ['Flight','Status','POS','Target','Range','TOT','TOS'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; commitHead.appendChild(th); });
+  ['Flight','Status','POS','Target','Range','TOT','TOS','VEC'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; commitHead.appendChild(th); });
   commitTable.appendChild(commitHead);
   const tasks = Array.isArray(cap.tasks)? cap.tasks : (Array.isArray(cap.missions)? cap.missions : []);
   function fmtDuration(sec){
@@ -790,7 +790,7 @@ function renderRADIO(j){
     return `${Math.round(s/3600)} hr`;
   }
   if(!tasks.length){
-    const tr=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=7; td.textContent='No active missions'; tr.appendChild(td); commitTable.appendChild(tr);
+    const tr=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=8; td.textContent='No active missions'; tr.appendChild(td); commitTable.appendChild(tr);
   }else{
     tasks.forEach(function(t){
       const tr=document.createElement('tr');
@@ -801,6 +801,22 @@ function renderRADIO(j){
       const rngTd=document.createElement('td'); rngTd.className='num'; rngTd.textContent = t.range_nm!=null? `${fmt(t.range_nm,1)} nm`:'—'; tr.appendChild(rngTd);
       const totTd=document.createElement('td'); totTd.className='num'; totTd.textContent=fmtDuration(t.tot_s); tr.appendChild(totTd);
       const tosTd=document.createElement('td'); tosTd.className='num'; tosTd.textContent=fmtDuration(t.tos_s); tr.appendChild(tosTd);
+      const vecTd=document.createElement('td'); vecTd.className='num';
+      const vecBtn=document.createElement('button'); vecBtn.className='btn'; vecBtn.textContent='VECTOR';
+      vecBtn.onclick = async function(){
+        // Vector this mission to the current primary target
+        try{
+          const st = window._status || {};
+          const locked = (st.radar && st.radar.locked_id!=null) ? st.radar.locked_id : (st.top_threat_id||null);
+          if(locked==null){ capMsg.textContent='No locked target.'; capMsg.className='comms-msg err'; return; }
+          capMsg.textContent='Vectoring…'; capMsg.className='comms-msg muted';
+          const res = await fetch('/cap/vector',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: t.n})});
+          const data = await res.json();
+          if(data && data.ok){ capMsg.textContent=data.message||'Vectoring'; capMsg.className='comms-msg ok'; await poll().catch(()=>{}); }
+          else { capMsg.textContent=(data&&data.error)?String(data.error):'Vector failed'; capMsg.className='comms-msg err'; }
+        }catch(_){ capMsg.textContent='Vector failed'; capMsg.className='comms-msg err'; }
+      };
+      vecTd.appendChild(vecBtn); tr.appendChild(vecTd);
       commitTable.appendChild(tr);
     });
   }

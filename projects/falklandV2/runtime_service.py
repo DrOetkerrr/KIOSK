@@ -107,6 +107,10 @@ class GameRuntime:
             return 5055
 
     def _create_engine(self) -> Engine:
+        try:
+            self.core.reset_damage_state()
+        except Exception:
+            pass
         return Engine(state_path=self.state_path)
 
     def _create_cap(self) -> Optional[HermesCAP]:

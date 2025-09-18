@@ -24,12 +24,12 @@ body{
   font:13px/1.3 'GlassTTY','IBM Plex Mono','SFMono-Regular',monospace;
   text-shadow:0 0 5px rgba(71,255,138,0.45);
 }
-.wrap{max-width:840px;margin:0 auto;padding:14px;display:flex;flex-direction:column;gap:10px}
+.wrap{max-width:940px;margin:0 auto;padding:14px;display:flex;flex-direction:column;gap:10px}
 .hud{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--panel);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow)}
 .hud .dot{width:12px;height:12px;border-radius:999px;background:#1d4d1d;box-shadow:0 0 8px rgba(71,255,138,0.35)}
 .hud .dot.ok{background:#47ff8a;box-shadow:0 0 12px rgba(71,255,138,0.7)}
 .hud .meta{display:flex;gap:10px;color:var(--accent);font-size:12px}
-.window{width:800px;height:480px;background:#010301;border:1px solid var(--border);border-radius:8px;box-shadow:0 0 30px rgba(0,0,0,0.6);overflow:hidden;margin:0 auto;padding:10px}
+.window{width:900px;height:620px;background:#010301;border:1px solid var(--border);border-radius:8px;box-shadow:0 0 30px rgba(0,0,0,0.6);overflow:hidden;margin:0 auto;padding:10px}
 .toolbar{display:flex;justify-content:center;gap:8px}
 .btn{padding:6px 12px;border-radius:6px;border:1px solid var(--border);background:#031a08;color:var(--text);cursor:pointer;min-width:78px;font-size:12px;box-shadow:0 0 10px rgba(0,0,0,0.55);transition:background 0.2s ease,color 0.2s ease,box-shadow 0.2s ease}
 .btn:hover{background:#063310;color:var(--accent);box-shadow:0 0 18px rgba(92,255,191,0.35)}

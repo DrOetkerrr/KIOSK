@@ -165,6 +165,24 @@ def build() -> Dict[str, Any]:
                 pass
     except Exception:
         radar_list = []
+    # Invariant guard: consistency suite — de-duplicate contacts per tick by identity unless annotated
+    def _identity_key(d: dict) -> tuple:
+        name = str(d.get('name') or '').strip().lower()
+        typ = str(d.get('type') or d.get('class') or '').strip().lower()
+        # If hull or pennant present, include it to disambiguate
+        hull = str(d.get('hull') or d.get('pennant') or '').strip().lower()
+        return (typ, name, hull)
+
+    dedup: list[dict] = []
+    seen: set[tuple] = set()
+    for d in (radar_list or []):
+        k = _identity_key(d)
+        if (k in seen) and (k[2] == ''):
+            # drop duplicates without disambiguators
+            continue
+        seen.add(k)
+        dedup.append(d)
+    radar_list = dedup
     radar_list.sort(key=lambda d: float(d.get('range_nm', 1e9)))
     threats = [d for d in radar_list if str(d.get('type','')).lower() == 'hostile']
     payload["contacts"] = radar_list
@@ -196,6 +214,15 @@ def build() -> Dict[str, Any]:
         payload['radar'] = rdict
     except Exception:
         payload['radar_scan'] = {'interval_s': interval, 'left_s': left, 'locked_id': locked_id}
+
+    # Invariant guard: consistency suite — explicit HUD state mirroring radar lock
+    try:
+        payload['hud_state'] = {
+            'active_contact_id': locked_id,
+            'radar_locked_id': locked_id,
+        }
+    except Exception:
+        pass
 
     # Weapons
     try:
@@ -283,8 +310,54 @@ def build() -> Dict[str, Any]:
 
     # Audio snapshot
     try:
+        pending_radio: Dict[str, Any] | None = None
         with wd.STATE_LOCK:
             audio_state = dict(wd.AUDIO_STATE)
+            try:
+                busy_until = float(getattr(wd, 'RADIO_STATE', {}).get('busy_until', 0.0))
+            except Exception:
+                busy_until = 0.0
+            if getattr(wd, 'RADIO_QUEUE', None) and now >= busy_until:
+                try:
+                    pending_radio = wd.RADIO_QUEUE.pop(0)
+                except Exception:
+                    pending_radio = None
+                else:
+                    try:
+                        wd.RADIO_STATE['busy_until'] = now + 0.75
+                    except Exception:
+                        pass
+        if pending_radio:
+            role = str(pending_radio.get('role') or 'Bridge')
+            text = str(pending_radio.get('text') or '')
+            if text:
+                try:
+                    wd.record_radio(role, text)
+                except Exception:
+                    pass
+            try:
+                file_path = wd._tts_synthesize(text, role)
+            except Exception:
+                file_path = None
+            words = max(1, len(text.split()))
+            duration_s = max(1.8, min(8.0, 0.45 * words))
+            radio_payload = {
+                'ts': time.time(),
+                'role': role,
+                'text': text,
+                'file': file_path,
+                'dur': duration_s
+            }
+            with wd.STATE_LOCK:
+                try:
+                    wd.AUDIO_STATE['radio'] = dict(radio_payload)
+                except Exception:
+                    pass
+                audio_state['radio'] = dict(radio_payload)
+                try:
+                    wd.RADIO_STATE['busy_until'] = radio_payload['ts'] + duration_s + 0.5
+                except Exception:
+                    pass
         shots_raw = audio_state.get('shots_in_flight')
         shots_out = []
         seen_ids: set[str] = set()
@@ -420,6 +493,24 @@ def build() -> Dict[str, Any]:
             entry.pop('result_ts', None)
         audio_state['shots_in_flight'] = shots_out
         payload['audio'] = audio_state
+        try:
+            with wd.STATE_LOCK:
+                hist_src = list(getattr(wd, 'RADIO_HISTORY', []))
+        except Exception:
+            hist_src = []
+        def _fmt_radio_entry(item: Dict[str, Any]) -> Dict[str, str]:
+            ts_raw = item.get('ts')
+            try:
+                ts_val = float(ts_raw)
+                ts_str = datetime.fromtimestamp(ts_val).strftime('%H:%M:%S')
+            except Exception:
+                ts_str = '--:--:--'
+            return {
+                'ts': ts_str,
+                'role': str(item.get('role') or 'OFF'),
+                'text': str(item.get('text') or ''),
+            }
+        payload['radio'] = [_fmt_radio_entry(it) for it in hist_src[-20:]]
     except Exception:
         payload['audio'] = {
             'last_launch': None,
@@ -427,6 +518,7 @@ def build() -> Dict[str, Any]:
             'radio': None,
             'shots_in_flight': []
         }
+        payload['radio'] = []
 
     # Grid and nav hints for desktop UI
     try:

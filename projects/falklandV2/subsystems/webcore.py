@@ -97,6 +97,30 @@ def _save_health(obj: Dict[str, Any]) -> None:
         pass
 
 
+def reset_health_state() -> None:
+    base = {
+        'max_lives': 4,
+        'lives': 4,
+        'hermes_max_lives': 8,
+        'hermes_lives': 8,
+    }
+    _save_health(base)
+
+
+def reset_eng_state() -> None:
+    base = _eng_defaults_from_validation()
+    try:
+        _save_json(ENG_SYS_PATH, base)
+    except Exception:
+        pass
+
+
+def reset_damage_state() -> None:
+    """Restore ship health + engineering systems to their factory defaults."""
+    reset_health_state()
+    reset_eng_state()
+
+
 # ---- Engineering systems (assign/repair) ----
 def _eng_defaults_from_validation() -> Dict[str, Any]:
     """Seed ENG systems from templates/Validation.json if present."""
@@ -639,6 +663,8 @@ VOICE_EVENTS_DEFAULT: Dict[str, Dict[str, Any]] = {
     "pilot.intercept.launch": {"role": "Pilot", "intent": "Acknowledge Hermes for intercept", "hint": "Hermes, intercept bogey, vector to {cell}."},
     "pilot.fox2": {"role":"Pilot","intent":"Missile fired","hint":"Fox Two!"},
     "pilot.splash": {"role":"Pilot","intent":"Kill confirm","hint":"Splash one bandit."},
+    # Invariant guard: consistency suite — voice event for re-vectoring
+    "pilot.vector": {"role":"Pilot","intent":"Vector to new target","hint":"Vectoring to {cell}."},
     "radar.scan.start": {"role":"Radar","intent":"Acknowledge scanning","hint":"Captain, scanning radar."},
     "radar.scan.complete": {"role":"Radar","intent":"Scan complete","hint":"Captain, radar scan complete: {contacts} contact(s); hostiles {hostiles}; friendlies {friendlies}."},
     "hostile.attack.warn": {"role":"Fire Control","intent":"Inbound threat warning","hint":"Incoming {weapon} at {range_nm} nm."},
@@ -729,10 +755,89 @@ def format_event_text(event_id: str, ctx: Dict[str, Any] | None = None) -> str:
         def __missing__(self, key):  # type: ignore[override]
             return '—'
 
+    # Invariant guard: consistency suite — normalize None values (e.g., TTI) to '—'
+    safe_ctx = {k: ('—' if v is None else v) for k, v in (ctx or {}).items()}
     try:
-        return template.format_map(_Safe(**(ctx or {})))
+        return template.format_map(_Safe(**safe_ctx))
     except Exception:
         return template
+
+
+# Invariant guard: consistency suite — shared resolve helper & envelope check
+def _envelope_ok(weapon: str, target_name: str | None, range_nm: float) -> bool:
+    """Return True if the weapon-target-range combination is inside the envelope.
+    Uses the same compute_in_range() function shared with fire gates.
+    """
+    try:
+        primary = {"name": (target_name or "Target"), "range_nm": float(range_nm)}
+        return bool(compute_in_range(str(weapon), primary))
+    except Exception:
+        return False
+
+
+def _resolve_shot_once(*, weapon: str, target_id: int | None, target_name: str | None,
+                       target_class: str | None, range_nm: float, shot_id: str,
+                       pk: float) -> str:
+    """Resolve a single shot and update AUDIO_STATE (remove from in-flight, append to archive).
+
+    Returns a result label: 'hit', 'miss', or 'no_effect' for out-of-envelope.
+    """
+    now_ts = time.time()
+    # Determine envelope first
+    allowed = _envelope_ok(weapon, target_name, range_nm)
+    # Decide outcome
+    if not allowed:
+        outcome = 'no_effect'
+    else:
+        try:
+            hit = (random.random() < float(pk))
+        except Exception:
+            hit = False
+        outcome = 'hit' if hit else 'miss'
+
+    # Remove from in-flight and append to archive immediately
+    try:
+        shots_state = AUDIO_STATE.get('shots_in_flight')
+        if not isinstance(shots_state, list):
+            shots_state = []
+        new_list = []
+        archive = AUDIO_STATE.get('shots_archive')
+        if not isinstance(archive, list):
+            archive = []
+        fired_ts = now_ts
+        due_ts = now_ts
+        for rec in shots_state:
+            if rec.get('id') == shot_id:
+                try:
+                    fired_ts = float(rec.get('fired_ts', fired_ts) or fired_ts)
+                except Exception:
+                    pass
+                try:
+                    due_ts = float(rec.get('due_ts', due_ts) or due_ts)
+                except Exception:
+                    pass
+                # Skip adding back to in-flight list (remove immediately)
+                continue
+            new_list.append(rec)
+        AUDIO_STATE['shots_in_flight'] = new_list
+        archive.append({
+            'id': shot_id,
+            'weapon': weapon,
+            'target_id': target_id,
+            'target_name': target_name,
+            'target_class': target_class,
+            'range_nm': float(range_nm),
+            'pk': float(pk),
+            'fired_ts': fired_ts,
+            'due_ts': due_ts,
+            'outcome': outcome,
+            'result_ts': now_ts,
+        })
+        AUDIO_STATE['shots_archive'] = archive
+        AUDIO_STATE['last_result'] = {'event': outcome, 'ts': now_ts}
+    except Exception:
+        pass
+    return outcome
 
 
 def _tts_synthesize(text: str, role: str) -> str | None:
@@ -1068,68 +1173,37 @@ def engine_thread_run(wd) -> None:
                 try:
                     kind = str(ev.get('kind') or '')
                     if kind == 'resolve_fire':
-                        # Find target by id and resolve
+                        # Find target by id and resolve with invariant guard
                         tgt_id = int(ev.get('target_id')) if ev.get('target_id') is not None else None
                         rng = float(ev.get('range_nm') or 0.0)
                         weapon = str(ev.get('weapon') or '')
-                        # simple Pk by class
                         pk = float(ev.get('pk') or 0.6)
-                        hit = (_rand.random() < pk)
-                        # Remove target on hit
-                        if hit and tgt_id is not None:
-                            wd.RADAR.contacts = [c for c in wd.RADAR.contacts if int(getattr(c,'id',-1)) != int(tgt_id)]
-                        now_ts = time.time()
-                        ttl = 15.0
+                        shot_id = str(ev.get('shot_id') or '')
+                        target_name = str(ev.get('target_name') or '')
+                        target_class = str(ev.get('target_class') or '')
                         with wd.STATE_LOCK:
-                            shots_state = wd.AUDIO_STATE.get('shots_in_flight')
-                            if not isinstance(shots_state, list):
-                                shots_state = []
-                            shot_id = ev.get('shot_id')
-                            new_list = []
-                            updated = False
-                            for rec in shots_state:
-                                try:
-                                    cleanup_ts = float(rec.get('cleanup_ts') or 0.0)
-                                except Exception:
-                                    cleanup_ts = 0.0
-                                if cleanup_ts and cleanup_ts <= now_ts:
-                                    continue
-                                if rec.get('id') == shot_id:
-                                    rec['result'] = 'hit' if hit else 'miss'
-                                    rec['result_ts'] = now_ts
-                                    rec['cleanup_ts'] = now_ts + ttl
-                                    updated = True
-                                new_list.append(rec)
-                            if not updated:
-                                new_list.append({
-                                    'id': shot_id,
-                                    'weapon': weapon,
-                                    'target_id': tgt_id,
-                                    'target_name': ev.get('target_name'),
-                                    'target_class': ev.get('target_class'),
-                                    'range_nm': rng,
-                                    'pk': pk,
-                                    'fired_ts': float(ev.get('fired_ts', now_ts) or now_ts),
-                                    'due_ts': float(ev.get('due', now_ts) or now_ts),
-                                    'result': 'hit' if hit else 'miss',
-                                    'result_ts': now_ts,
-                                    'cleanup_ts': now_ts + ttl
-                                })
-                            wd.AUDIO_STATE['shots_in_flight'] = new_list
-                            wd.AUDIO_STATE['last_result'] = {'event': ('hit' if hit else 'miss'), 'ts': now_ts}
+                            outcome = _resolve_shot_once(
+                                weapon=weapon,
+                                target_id=tgt_id,
+                                target_name=target_name,
+                                target_class=target_class,
+                                range_nm=rng,
+                                shot_id=shot_id,
+                                pk=pk,
+                            )
+                        # On hit, remove the target from radar contacts
+                        if outcome == 'hit' and tgt_id is not None:
+                            wd.RADAR.contacts = [c for c in wd.RADAR.contacts if int(getattr(c,'id',-1)) != int(tgt_id)]
                         try:
-                            wd.record_event('weapon.result.hit' if hit else 'weapon.result.miss', {
-                                'weapon': weapon,
-                                'target_id': tgt_id,
-                                'range_nm': rng
-                            })
+                            ev_id = 'weapon.result.hit' if outcome == 'hit' else ('weapon.result.miss' if outcome == 'miss' else 'weapon.result.no_effect')
+                            wd.record_event(ev_id, {'weapon': weapon, 'target_id': tgt_id, 'range_nm': rng})
                         except Exception:
                             pass
                         try:
                             record_flight({
                                 'route': '/weapons.resolve', 'method': 'INT', 'status': 200, 'duration_ms': 0,
                                 'request': {'weapon': weapon, 'rng': rng, 'target_id': tgt_id},
-                                'response': {'hit': bool(hit)}
+                                'response': {'hit': bool(outcome == 'hit')}
                             })
                         except Exception:
                             pass

@@ -419,3 +419,138 @@ def cap_launch_to():
                            "duration_ms": int((time.time()-t0)*1000),
                            "request": {}, "response": payload})
         return jsonify(payload), 500
+
+
+@bp.post("/cap/vector")
+def cap_vector():
+    """Retarget a specific airborne mission to the current primary lock target.
+
+    Request JSON: { "mission_id": <int> }
+    // Invariant guard: consistency suite — explicit vector endpoint for COMMS SHAR table
+    """
+    L = _lazy(); t0 = time.time(); route = "/cap/vector"
+    try:
+        if L['CAP'] is None:
+            payload = {"ok": False, "error": "CAP unavailable"}
+            L['record_flight']({"route": route, "method": request.method, "status": 503,
+                               "duration_ms": int((time.time()-t0)*1000),
+                               "request": {}, "response": payload})
+            return jsonify(payload), 503
+        data = request.get_json(silent=True) or {}
+        try:
+            mid = int(data.get('mission_id'))
+        except Exception:
+            mid = 0
+        if mid <= 0:
+            payload = {"ok": False, "error": "missing mission_id"}
+            L['record_flight']({"route": route, "method": request.method, "status": 400,
+                               "duration_ms": int((time.time()-t0)*1000),
+                               "request": data, "response": payload})
+            return jsonify(payload), 400
+
+        # Determine current primary lock target
+        st = L['ENG'].public_state() if hasattr(L['ENG'], "public_state") else {}
+        own_x, own_y = L['radar_xy_from_state'](st)
+        ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
+        try:
+            course_deg = float(ship.get('heading', 0.0) or 0.0)
+        except Exception:
+            course_deg = 0.0
+        convoy = L.get('CONVOY')
+        if convoy is not None:
+            hx, hy, hermes_cell = convoy.escort_world_cell('hermes', own_x, own_y, course_deg)
+        else:
+            hx, hy = own_x, own_y
+            hermes_cell = L['ship_cell_from_state'](st)
+        pid = getattr(L['RADAR'], 'priority_id', None)
+        tgt = next((c for c in L['RADAR'].contacts if int(getattr(c,'id',-1)) == int(pid)), None) if pid is not None else None
+        if tgt is None:
+            payload = {"ok": False, "error": "no locked target"}
+            L['record_flight']({"route": route, "method": request.method, "status": 400,
+                               "duration_ms": int((time.time()-t0)*1000),
+                               "request": data, "response": payload})
+            return jsonify(payload), 400
+        cell = L['world_to_cell'](float(getattr(tgt,'x',0.0)), float(getattr(tgt,'y',0.0)))
+
+        # Find the mission by id
+        mission = next((m for m in getattr(L['CAP'], 'missions', []) if int(getattr(m,'id',-1)) == int(mid)), None)
+        if mission is None:
+            payload = {"ok": False, "error": "mission not found"}
+            L['record_flight']({"route": route, "method": request.method, "status": 404,
+                               "duration_ms": int((time.time()-t0)*1000),
+                               "request": data, "response": payload})
+            return jsonify(payload), 404
+
+        # Estimate mission current position along its existing leg
+        def _mission_pos(m) -> tuple[float,float]:
+            try:
+                ts = getattr(m, 'ts', {}) or {}
+                launch = float(ts.get('launch', time.time()))
+                deck = float(getattr(L['CAP'], 'cfg', {}).get('deck_cycle_per_pair_s', 180))
+                outb = float(getattr(m, 'outbound_s', getattr(m, 'inbound_s', 600)) or 600)
+                prog = max(0.0, min(1.0, (time.time() - (launch + deck)) / max(1.0, outb)))
+                ox, oy = (hx, hy)
+                try:
+                    meta = L['CAP_META'].get(int(getattr(m,'id',0))) or {}
+                    o = meta.get('origin_xy')
+                    if isinstance(o, (list, tuple)) and len(o) == 2:
+                        ox, oy = float(o[0]), float(o[1])
+                except Exception:
+                    pass
+                old_cell = str(getattr(m,'target_cell',''))
+                txo, tyo = L['cell_to_world'](old_cell) if old_cell else (ox, oy)
+                cx = float(ox) + (float(txo) - float(ox)) * prog
+                cy = float(oy) + (float(tyo) - float(oy)) * prog
+                return (cx, cy)
+            except Exception:
+                return (own_x, own_y)
+
+        cx, cy = _mission_pos(mission)
+        tx, ty = float(getattr(tgt,'x',0.0)), float(getattr(tgt,'y',0.0))
+        dist_nm = ((tx - cx)**2 + (ty - cy)**2) ** 0.5
+        base_spd = float(getattr(L['CAP'], 'cruise_speed_kts', 420.0) or 420.0)
+        dash_spd = float(getattr(L['CAP'], 'intercept_speed_kts', base_spd))
+        spd = dash_spd if getattr(mission, 'kind', 'cap') == 'intercept' else base_spd
+        eta_s = int(max(1.0, (dist_nm / max(1.0, spd)) * 3600.0))
+
+        # Retarget in place
+        setattr(mission, 'target_cell', cell)
+        try:
+            mission.ts['eta_onstation'] = time.time() + eta_s  # type: ignore[attr-defined]
+            mission.ts['vector'] = True
+        except Exception:
+            pass
+
+        # Clear any pending ROE prompt for this mission
+        try:
+            meta = L['CAP_META'].get(mid) or {}
+            meta['asked'] = False
+            meta['authorized'] = False
+            meta['last_request_ts'] = 0.0
+            meta['hold_since_ts'] = None
+            L['CAP_META'][mid] = meta
+            L['CAP'].set_permission(mid, False)
+        except Exception:
+            pass
+
+        payload = {"ok": True, "message": f"Vectoring SHAR {mid} to {cell}", "mission": {"id": mid, "target_cell": cell}}
+        try:
+            L['voice_emit']('pilot.vector', {'cell': cell}, fallback='Vectoring to %s.' % (cell,), role='Pilot')
+        except Exception:
+            pass
+        try:
+            L['record_event']('cap.vector', {'mission_id': mid, 'cell': cell})
+        except Exception:
+            pass
+        L['record_flight']({"route": route, "method": request.method, "status": 200,
+                           "duration_ms": int((time.time()-t0)*1000),
+                           "request": {"mission_id": mid, "cell": cell}, "response": payload})
+        return jsonify(payload)
+    except Exception as e:
+        logging.exception("/cap/vector error: %s", e)
+        payload = {"ok": False, "error": str(e)}
+        L = _lazy()
+        L['record_flight']({"route": route, "method": request.method, "status": 500,
+                           "duration_ms": int((time.time()-t0)*1000),
+                           "request": {}, "response": payload})
+        return jsonify(payload), 500

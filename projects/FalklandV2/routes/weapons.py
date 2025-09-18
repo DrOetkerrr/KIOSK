@@ -198,33 +198,17 @@ def weapons_fire():
             primary = None
         if not primary:
             return jsonify({'ok': False, 'error': 'NO_PRIMARY'}), 400
-        range_ok = True
+        # Invariant guard: consistency suite — enforce in_range before any shot is created
         if not L['compute_in_range'](name, primary):
-            range_ok = False
             try:
                 rng = float(primary.get('range_nm', 0.0) or 0.0)
             except Exception:
                 rng = 0.0
-            relax = False
             try:
-                wrec = next((w for w in L['WEAP_CATALOG'] if w.get('name') == name), None)
-                if wrec:
-                    try:
-                        mn = float(wrec.get('min_nm', 0.0) or 0.0)
-                    except Exception:
-                        mn = 0.0
-                    try:
-                        mx = float(wrec.get('max_nm', 0.0) or 0.0)
-                    except Exception:
-                        mx = 0.0
-                    buffer = max(1.5, 0.12 * max(mx, 1.0))
-                    if mn - buffer <= rng <= mx + buffer:
-                        relax = True
+                L['record_event']('weapon.fire.blocked', {'name': name, 'reason': 'OUT_OF_RANGE', 'range_nm': rng})
             except Exception:
-                relax = False
-            if not relax:
-                logging.warning("weapons.fire OUT_OF_RANGE forcing fire name=%s range=%.2f primary=%s", name, rng, primary)
-            primary['range_nm'] = rng
+                pass
+            return jsonify({'ok': False, 'error': 'OUT_OF_RANGE', 'range_nm': rng}), 400
         # consume ammo
         try:
             dec = 50 if name in ("20mm Oerlikon", "20mm GAM-BO1 (twin)") else 1
@@ -233,7 +217,7 @@ def weapons_fire():
         ammo[name] = max(0, int(ammo.get(name, 0)) - int(dec))
         L['save_ammo'](ammo)
         try:
-            L['RADAR'].rec.log('weapons.fire', {'name': name, 'mode': 'real', 'ammo': ammo[name], 'range_ok': range_ok})
+            L['RADAR'].rec.log('weapons.fire', {'name': name, 'mode': 'real', 'ammo': ammo[name], 'range_ok': True})
             L['RADAR'].rec.log('radio.msg', {'kind': 'FIRE', 'text': f'{name} fired'})
         except Exception:
             pass
@@ -277,12 +261,12 @@ def weapons_fire():
                 'mode': 'real',
                 'target': primary.get('name'),
                 'target_id': primary.get('id'),
-                'range_ok': range_ok,
+                'range_ok': True,
                 'range_nm': primary.get('range_nm')
             })
         except Exception:
             pass
-        return jsonify({'ok': True, 'result': 'FIRED', 'name': name, 'ammo': ammo[name], 'range_ok': range_ok})
+        return jsonify({'ok': True, 'result': 'FIRED', 'name': name, 'ammo': ammo[name], 'range_ok': True})
     except Exception as e:
         logging.exception("/weapons/fire error: %s", e)
         return jsonify({'ok': False, 'error': str(e)}), 500

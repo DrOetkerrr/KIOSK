@@ -17,7 +17,7 @@ def _lazy():
         radar_xy_from_state, get_own_xy, contact_to_ui,
         load_ammo, load_arming, WEAP_CATALOG,
         AMMO_PATH, ARMING_PATH, _save_json,
-        AUDIO_STATE, PENDING_EVENTS, RADIO_QUEUE, RADIO_STATE, NAV_STATE,
+        AUDIO_STATE, PENDING_EVENTS, RADIO_QUEUE, RADIO_STATE, RADIO_HISTORY, NAV_STATE,
         SKIRMISH_ACTIVE, DATA_DIR,
     )
     return locals()
@@ -139,7 +139,15 @@ def reset_runtime():
         except Exception:
             pass
         try:
-            L['RADIO_QUEUE'].clear(); L['RADIO_STATE']['busy_until'] = 0.0
+            L['RADIO_QUEUE'].clear()
+        except Exception:
+            pass
+        try:
+            L['RADIO_HISTORY'].clear()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        try:
+            L['RADIO_STATE']['busy_until'] = 0.0
         except Exception:
             pass
         try:

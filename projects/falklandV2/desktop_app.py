@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -44,7 +45,7 @@ class MainWindow(QMainWindow):
         self.base = base.rstrip('/')
         self.setWindowTitle("Falkland V2 — Desktop")
         self.setMinimumSize(800, 480)
-        self.resize(800, 480)
+        self.resize(800, 600)
         # Touch-friendly scaling
         self._touch_scale = 1.0
         try:
@@ -777,6 +778,61 @@ class MainWindow(QMainWindow):
     def _eng_release(self, sysid: str):
         self._post('/eng/release', {'id': sysid}); self._eng_refresh()
 
+
+def _log_setup() -> str:
+    """Create a simple desktop log file and configure logging.
+    // Invariant guard: consistency suite — add robust logging bootstrap for desktop app
+    """
+    try:
+        here = Path(__file__).resolve()
+        repo_root = here.parents[2]
+        log_dir = repo_root / 'logs'
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / 'desktop_app.log'
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s %(levelname)s %(message)s',
+            handlers=[logging.FileHandler(str(path), encoding='utf-8'), logging.StreamHandler(sys.stderr)],
+        )
+        return str(path)
+    except Exception:
+        # Fallback to current directory
+        path = Path.cwd() / 'desktop_app.log'
+        try:
+            logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s', filename=str(path))
+        except Exception:
+            pass
+        return str(path)
+
+
+def _install_excepthook(log_path: str) -> None:
+    """Route uncaught exceptions to the log and stderr.
+    // Invariant guard: consistency suite — desktop exception hook
+    """
+    import traceback
+
+    def _hook(etype, value, tb):
+        try:
+            logging.error("Uncaught exception:")
+            logging.error("%s: %s", etype.__name__ if hasattr(etype, '__name__') else str(etype), value)
+            for line in traceback.format_tb(tb):
+                logging.error(line.rstrip())
+        except Exception:
+            pass
+        try:
+            sys.stderr.write(f"\n[desktop_app] Uncaught exception; see log: {log_path}\n")
+        except Exception:
+            pass
+        # Delegate to default hook too
+        try:
+            sys.__excepthook__(etype, value, tb)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    try:
+        sys.excepthook = _hook
+    except Exception:
+        pass
 
 def main(argv: List[str]) -> int:
     # Robust logging for packaged app
