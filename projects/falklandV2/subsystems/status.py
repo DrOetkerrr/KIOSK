@@ -318,8 +318,18 @@ def build() -> Dict[str, Any]:
             except Exception:
                 busy_until = 0.0
             if getattr(wd, 'RADIO_QUEUE', None) and now >= busy_until:
+                # One message at a time; pick highest priority first
                 try:
-                    pending_radio = wd.RADIO_QUEUE.pop(0)
+                    q = getattr(wd, 'RADIO_QUEUE', [])
+                    idx = 0
+                    for i, item in enumerate(q):
+                        try:
+                            if bool(item.get('prio', False)):
+                                idx = i
+                                break
+                        except Exception:
+                            continue
+                    pending_radio = q.pop(idx) if q else None
                 except Exception:
                     pending_radio = None
                 else:

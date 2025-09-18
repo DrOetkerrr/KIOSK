@@ -718,13 +718,25 @@ EVENT_TEMPLATES: Dict[str, str] = _load_event_templates()
 
 
 def _crew_voice(role: str) -> str:
+    """Return the configured voice for a crew role.
+    Preserve case when provider is explicit (e.g., 'piper:en_GB-alan-medium').
+    // Invariant guard: consistency suite — fix lowercasing that broke Piper model lookups
+    """
     try:
         from .. import webdash as wd  # type: ignore
         r = (wd.CREW.get('roles') or {}).get(role)
         v = (r or {}).get('voice')
-        voice = (str(v) if v else os.environ.get('OPENAI_TTS_VOICE', 'alloy')).strip().lower()
-        if voice == 'ash': voice = 'alloy'
-        return voice
+        raw = (str(v) if v else os.environ.get('OPENAI_TTS_VOICE', 'alloy'))
+        s = (raw or '').strip()
+        if ':' in s:
+            # Keep exact case for model id; only provider name is case-insensitive
+            parts = s.split(':', 1)
+            return f"{parts[0].strip().lower()}:{parts[1].strip()}"
+        # OpenAI-style short names — normalize to lowercase
+        s_low = s.lower()
+        if s_low == 'ash':
+            s_low = 'alloy'
+        return s_low
     except Exception:
         return os.environ.get('OPENAI_TTS_VOICE', 'alloy')
 
@@ -845,12 +857,19 @@ def _tts_synthesize(text: str, role: str) -> str | None:
     if not txt:
         return None
     voice_spec = _crew_voice(role).strip()
-    provider_default = os.environ.get('TTS_PROVIDER', '').strip().lower() or 'openai'
+    provider_env = os.environ.get('TTS_PROVIDER', '').strip().lower()
+    provider_default = provider_env or 'openai'
+    forced_piper = (provider_env == 'piper')
     if ':' in voice_spec:
         provider, voice_id = voice_spec.split(':', 1)
         provider = provider.strip().lower(); voice_id = voice_id.strip()
     else:
         provider, voice_id = provider_default, voice_spec
+    # Force Piper globally if requested, regardless of crew.json
+    if forced_piper and provider != 'piper':
+        provider = 'piper'
+        if not voice_id or voice_id.lower() in ('', 'alloy', 'ash', 'verse', 'openai'):
+            voice_id = os.environ.get('TTS_PIPER_DEFAULT_MODEL', 'en_GB-alan-medium')
     def _hash_name(ext: str) -> tuple[str, Path]:
         h = hashlib.sha1(f"{provider}|{voice_id}|{txt}".encode('utf-8')).hexdigest()[:20]
         fname = f"{h}.{ext}"; return fname, (TTS_DIR / fname)
@@ -874,13 +893,18 @@ def _tts_synthesize(text: str, role: str) -> str | None:
             return None
     if provider == 'piper':  # pragma: no cover
         try:
+            import shutil
             piper_bin = os.environ.get('TTS_PIPER_BIN', 'piper')
+            if not shutil.which(piper_bin):
+                logging.error("Piper forced but binary not found: %s (set TTS_PIPER_BIN)", piper_bin)
+                return None if forced_piper else None
             model_dir = Path(os.environ.get('TTS_PIPER_MODEL_DIR', str(VOICES_DIR)))
             model_path = Path(voice_id)
             if not model_path.exists():
                 model_path = model_dir / (voice_id + ('' if voice_id.endswith('.onnx') else '.onnx'))
             if not model_path.exists():
-                logging.warning("Piper model not found: %s", model_path); return None
+                logging.error("Piper forced but model not found: %s (set TTS_PIPER_MODEL_DIR or TTS_PIPER_DEFAULT_MODEL)", model_path)
+                return None
             fname_wav, wav = _hash_name('wav')
             if not wav.exists():
                 import subprocess
@@ -904,8 +928,12 @@ def _tts_synthesize(text: str, role: str) -> str | None:
                 except Exception:
                     return f"/data/tts/{wav.name}"
         except Exception as e:
-            logging.warning("Piper TTS error: %s", e); return None
+            logging.error("Piper TTS error: %s", e); return None if forced_piper else None
     # Default: OpenAI TTS
+    if forced_piper:
+        # Do not silently fall back when Piper is forced
+        logging.error("TTS_PROVIDER=piper set; skipping OpenAI fallback for role=%s", role)
+        return None
     key = os.environ.get('OPENAI_API_KEY')
     if not key or requests is None:
         return None

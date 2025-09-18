@@ -276,7 +276,8 @@ def cap_request():
             except Exception:
                 pass
             try:
-                L['record_event']('cap.intercept.launch', {
+                # Log explicit vector event for game console + audio cues
+                L['record_event']('cap.vector', {
                     'id': tid,
                     'name': getattr(tgt, 'name', ''),
                     'cell': cell,

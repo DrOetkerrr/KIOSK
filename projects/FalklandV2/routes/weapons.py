@@ -164,20 +164,13 @@ def weapons_fire():
                     L['AUDIO_STATE']['last_launch'] = {'weapon': L['_sound_key_for_weapon'](name), 'ts': time.time()}
             except Exception:
                 pass
-            # Radio cue (Weapons) — best-effort; ensures at least beeps even without TTS
-            try:
-                L['voice_emit']('weapons.launch', {'weapon': name}, fallback=f"{name} away.", role='Weapons')
-            except Exception:
-                try:
-                    L['officer_say']('Weapons', f"{name} fired (test).", {})
-                except Exception:
-                    pass
-            # Apply cooldown
-            _set_cooldown_until(name, now + _cooldown_seconds_by_class(name))
+            # Radio cue handled via event feed; avoid duplicate lines with voice_emit
             try:
                 L['record_event']('weapon.fire', {'name': name, 'mode': 'test'})
             except Exception:
                 pass
+            # Apply cooldown
+            _set_cooldown_until(name, now + _cooldown_seconds_by_class(name))
             return jsonify({'ok': True, 'result': 'TEST', 'name': name, 'ammo': ammo[name]})
 
         # Real fire path
@@ -226,14 +219,7 @@ def weapons_fire():
                 L['AUDIO_STATE']['last_launch'] = {'weapon': L['_sound_key_for_weapon'](name), 'ts': time.time()}
         except Exception:
             pass
-        # Radio cue (Weapons)
-        try:
-            L['voice_emit']('weapons.launch', {'weapon': name}, fallback=f"{name} away.", role='Weapons')
-        except Exception:
-            try:
-                L['officer_say']('Weapons', f"{name} fired.", {})
-            except Exception:
-                pass
+        # Radio cue handled via event feed; avoid duplicate lines with voice_emit
         # Chaff special case
         try:
             if name.lower().find('chaff') >= 0:

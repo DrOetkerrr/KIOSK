@@ -17,7 +17,7 @@
     "Weapons": {
       "name": "Lt. (Wpn) Sarah Blake",
       "callsign": "Weapons",
-      "voice": "verse",
+      "voice": "piper:en_GB-alan-medium",
       "traits": {"tone": "cool", "style": "crisp"},
       "messages": {
         "ready": "Captain, {weapon} ready.",
@@ -51,7 +51,7 @@
     "Engineering": {
       "name": "CPO (Eng) Martin Shaw",
       "callsign": "Engineering",
-      "voice": "alloy",
+      "voice": "piper:en_GB-jenny_dioco-medium",
       "traits": {"tone": "measured", "style": "brief"},
       "messages": {
         "damage": "Captain, hit on {system}. Damage control responding.",
@@ -61,7 +61,7 @@
     "Pilot": {
       "name": "Lt. (Air) Flight Lead",
       "callsign": "Pilot",
-      "voice": "alloy",
+      "voice": "piper:en_GB-alan-medium",
       "traits": {"tone": "crisp", "style": "brevity"},
       "messages": {
         "fox2": "Fox Two!",

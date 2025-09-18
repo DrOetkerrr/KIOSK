@@ -1,13 +1,14 @@
 {
   "teams_total": 4,
-  "teams_free": 4,
+  "teams_free": 3,
   "systems": [
     {
       "id": "Navigation",
       "status": "OK",
       "timer_s": 0,
       "team_assigned": false,
-      "last_damaged_ts": 0.0
+      "last_damaged_ts": 0.0,
+      "response_deadline_ts": 0.0
     },
     {
       "id": "Radar",
@@ -25,10 +26,11 @@
     },
     {
       "id": "COMMS",
-      "status": "OK",
-      "timer_s": 0,
-      "team_assigned": false,
-      "last_damaged_ts": 0.0
+      "status": "Damaged",
+      "timer_s": 46,
+      "team_assigned": true,
+      "last_damaged_ts": 1758227790.5524852,
+      "response_deadline_ts": 0.0
     },
     {
       "id": "Engine_Propulsion",
@@ -49,7 +51,8 @@
       "status": "OK",
       "timer_s": 0,
       "team_assigned": false,
-      "last_damaged_ts": 0.0
+      "last_damaged_ts": 0.0,
+      "response_deadline_ts": 0.0
     }
   ]
 }

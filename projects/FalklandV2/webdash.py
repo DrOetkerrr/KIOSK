@@ -604,6 +604,13 @@ def record_officer(role: str, text: str) -> None:
     prio = (role_str in ("Fire Control",)) or any(w in low for w in ("priority", "threat", "hit", "miss", "locked", "destroyed"))
     with STATE_LOCK:
         ts = time.time()
+        # Deduplicate identical consecutive messages within a short window to prevent double playback
+        try:
+            last = RADIO_QUEUE[-1] if RADIO_QUEUE else None
+            if last and str((last or {}).get('text','')).strip() == msg.strip() and (ts - float((last or {}).get('enq_ts', 0.0))) <= 1.0:
+                return
+        except Exception:
+            pass
         entry = {"role": role_str, "text": msg, "prio": bool(prio), "enq_ts": ts}
         RADIO_QUEUE.append(entry)
         try:
@@ -613,8 +620,29 @@ def record_officer(role: str, text: str) -> None:
 
 
 def officer_say(role: str, key: str, ctx: Dict[str, Any] | None = None, fallback: str | None = None) -> None:
-    tpl = _crew_msg(role, key)
-    text = _fmt_msg(tpl, ctx or {}) if tpl else (fallback or "")
+    """Emit a crew radio line.
+    Prefers game event templates for consistency; falls back to crew.json.
+    // Invariant guard: consistency suite — align crew messages to event/radio base
+    """
+    # Map common role+key pairs to canonical event ids
+    ROLE_KEY_TO_EVENT = {
+        ('Fire Control', 'locked'): 'radar.target.locked',
+        ('Fire Control', 'unlocked'): 'radar.target.unlocked',
+        ('Radar', 'scanning'): 'radar.scan.start',
+        ('Radar', 'scan_report'): 'radar.scan.complete',
+        ('Weapons', 'ready'): 'weapon.arm',
+        ('Weapons', 'status'): None,  # status is dynamic; leave to fallback or caller
+    }
+    ev_id = ROLE_KEY_TO_EVENT.get((str(role), str(key)))
+    text = ''
+    try:
+        if ev_id:
+            text = format_event_text(ev_id, ctx or {})
+    except Exception:
+        text = ''
+    if not text:
+        tpl = _crew_msg(role, key)
+        text = _fmt_msg(tpl, ctx or {}) if tpl else (fallback or "")
     if text:
         record_officer(role, text)
 
