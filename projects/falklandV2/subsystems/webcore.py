@@ -221,7 +221,15 @@ def record_radio(kind: str, text: str) -> None:
 
 
 # ---- Audio and alarms ----
-AUDIO_STATE: Dict[str, Any] = {"last_launch": None, "last_result": None, "radio": None, "alarm": None, "cap_launch": None}
+AUDIO_STATE: Dict[str, Any] = {
+    "last_launch": None,
+    "last_result": None,
+    "radio": None,
+    "alarm": None,
+    "cap_launch": None,
+    "enemy_bomb": None,
+    "shots_in_flight": []
+}
 
 
 def trigger_alarm(sound: str = "red-alert.wav", *, message: str | None = None, role: str | None = None, loop: bool = False) -> None:
@@ -1056,8 +1064,45 @@ def engine_thread_run(wd) -> None:
                         # Remove target on hit
                         if hit and tgt_id is not None:
                             wd.RADAR.contacts = [c for c in wd.RADAR.contacts if int(getattr(c,'id',-1)) != int(tgt_id)]
+                        now_ts = time.time()
+                        ttl = 15.0
                         with wd.STATE_LOCK:
-                            wd.AUDIO_STATE['last_result'] = {'event': ('hit' if hit else 'miss'), 'ts': time.time()}
+                            shots_state = wd.AUDIO_STATE.get('shots_in_flight')
+                            if not isinstance(shots_state, list):
+                                shots_state = []
+                            shot_id = ev.get('shot_id')
+                            new_list = []
+                            updated = False
+                            for rec in shots_state:
+                                try:
+                                    cleanup_ts = float(rec.get('cleanup_ts') or 0.0)
+                                except Exception:
+                                    cleanup_ts = 0.0
+                                if cleanup_ts and cleanup_ts <= now_ts:
+                                    continue
+                                if rec.get('id') == shot_id:
+                                    rec['result'] = 'hit' if hit else 'miss'
+                                    rec['result_ts'] = now_ts
+                                    rec['cleanup_ts'] = now_ts + ttl
+                                    updated = True
+                                new_list.append(rec)
+                            if not updated:
+                                new_list.append({
+                                    'id': shot_id,
+                                    'weapon': weapon,
+                                    'target_id': tgt_id,
+                                    'target_name': ev.get('target_name'),
+                                    'target_class': ev.get('target_class'),
+                                    'range_nm': rng,
+                                    'pk': pk,
+                                    'fired_ts': float(ev.get('fired_ts', now_ts) or now_ts),
+                                    'due_ts': float(ev.get('due', now_ts) or now_ts),
+                                    'result': 'hit' if hit else 'miss',
+                                    'result_ts': now_ts,
+                                    'cleanup_ts': now_ts + ttl
+                                })
+                            wd.AUDIO_STATE['shots_in_flight'] = new_list
+                            wd.AUDIO_STATE['last_result'] = {'event': ('hit' if hit else 'miss'), 'ts': now_ts}
                         try:
                             wd.record_event('weapon.result.hit' if hit else 'weapon.result.miss', {
                                 'weapon': weapon,
@@ -1092,46 +1137,76 @@ def engine_thread_run(wd) -> None:
                         continue
                     dist = ((c.x-ox)**2 + (c.y-oy)**2) ** 0.5
                     if dist <= 1.0:
-                        last = float(att.get(int(getattr(c,'id',-1)), 0.0))
+                        cid = int(getattr(c,'id',-1))
+                        last = float(att.get(cid, 0.0))
                         if now - last >= 15.0:
-                            att[int(getattr(c,'id',-1))] = now
-                            # Damage one life
-                            if int(hlth.get('lives', 1)) > 0:
-                                hlth['lives'] = int(hlth.get('lives', 1)) - 1
-                                _save_health(hlth)
-                                try:
-                                    wd.record_event('enemy.bomb.hit', {
-                                        'contact_id': int(getattr(c, 'id', -1)),
-                                        'name': getattr(c, 'name', ''),
-                                        'range_nm': round(dist, 2)
-                                    })
-                                except Exception:
-                                    pass
-                            else:
-                                try:
-                                    wd.record_event('enemy.bomb.miss', {
-                                        'contact_id': int(getattr(c, 'id', -1)),
-                                        'name': getattr(c, 'name', ''),
-                                        'range_nm': round(dist, 2)
-                                    })
-                                except Exception:
-                                    pass
-                            # mark a system damaged (random)
+                            att[cid] = now
                             try:
-                                eng = load_eng_sys()
-                                sys_list = [s for s in eng.get('systems', []) if s.get('status') == 'OK']
-                                if sys_list:
-                                    s = _rand.choice(sys_list)
-                                    s['status'] = 'Damaged'
-                                    s['timer_s'] = 120
-                                    s['last_damaged_ts'] = now
-                                    save_eng_sys(eng)
+                                meta = getattr(c, 'meta', {}) or {}
+                                weapon_name = str(meta.get('primary_weapon') or getattr(c, 'primary_weapon', '')).lower()
+                                if 'bomb' in weapon_name:
+                                    hit_prob = 0.6
+                                    attempts = 2
+                                elif 'missile' in weapon_name:
+                                    hit_prob = 0.75
+                                    attempts = 1
+                                else:
+                                    hit_prob = 0.5
+                                    attempts = 1
+                            except Exception:
+                                hit_prob = 0.5
+                                attempts = 1
+
+                            results: list[dict[str, Any]] = []
+                            for attempt_idx in range(1, attempts+1):
+                                hit = (_rand.random() < hit_prob)
+                                result_entry = {'attempt': attempt_idx, 'event': 'hit' if hit else 'miss'}
+                                results.append(result_entry)
+                                if hit:
+                                    if int(hlth.get('lives', 1)) > 0:
+                                        hlth['lives'] = int(hlth.get('lives', 1)) - 1
+                                        _save_health(hlth)
                                     try:
-                                        wd.record_event('eng.system.timer', {'system': s.get('name','System'), 'seconds': s.get('timer_s', 0)})
+                                        wd.record_event('enemy.bomb.hit', {
+                                            'contact_id': cid,
+                                            'name': getattr(c, 'name', ''),
+                                            'range_nm': round(dist, 2),
+                                            'attempt': attempt_idx
+                                        })
                                     except Exception:
                                         pass
-                            except Exception:
-                                pass
+                                    try:
+                                        eng = load_eng_sys()
+                                        sys_list = [s for s in eng.get('systems', []) if s.get('status') == 'OK']
+                                        if sys_list:
+                                            s = _rand.choice(sys_list)
+                                            s['status'] = 'Damaged'
+                                            s['timer_s'] = 120
+                                            s['last_damaged_ts'] = now
+                                            save_eng_sys(eng)
+                                            try:
+                                                wd.record_event('eng.system.timer', {'system': s.get('name','System'), 'seconds': s.get('timer_s', 0)})
+                                            except Exception:
+                                                pass
+                                    except Exception:
+                                        pass
+                                else:
+                                    try:
+                                        wd.record_event('enemy.bomb.miss', {
+                                            'contact_id': cid,
+                                            'name': getattr(c, 'name', ''),
+                                            'range_nm': round(dist, 2),
+                                            'attempt': attempt_idx
+                                        })
+                                    except Exception:
+                                        pass
+
+                            if results:
+                                try:
+                                    with wd.STATE_LOCK:
+                                        wd.AUDIO_STATE['enemy_bomb'] = {'ts': time.time(), 'events': results}
+                                except Exception:
+                                    pass
                 except Exception:
                     continue
         except Exception:

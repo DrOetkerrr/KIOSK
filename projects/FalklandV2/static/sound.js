@@ -23,6 +23,8 @@
     weapon_launch: "missile_launch.wav",
     hit: "hit.wav",
     miss: "miss.wav",
+    enemy_bomb_hit: "incoming.wav",
+    enemy_bomb_miss: "miss.wav",
     // alarms
     red_alert: "red-alert.wav",
   };
@@ -74,6 +76,7 @@
   let lastAlarm = null;
   let alarmAudio = null;
   let lastCapLaunch = null;
+  let lastEnemyBomb = null;
 
   // ---- Web Audio context + radio filter helper ----
   let ACtx = null;
@@ -209,6 +212,25 @@
         if (!lastCapLaunch || lastCapLaunch.ts !== ts5) {
           lastCapLaunch = { ts: ts5 };
           if (unlocked) playRadio(cap.file || 'SHAR.wav', {vol: Number(cap.vol || 0.1), fadeOutMs: Number(cap.fade_s || 2.0)*1000});
+        }
+      }
+
+      const enemyBomb = j?.audio?.enemy_bomb;
+      if (enemyBomb) {
+        const ts6 = enemyBomb.ts || 0;
+        const evtList = Array.isArray(enemyBomb.events) ? enemyBomb.events : [{ event: enemyBomb.event || 'miss', attempt: 1 }];
+        if (!lastEnemyBomb || lastEnemyBomb.ts !== ts6) {
+          lastEnemyBomb = { ts: ts6 };
+          if (unlocked) {
+            evtList.forEach((ev, idx) => {
+              const kind = (ev && (ev.event || ev.result) || '').toLowerCase();
+              const delay = idx * 250;
+              setTimeout(() => {
+                if (kind === 'hit') playOne(SOUND_MAP.enemy_bomb_hit || SOUND_MAP.hit);
+                else playOne(SOUND_MAP.enemy_bomb_miss || SOUND_MAP.miss);
+              }, delay);
+            });
+          }
         }
       }
 

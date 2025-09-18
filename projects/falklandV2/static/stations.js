@@ -411,6 +411,62 @@ function renderWPN(j){
   primaryBox.appendChild(controls);
   p.appendChild(primaryBox);
 
+  const audioState = j && j.audio ? j.audio : {};
+  const rawShots = Array.isArray(audioState.shots_in_flight) ? audioState.shots_in_flight : [];
+  const shotsBox=document.createElement('div'); shotsBox.className='wpn-flight';
+  const shotsTitle=document.createElement('div'); shotsTitle.className='wpn-flight-title'; shotsTitle.textContent='Shots In Flight'; shotsBox.appendChild(shotsTitle);
+  if(rawShots.length){
+    const shotsTable=document.createElement('table'); shotsTable.className='wpn-flight-table';
+    const head=document.createElement('thead'); const hr=document.createElement('tr');
+    ['Weapon','Target','ETA','Pk','Result','Range'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; hr.appendChild(th); });
+    head.appendChild(hr); shotsTable.appendChild(head);
+    const body=document.createElement('tbody');
+    const shots = rawShots.slice().sort(function(a,b){ return Number(a.eta_s||0) - Number(b.eta_s||0); });
+    shots.forEach(function(shot){
+      const tr=document.createElement('tr');
+      const weaponCell=document.createElement('td'); weaponCell.textContent=String(shot.weapon||'—'); tr.appendChild(weaponCell);
+      const tgtLabel = shot.target ? String(shot.target) : (shot.target_id!=null ? `Target ${shot.target_id}` : '—');
+      const tgtCell=document.createElement('td'); tgtCell.textContent=tgtLabel; tr.appendChild(tgtCell);
+      const etaCell=document.createElement('td'); etaCell.className='num';
+      const eta = Number(shot.eta_s||0);
+      const resultRaw = String(shot.result||'').trim().toLowerCase();
+      const hasResult = resultRaw==='hit' || resultRaw==='miss';
+      if(hasResult){
+        etaCell.textContent = '—';
+      }else if(eta > 0){
+        etaCell.textContent = `${eta}s`;
+        if(eta <= 10) etaCell.classList.add('eta-soon');
+      }else{
+        etaCell.textContent = 'IMPACT';
+      }
+      tr.appendChild(etaCell);
+      const pkCell=document.createElement('td'); pkCell.className='num';
+      const pkPct = Number(shot.pk_pct||0);
+      pkCell.textContent = `${Math.max(0, Math.min(100, pkPct))}%`;
+      tr.appendChild(pkCell);
+      const resultCell=document.createElement('td');
+      if(hasResult){
+        const upper = resultRaw.toUpperCase();
+        resultCell.textContent = upper;
+        resultCell.className = 'result-cell '+(resultRaw==='hit'?'result-hit':'result-miss');
+      }else{
+        resultCell.textContent = '—';
+        resultCell.className = 'result-cell muted';
+      }
+      tr.appendChild(resultCell);
+      const rangeCell=document.createElement('td'); rangeCell.className='num';
+      const rangeNm = Number(shot.range_nm||0);
+      rangeCell.textContent = Number.isFinite(rangeNm) ? `${rangeNm.toFixed(1)} nm` : '—';
+      tr.appendChild(rangeCell);
+      body.appendChild(tr);
+    });
+    shotsTable.appendChild(body);
+    shotsBox.appendChild(shotsTable);
+  }else{
+    const empty=document.createElement('div'); empty.className='wpn-flight-empty muted'; empty.textContent='No active shots'; shotsBox.appendChild(empty);
+  }
+  p.appendChild(shotsBox);
+
   const row=document.createElement('div'); row.className='row section';
   const lab=document.createElement('span'); lab.textContent='Test mode'; lab.style.marginRight='6px';
   const btn=document.createElement('button'); btn.className='btn'; btn.textContent=ST.test?'ON':'OFF'; btn.onclick=function(){ ST.test=!ST.test; btn.textContent=ST.test?'ON':'OFF'; };
@@ -525,7 +581,25 @@ function renderWPN(j){
       if(payload && payload.error){
         msg.textContent=String(payload.error||'ERR'); msg.className='wpn-msg err';
       }else{
-        msg.textContent='FIRED'; msg.className='wpn-msg ok';
+        const modeLabel = String(payload && payload.result || '').toUpperCase();
+        const rangeOk = !!(payload && (payload.range_ok !== false));
+        if(modeLabel==='TEST'){
+          msg.textContent = 'TEST FIRE';
+        }else{
+          msg.textContent = rangeOk ? 'FIRED' : 'FIRED (OOR)';
+        }
+        msg.className='wpn-msg ok';
+        try{
+          const tgtName = primaryContact && primaryContact.name ? String(primaryContact.name) : '';
+          let label;
+          if(tgtName){
+            label = `${w.name} fired at ${tgtName}`;
+          }else{
+            label = `Weapon fired: ${w.name}`;
+          }
+          if(!rangeOk) label += ' (range exceeded)';
+          pushEvent('weapon.fire', label);
+        }catch(_){ }
       }
       await poll().catch(()=>{});
     };
@@ -568,40 +642,35 @@ function renderRADIO(j){
   });
   table.appendChild(data); p.appendChild(table);
 
-  const actions=document.createElement('div'); actions.className='comms-actions';
   const consoleMsg=document.createElement('div'); consoleMsg.className='comms-msg muted';
-  async function hermesCmd(url){
-    consoleMsg.textContent='...'; consoleMsg.className='comms-msg muted';
-    try{
-      const r=await fetch(url); const res=await r.json();
-      if(res && res.ok){
-        const bearings = [];
-        if(res.bearing!==undefined) bearings.push(`brg ${res.bearing}\u00b0`);
-        if(res.range_nm!==undefined) bearings.push(`${res.range_nm} nm`);
-        if(res.recommend_hdg!==undefined) bearings.push(`rec ${res.recommend_hdg}\u00b0`);
-        if(res.standoff_nm!==undefined) bearings.push(`stand-off ${res.standoff_nm} nm`);
-        consoleMsg.textContent = bearings.length? bearings.join(' • ') : 'OK';
-        consoleMsg.className='comms-msg ok';
-      }else{
-        consoleMsg.textContent = res && res.error ? String(res.error) : 'ERR';
-        consoleMsg.className='comms-msg err';
-      }
-    }catch(e){
-      consoleMsg.textContent='ERR'; consoleMsg.className='comms-msg err';
-    }
-  }
-  const closeBtn=document.createElement('button'); closeBtn.className='btn'; closeBtn.textContent='CLOSE UP';
-  closeBtn.onclick=()=>hermesCmd('/nav/hermes/close_in');
-  const standBtn=document.createElement('button'); standBtn.className='btn'; standBtn.textContent='MOVE AWAY';
-  standBtn.onclick=()=>hermesCmd('/nav/hermes/stand_off');
-  actions.appendChild(closeBtn); actions.appendChild(standBtn); p.appendChild(actions); p.appendChild(consoleMsg);
+  p.appendChild(consoleMsg);
 
   const capHeader=document.createElement('h3'); capHeader.className='comms-subhead'; capHeader.textContent='SHAR menu:'; p.appendChild(capHeader);
   const cap=j.cap || {};
   const sharSummary=document.createElement('div'); sharSummary.className='shar-summary';
-  const readyTag=document.createElement('span'); readyTag.className='shar-ready ' + (cap.ready?'ok':'err'); readyTag.textContent=cap.ready? 'READY':'STANDBY'; sharSummary.appendChild(readyTag);
-  const summaryItems=[`pairs: ${cap.pairs ?? 0}`, `airframes: ${cap.airframes ?? 0}`, `cooldown: ${cap.cooldown_s ? fmt(cap.cooldown_s,0)+'s' : '—'}`, `committed: ${cap.committed ?? 0}`];
-  summaryItems.forEach(function(txt){ const span=document.createElement('span'); span.className='badge'; span.textContent=txt; sharSummary.appendChild(span); });
+  const readyPairs = (cap.readiness && typeof cap.readiness==='object')? cap.readiness.ready_pairs : (cap.pairs ?? cap.ready_pairs);
+  const airframes = (cap.readiness && typeof cap.readiness==='object')? cap.readiness.airframes : (cap.airframes ?? cap.airframe_pool_total);
+  const cooldownRaw = (cap.readiness && typeof cap.readiness==='object')? cap.readiness.cooldown_s : (cap.cooldown_s ?? 0);
+  const readyPairsNum = Number(readyPairs ?? 0);
+  const airframesNum = Number(airframes ?? 0);
+  const hasCooldown = Number(cooldownRaw || 0) > 0;
+  const readyTag=document.createElement('span');
+  readyTag.className='shar-ready ' + ((readyPairsNum > 0 && airframesNum >= 2 && !hasCooldown)?'ok':'err');
+  readyTag.textContent=(readyPairsNum > 0 && airframesNum >= 2 && !hasCooldown)? 'READY':'STANDBY';
+  sharSummary.appendChild(readyTag);
+  const summaryItems=[
+    `pairs: ${readyPairsNum}`,
+    `airframes: ${airframesNum}`,
+    `cooldown: ${hasCooldown ? Math.max(0, Number(cooldownRaw)).toFixed(0)+'s' : '—'}`,
+    `committed: ${cap.committed ?? (cap.tasks? cap.tasks.length : 0)}`
+  ];
+  summaryItems.forEach(function(txt, idx){
+    const span=document.createElement('span'); span.className='badge'; span.textContent=txt;
+    if(idx===0 && readyPairsNum<=0) span.classList.add('warn');
+    if(idx===1 && airframesNum<2) span.classList.add('warn');
+    if(idx===2 && hasCooldown) span.classList.add('warn');
+    sharSummary.appendChild(span);
+  });
   p.appendChild(sharSummary);
 
   const launchTable=document.createElement('table'); launchTable.className='comms-launch-table';
@@ -678,7 +747,7 @@ function renderRADIO(j){
   const commitHead=document.createElement('tr');
   ['Flight','Status','POS','Target','Range','TOT','TOS'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; commitHead.appendChild(th); });
   commitTable.appendChild(commitHead);
-  const tasks = Array.isArray(cap.tasks)? cap.tasks : [];
+  const tasks = Array.isArray(cap.tasks)? cap.tasks : (Array.isArray(cap.missions)? cap.missions : []);
   function fmtDuration(sec){
     if(sec===undefined || sec===null) return '—';
     const s = Number(sec);
@@ -716,11 +785,41 @@ function renderENG(j){
 
 function renderSYS(j){
   const p=$('#station-panel'); p.innerHTML='';
+  if(!ST.sys) ST.sys = {};
   const row=document.createElement('div'); row.className='row section';
   const bScan=document.createElement('button'); bScan.className='btn'; bScan.textContent='Scan'; bScan.onclick=async function(){ await fetch('/api/command?cmd='+encodeURIComponent('/radar scan')); };
   const bAir=document.createElement('button'); bAir.className='btn'; bAir.textContent='Spawn Near Aircraft'; bAir.onclick=async function(){ await fetch('/radar/force_spawn_near?class=Aircraft&range=2.5'); };
   const bShip=document.createElement('button'); bShip.className='btn'; bShip.textContent='Spawn Near Ship'; bShip.onclick=async function(){ await fetch('/radar/force_spawn_near?class=Ship&range=4'); };
   row.appendChild(bScan); row.appendChild(bAir); row.appendChild(bShip); p.appendChild(row);
+
+  const quitRow=document.createElement('div'); quitRow.className='row section';
+  const quitBtn=document.createElement('button'); quitBtn.className='btn danger'; quitBtn.textContent='QUIT GAME';
+  const quitMsg=document.createElement('span'); quitMsg.className='sys-msg muted';
+  quitBtn.onclick=async function(){
+    if(quitBtn.disabled) return;
+    quitBtn.disabled = true;
+    quitMsg.textContent = 'Shutting down…';
+    quitMsg.className = 'sys-msg muted';
+    try{
+      const res = await fetch('/diag/quit',{method:'POST'});
+      let payload = {};
+      try{ payload = await res.json(); }catch(_){ payload = {}; }
+      if(res.ok && (!payload || payload.ok !== false)){
+        quitMsg.textContent = 'Server exiting';
+        quitMsg.className = 'sys-msg ok';
+      }else{
+        const errTxt = payload && payload.error ? String(payload.error) : 'Failed';
+        quitMsg.textContent = errTxt;
+        quitMsg.className = 'sys-msg err';
+      }
+    }catch(e){
+      quitMsg.textContent = 'Connection lost (exit expected)';
+      quitMsg.className = 'sys-msg ok';
+    }
+  };
+  quitRow.appendChild(quitBtn);
+  quitRow.appendChild(quitMsg);
+  p.appendChild(quitRow);
 }
 
 function render(j){

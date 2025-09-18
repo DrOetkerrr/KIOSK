@@ -9,7 +9,7 @@
       "class": "Carrier",
       "type": "carrier",
       "allegiance": "Friendly",
-      "offset_cells": [-2, 3],
+      "offset_cells": [0, -2],
       "speed_lock": "leader",
       "role": ["air_ops", "cap_origin"]
     },
@@ -19,7 +19,7 @@
       "class": "Type 21",
       "type": "frigate",
       "allegiance": "Friendly",
-      "offset_cells": [2, 1],
+      "offset_cells": [2, 0],
       "speed_lock": "leader",
       "role": ["screen"]
     }

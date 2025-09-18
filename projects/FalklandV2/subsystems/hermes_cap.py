@@ -36,12 +36,20 @@ def _interp(x: float, pts: List[Tuple[float, float]]) -> float:
 class CAPMission:
     """State machine: queued -> airborne -> onstation -> rtb -> recovering -> complete."""
     def __init__(self, mission_id: int, target_cell: str, cfg: Dict[str, Any], *, now: float, distance_nm: float,
-                 onstation_min: Optional[float] = None, station_radius_nm: Optional[float] = None):
+                 onstation_min: Optional[float] = None, station_radius_nm: Optional[float] = None,
+                 origin_xy: Optional[Tuple[float, float]] = None,
+                 origin_cell: Optional[str] = None):
         self.id = mission_id
         self.target_cell = target_cell
+        self.distance_nm = float(distance_nm)
         self.status = "queued"
         self.ts: Dict[str, float] = {"created": now}
         self.cfg = cfg
+        if isinstance(origin_xy, (tuple, list)) and len(origin_xy) == 2:
+            self.origin_xy: Optional[Tuple[float, float]] = (float(origin_xy[0]), float(origin_xy[1]))
+        else:
+            self.origin_xy = None
+        self.origin_cell: Optional[str] = str(origin_cell) if origin_cell else None
 
         # Static params
         self.deck_cycle_s = int(cfg.get("deck_cycle_per_pair_s", 180))
@@ -72,9 +80,14 @@ class CAPMission:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
+            "n": self.id,
             "target_cell": self.target_cell,
+            "cur_cell": self.target_cell,
             "status": self.status,
+            "distance_nm": self.distance_nm,
             "station_radius_nm": self.station_radius_nm,
+            "origin_xy": list(self.origin_xy) if self.origin_xy is not None else None,
+            "origin_cell": self.origin_cell,
             "timestamps": self.ts,
             "missiles_left": self.missiles_left,
             "last_engagement": self.last_engagement,
@@ -135,7 +148,9 @@ class HermesCAP:
         }
 
     def request_cap_to_cell(self, target_cell: str, *, distance_nm: float, now: Optional[float] = None,
-                            station_minutes: Optional[float] = None, radius_nm: Optional[float] = None) -> Dict[str, Any]:
+                            station_minutes: Optional[float] = None, radius_nm: Optional[float] = None,
+                            origin_xy: Optional[Tuple[float, float]] = None,
+                            origin_cell: Optional[str] = None) -> Dict[str, Any]:
         t = now or time.time()
         if (t - self.last_scramble) < self.min_launch_interval_s:
             return {"ok": False, "message": "Deck cycle in progress"}
@@ -148,7 +163,8 @@ class HermesCAP:
 
         m = CAPMission(self._next_id, target_cell, self.cfg, now=t, distance_nm=float(distance_nm),
                        onstation_min=(float(station_minutes) if station_minutes is not None else None),
-                       station_radius_nm=(float(radius_nm) if radius_nm is not None else None))
+                       station_radius_nm=(float(radius_nm) if radius_nm is not None else None),
+                       origin_xy=origin_xy, origin_cell=origin_cell)
         self._next_id += 1
         self.missions.append(m)
         self.ready_pairs -= 1
@@ -264,4 +280,26 @@ class HermesCAP:
     # ---------- UI helpers
     def snapshot(self, now: Optional[float] = None) -> Dict[str, Any]:
         r = self.readiness(now=now)
-        return {"readiness": r, "missions": [m.to_dict() for m in self.missions]}
+        t_now = now if now is not None else time.time()
+        missions = []
+        for m in self.missions:
+            item = m.to_dict()
+            eta_on = m.ts.get('eta_onstation') or 0.0
+            etd_rtb = m.ts.get('etd_rtb') or 0.0
+            eta_rec = m.ts.get('eta_recovery') or 0.0
+            if m.status in ('queued', 'airborne'):
+                item['tot_s'] = max(0, int(eta_on - t_now)) if eta_on else None
+                item['tos_s'] = None
+            elif m.status == 'onstation':
+                item['tot_s'] = 0
+                item['tos_s'] = max(0, int(etd_rtb - t_now)) if etd_rtb else None
+            elif m.status == 'rtb':
+                item['tot_s'] = None
+                item['tos_s'] = max(0, int(eta_rec - t_now)) if eta_rec else None
+            else:
+                item['tot_s'] = None
+                item['tos_s'] = None
+            if 'range_nm' not in item:
+                item['range_nm'] = item.get('distance_nm')
+            missions.append(item)
+        return {"readiness": r, "missions": missions}

@@ -11,10 +11,10 @@ bp = Blueprint("cap", __name__)
 def _lazy():
     # Import late from webdash to avoid circular imports
     from ..webdash import (
-        CAP, CAP_META, RADAR, ENG,
+        CAP, CAP_META, RADAR, ENG, CONVOY,
         voice_emit, officer_say, record_flight, record_event,
         radar_xy_from_state, world_to_cell, cell_to_world,
-        stamp_cap_launch
+        stamp_cap_launch, ship_cell_from_state
     )
     return locals()
 
@@ -118,8 +118,19 @@ def cap_request():
             return jsonify({"ok": False, "error": "no locked/selected target"}), 400
         st = L['ENG'].public_state() if hasattr(L['ENG'], "public_state") else {}
         own_x, own_y = L['radar_xy_from_state'](st)
-        dx = float(getattr(tgt, 'x', 0.0)) - float(own_x)
-        dy = float(getattr(tgt, 'y', 0.0)) - float(own_y)
+        ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
+        try:
+            course_deg = float(ship.get('heading', 0.0) or 0.0)
+        except Exception:
+            course_deg = 0.0
+        convoy = L.get('CONVOY')
+        if convoy is not None:
+            hx, hy, hermes_cell = convoy.escort_world_cell('hermes', own_x, own_y, course_deg)
+        else:
+            hx, hy = own_x, own_y
+            hermes_cell = L['ship_cell_from_state'](st)
+        dx = float(getattr(tgt, 'x', 0.0)) - float(hx)
+        dy = float(getattr(tgt, 'y', 0.0)) - float(hy)
         rng_nm = (dx*dx + dy*dy) ** 0.5
         try:
             cell = L['world_to_cell'](float(getattr(tgt, 'x', 0.0)), float(getattr(tgt, 'y', 0.0)))
@@ -135,7 +146,7 @@ def cap_request():
                 crs = float(getattr(_tgt,'course_deg', getattr(_tgt,'course',0.0)))
                 rad = math.radians(crs % 360.0)
                 vx, vy = math.sin(rad)*spd, -math.cos(rad)*spd  # kts ~ nm/h
-                dx, dy = float(own_x) - tx, float(own_y) - ty
+                dx, dy = float(hx) - tx, float(hy) - ty
                 rng = (dx*dx + dy*dy) ** 0.5
                 if rng <= 5.0:
                     return 0.0
@@ -171,8 +182,14 @@ def cap_request():
                         prog = max(0.0, min(1.0, (now - (launch + deck)) / max(1.0, outb)))
                     except Exception:
                         prog = 0.0
-                    # origin from CAP_META if available; else own ship
-                    ox, oy = (own_x, own_y)
+                    # origin from CAP_META if available; else Hermes current position
+                    ox, oy = (hx, hy)
+                    try:
+                        o_local = m.get('origin_xy')
+                        if isinstance(o_local, (list, tuple)) and len(o_local) == 2:
+                            ox, oy = float(o_local[0]), float(o_local[1])
+                    except Exception:
+                        pass
                     try:
                         meta = L['CAP_META'].get(mid) or {}
                         o = meta.get('origin_xy')
@@ -235,7 +252,13 @@ def cap_request():
             except Exception:
                 pass
             try:
-                L['record_event']('cap.intercept.launch', {'id': tid, 'name': getattr(tgt, 'name', ''), 'cell': cell})
+                L['record_event']('cap.intercept.launch', {
+                    'id': tid,
+                    'name': getattr(tgt, 'name', ''),
+                    'cell': cell,
+                    'from': hermes_cell,
+                    'range_nm': round(rng_nm, 2)
+                })
             except Exception:
                 pass
             L['record_flight']({"route": route, "method": request.method, "status": 200,
@@ -244,7 +267,7 @@ def cap_request():
             return jsonify(payload)
 
         # Fallback: launch a fresh pair
-        res = L['CAP'].request_cap_to_cell(cell, distance_nm=float(rng_nm))
+        res = L['CAP'].request_cap_to_cell(cell, distance_nm=float(rng_nm), origin_xy=(hx, hy), origin_cell=hermes_cell)
         status = 200 if res.get("ok") else 400
         payload = {"ok": bool(res.get("ok")), "message": res.get("message"), "mission": res.get("mission")}
         if res.get('ok'):
@@ -260,13 +283,17 @@ def cap_request():
             except Exception:
                 pass
             try:
-                L['record_event']('cap.launch', {'cell': cell})
+                L['record_event']('cap.launch', {'cell': cell, 'from': hermes_cell, 'range_nm': round(rng_nm, 2)})
             except Exception:
                 pass
             try:
                 mid = int((res.get('mission') or {}).get('id'))
-                ox, oy = L['radar_xy_from_state'](st)
-                L['CAP_META'][mid] = {"origin_xy": (ox, oy), "asked": False, "authorized": False}
+                meta = L['CAP_META'].get(mid) or {}
+                meta['origin_xy'] = (hx, hy)
+                meta['origin_cell'] = hermes_cell
+                meta.setdefault('asked', False)
+                meta.setdefault('authorized', False)
+                L['CAP_META'][mid] = meta
             except Exception:
                 pass
         L['record_flight']({"route": route, "method": request.method, "status": status,
@@ -303,8 +330,19 @@ def cap_launch_to():
             return jsonify(payload), 400
         st = L['ENG'].public_state() if hasattr(L['ENG'], "public_state") else {}
         own_x, own_y = L['radar_xy_from_state'](st)
+        ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
+        try:
+            course_deg = float(ship.get('heading', 0.0) or 0.0)
+        except Exception:
+            course_deg = 0.0
+        convoy = L.get('CONVOY')
+        if convoy is not None:
+            hx, hy, hermes_cell = convoy.escort_world_cell('hermes', own_x, own_y, course_deg)
+        else:
+            hx, hy = own_x, own_y
+            hermes_cell = L['ship_cell_from_state'](st)
         tx, ty = L['cell_to_world'](cell)
-        dx, dy = float(tx) - float(own_x), float(ty) - float(own_y)
+        dx, dy = float(tx) - float(hx), float(ty) - float(hy)
         rng_nm = (dx*dx + dy*dy) ** 0.5
         try:
             sm = data.get('station_minutes', None)
@@ -313,7 +351,7 @@ def cap_launch_to():
             sm = None; rm = None
         if sm is None: sm = 10
         if rm is None: rm = 10
-        res = L['CAP'].request_cap_to_cell(cell, distance_nm=float(rng_nm), station_minutes=float(sm), radius_nm=float(rm))
+        res = L['CAP'].request_cap_to_cell(cell, distance_nm=float(rng_nm), station_minutes=float(sm), radius_nm=float(rm), origin_xy=(hx, hy), origin_cell=hermes_cell)
         status = 200 if res.get("ok") else 400
         payload = {"ok": bool(res.get("ok")), "message": res.get("message"), "mission": res.get("mission")}
         if res.get('ok'):
@@ -331,7 +369,12 @@ def cap_launch_to():
                 pass
             try:
                 mid = int((res.get('mission') or {}).get('id'))
-                L['CAP_META'][mid] = {"origin_xy": (own_x, own_y), "asked": False, "authorized": False}
+                meta = L['CAP_META'].get(mid) or {}
+                meta['origin_xy'] = (hx, hy)
+                meta['origin_cell'] = hermes_cell
+                meta.setdefault('asked', False)
+                meta.setdefault('authorized', False)
+                L['CAP_META'][mid] = meta
             except Exception:
                 pass
         L['record_flight']({"route": route, "method": request.method, "status": status,

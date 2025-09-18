@@ -346,7 +346,8 @@ def _schedule_shot_result(weapon: str, target_id: int, target_name: str, target_
         except Exception:
             cls = 'Other'
         if cls in ('Missile','SAM'):
-            delay = 4.0 + 6.0 * float(range_nm)
+            # Mach 3 ≈ 1,000 m/s ≈ 1.94 nm/s. add 3 s boost phase.
+            delay = 3.0 + (float(range_nm) / 1.94)
             pk = 0.75
         elif cls in ('Gun',):
             delay = 2.0 * float(range_nm)
@@ -354,7 +355,44 @@ def _schedule_shot_result(weapon: str, target_id: int, target_name: str, target_
         else:
             delay = 3.0 * float(range_nm)
             pk = 0.4
-        PENDING_EVENTS.append({'due': time.time()+delay, 'kind': 'resolve_fire', 'weapon': nm, 'target_id': int(target_id), 'range_nm': float(range_nm), 'pk': float(pk)})
+        fired_ts = time.time()
+        target_id_int = int(target_id)
+        due_ts = fired_ts + delay
+        shot_id = f"{nm}:{int(fired_ts * 1000)}:{target_id_int}"
+        PENDING_EVENTS.append({
+            'due': due_ts,
+            'kind': 'resolve_fire',
+            'weapon': nm,
+            'target_id': target_id_int,
+            'range_nm': float(range_nm),
+            'pk': float(pk),
+            'shot_id': shot_id,
+            'target_name': target_name,
+            'target_class': target_class,
+            'fired_ts': fired_ts
+        })
+        try:
+            with STATE_LOCK:
+                shots = AUDIO_STATE.get('shots_in_flight')
+                if not isinstance(shots, list):
+                    shots = []
+                entry = {
+                    'id': shot_id,
+                    'weapon': nm,
+                    'target_id': target_id_int,
+                    'target_name': target_name,
+                    'target_class': target_class,
+                    'range_nm': float(range_nm),
+                    'pk': float(pk),
+                    'fired_ts': fired_ts,
+                    'due_ts': due_ts,
+                    'result': None,
+                    'result_ts': 0.0,
+                    'cleanup_ts': 0.0
+                }
+                AUDIO_STATE['shots_in_flight'] = list(shots) + [entry]
+        except Exception:
+            pass
     except Exception:
         pass
 

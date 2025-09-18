@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import time
 import logging
-from flask import Blueprint, jsonify
+import threading
+from flask import Blueprint, jsonify, request
 import os
 import importlib
 
@@ -122,7 +123,15 @@ def reset_runtime():
             pass
         # 2) Clear transient queues/state
         try:
-            L['AUDIO_STATE'].update({"last_launch": None, "last_result": None, "radio": None, "alarm": None, "cap_launch": None})
+            L['AUDIO_STATE'].update({
+                "last_launch": None,
+                "last_result": None,
+                "radio": None,
+                "alarm": None,
+                "cap_launch": None,
+                "enemy_bomb": None,
+                "shots_in_flight": []
+            })
         except Exception:
             pass
         try:
@@ -169,6 +178,55 @@ def reset_runtime():
     except Exception as e:
         try:
             L['record_flight']({"route": "/diag/reset", "method": "POST", "status": 500, "duration_ms": 0, "request": {}, "response": {"ok": False, "error": str(e)}})
+        except Exception:
+            pass
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@bp.post("/diag/quit")
+def quit_runtime():
+    """Request the hosting process to exit after returning response."""
+    L = _lazy()
+    try:
+        shutdown_func = None
+        try:
+            shutdown_func = request.environ.get('werkzeug.server.shutdown')
+        except Exception:
+            shutdown_func = None
+
+        def _shutdown(func: object) -> None:
+            time.sleep(0.5)
+            try:
+                if callable(func):
+                    func()
+                else:
+                    os._exit(0)
+            except Exception:
+                os._exit(0)
+
+        threading.Thread(target=_shutdown, args=(shutdown_func,), name="shutdown", daemon=True).start()
+        try:
+            L['record_flight']({
+                "route": "/diag/quit",
+                "method": "POST",
+                "status": 200,
+                "duration_ms": 0,
+                "request": {},
+                "response": {"ok": True}
+            })
+        except Exception:
+            pass
+        return jsonify({"ok": True, "exiting": True})
+    except Exception as e:
+        try:
+            L['record_flight']({
+                "route": "/diag/quit",
+                "method": "POST",
+                "status": 500,
+                "duration_ms": 0,
+                "request": {},
+                "response": {"ok": False, "error": str(e)}
+            })
         except Exception:
             pass
         return jsonify({"ok": False, "error": str(e)}), 500
