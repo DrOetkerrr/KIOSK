@@ -77,6 +77,10 @@ class CAPMission:
         self.engagement_cooldown_s = int(wcfg.get("engagement_cooldown_s", 5))
         self.last_engagement_s: float = 0.0
         self.last_engagement: Optional[Dict[str, Any]] = None
+        self.permission_required: bool = True
+        self.permission_authorized: bool = False
+        self.permission_last_prompt_ts: float = 0.0
+        self.permission_hold_since_ts: Optional[float] = None
 
         # Transit times from distance (one way)
         if self.kind == "intercept":
@@ -112,6 +116,12 @@ class CAPMission:
             "timestamps": self.ts,
             "missiles_left": self.missiles_left,
             "last_engagement": self.last_engagement,
+            "permission": {
+                "required": self.permission_required,
+                "authorized": self.permission_authorized,
+                "last_prompt_ts": self.permission_last_prompt_ts,
+                "hold_since_ts": self.permission_hold_since_ts,
+            }
         }
 
 class HermesCAP:
@@ -130,6 +140,10 @@ class HermesCAP:
         self.missions: List[CAPMission] = []
         self._next_id = 1
         self._event_hook = event_hook
+        self.max_pairs_on_task = int(self.cfg.get("max_pairs_on_task", 3))
+        self.surge_pairs_on_task = int(self.cfg.get("surge_pairs_on_task", max(self.max_pairs_on_task, 4)))
+        self.permission_timeout_s = int(self.cfg.get("permission_timeout_s", 600))
+        self._permission_meta: Optional[Dict[int, Dict[str, Any]]] = None
 
         # Intercept tuning defaults
         self.intercept_speed_kts = float(self.cfg.get("intercept_speed_kts", 600))
@@ -153,6 +167,100 @@ class HermesCAP:
             except Exception:
                 pass
 
+    # ---------- permission/meta helpers
+    def bind_permission_meta(self, meta: Dict[int, Dict[str, Any]]) -> None:
+        self._permission_meta = meta
+        for m in self.missions:
+            self._ensure_meta_record(m.id)
+
+    def _mission_by_id(self, mission_id: int) -> Optional[CAPMission]:
+        for m in self.missions:
+            if int(m.id) == int(mission_id):
+                return m
+        return None
+
+    def _ensure_meta_record(self, mission_id: int) -> Optional[Dict[str, Any]]:
+        if self._permission_meta is None:
+            return None
+        rec = self._permission_meta.setdefault(int(mission_id), {})
+        rec.setdefault('asked', False)
+        rec.setdefault('authorized', False)
+        rec.setdefault('last_request_ts', 0.0)
+        rec.setdefault('hold_since_ts', None)
+        return rec
+
+    def _drop_meta(self, mission_id: int) -> None:
+        if self._permission_meta is None:
+            return
+        self._permission_meta.pop(int(mission_id), None)
+
+    def set_permission(self, mission_id: int, authorized: bool, now: Optional[float] = None) -> None:
+        mission = self._mission_by_id(mission_id)
+        if mission is None:
+            return
+        t = now or time.time()
+        mission.permission_authorized = bool(authorized)
+        if authorized:
+            mission.permission_hold_since_ts = None
+            mission.permission_last_prompt_ts = t
+        else:
+            if mission.permission_hold_since_ts is None:
+                mission.permission_hold_since_ts = t
+        rec = self._ensure_meta_record(mission_id)
+        if rec is not None:
+            rec['authorized'] = bool(authorized)
+            if authorized:
+                rec['asked'] = False
+                rec['hold_since_ts'] = None
+                rec['last_auth_ts'] = t
+
+    def mark_permission_prompted(self, mission_id: int, now: float) -> None:
+        mission = self._mission_by_id(mission_id)
+        if mission is None:
+            return
+        mission.permission_last_prompt_ts = now
+        if mission.permission_hold_since_ts is None:
+            mission.permission_hold_since_ts = now
+        rec = self._ensure_meta_record(mission_id)
+        if rec is not None:
+            rec['asked'] = True
+            rec['last_request_ts'] = now
+            if rec.get('hold_since_ts') is None:
+                rec['hold_since_ts'] = now
+
+    def permission_state(self, mission_id: int) -> Optional[Dict[str, Any]]:
+        mission = self._mission_by_id(mission_id)
+        if mission is None:
+            return None
+        return {
+            'required': mission.permission_required,
+            'authorized': mission.permission_authorized,
+            'last_prompt_ts': mission.permission_last_prompt_ts,
+            'hold_since_ts': mission.permission_hold_since_ts,
+        }
+
+    def _transition_to_rtb(self, mission: CAPMission, now: float) -> None:
+        if mission.status in ('rtb', 'recovering', 'complete'):
+            return
+        mission.status = 'rtb'
+        mission.ts['rtb'] = now
+        mission.ts['eta_recovery'] = now + mission.inbound_s
+
+    def force_rtb(self, mission_id: int, *, reason: str | None = None, now: Optional[float] = None) -> None:
+        mission = self._mission_by_id(mission_id)
+        if mission is None:
+            return
+        t = now or time.time()
+        self._transition_to_rtb(mission, t)
+        mission.permission_authorized = False
+        mission.permission_hold_since_ts = None
+        rec = self._ensure_meta_record(mission_id)
+        if rec is not None:
+            rec['authorized'] = False
+            rec['asked'] = False
+            rec['hold_since_ts'] = None
+        if reason:
+            self._emit_event('cap.mission.rtb', {'mission_id': mission.id, 'reason': reason})
     # ---------- config
     def _load_cfg(self) -> Dict[str, Any]:
         f = self.data_path / "cap_config.json"
@@ -189,6 +297,11 @@ class HermesCAP:
             return {"ok": False, "message": "No ready pairs on deck"}
         if self.airframe_pool_total < 2:
             return {"ok": False, "message": "Insufficient airframes"}
+        active_pairs = [m for m in self.missions if m.status in ('queued', 'airborne', 'onstation')]
+        if len(active_pairs) >= self.surge_pairs_on_task:
+            return {"ok": False, "message": "All CAP sorties committed"}
+        if len(active_pairs) >= self.max_pairs_on_task and mission_kind != 'intercept':
+            return {"ok": False, "message": "Max CAP stations active"}
 
         m = CAPMission(self._next_id, target_cell, self.cfg, now=t, distance_nm=float(distance_nm),
                        onstation_min=(float(station_minutes) if station_minutes is not None else None),
@@ -203,6 +316,8 @@ class HermesCAP:
         self.ready_pairs -= 1
         self.airframe_pool_total -= 2
         self.last_scramble = t
+        self._ensure_meta_record(m.id)
+        self.set_permission(m.id, False, now=t)
         # Respect a minimum launch deck cycle of 12 seconds; keep queued until tick promotes to 'airborne'
         try:
             m.deck_cycle_s = max(int(m.deck_cycle_s), 12)
@@ -223,10 +338,15 @@ class HermesCAP:
                     m.ts["etd_rtb"] = t + m.onstation_s
                     self._emit_event('cap.onstation', {'mission_id': m.id, 'cell': m.target_cell})
             elif m.status == "onstation":
+                if m.permission_required and not m.permission_authorized:
+                    if m.permission_hold_since_ts is None:
+                        m.permission_hold_since_ts = t
+                    elif (t - m.permission_hold_since_ts) >= max(1, self.permission_timeout_s):
+                        self._emit_event('cap.permission.timeout', {'mission_id': m.id, 'cell': m.target_cell})
+                        self.force_rtb(m.id, reason='permission_timeout', now=t)
+                        continue
                 if t >= (m.ts.get("etd_rtb") or t):
-                    m.status = "rtb"
-                    m.ts["rtb"] = t
-                    m.ts["eta_recovery"] = t + m.inbound_s
+                    self._transition_to_rtb(m, t)
             elif m.status == "rtb":
                 if t >= (m.ts.get("eta_recovery") or t):
                     m.status = "recovering"
@@ -237,6 +357,7 @@ class HermesCAP:
                     m.status = "complete"
                     m.ts["complete"] = t
                     self.ready_pairs = min(self.ready_pairs + 1, self.ready_pairs_max)
+                    self._drop_meta(m.id)
 
         if len(self.missions) > 12:
             self.missions = [m for m in self.missions if m.status != "complete"][-12:]
@@ -256,7 +377,12 @@ class HermesCAP:
         t = now or time.time()
 
         # Choose most recent on-station mission with missiles left
-        onst = [m for m in self.missions if m.status == "onstation" and m.missiles_left > 0]
+        onst = [
+            m for m in self.missions
+            if m.status == "onstation"
+            and m.missiles_left > 0
+            and (not m.permission_required or m.permission_authorized)
+        ]
         if not onst:
             return None
         m = onst[-1]

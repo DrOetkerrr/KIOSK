@@ -230,6 +230,11 @@ NAV_STATE: Dict[str, Any] = {"last_cell": None, "turn_target": None, "turn_hold_
 CAP: HermesCAP | None = RUNTIME.cap
 CONVOY = (Convoy.load(DATA_DIR) if Convoy is not None else None)
 CAP_META: Dict[int, Dict[str, Any]] = {}
+if CAP is not None:
+    try:
+        CAP.bind_permission_meta(CAP_META)  # type: ignore[attr-defined]
+    except Exception:
+        pass
 PENDING_EVENTS: list[Dict[str, Any]] = []
 ATTACK_STATE: Dict[int, float] = {}
 

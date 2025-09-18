@@ -1025,19 +1025,33 @@ def engine_thread_run(wd) -> None:
                                 cell = str(getattr(m,'target_cell','') or '')
                                 mx, my = cell_to_world(cell) if cell else (ox, oy)
                                 dist = ((tx-mx)**2 + (ty-my)**2) ** 0.5
-                                if dist <= 15.0:
-                                    meta = getattr(wd, 'CAP_META', {})
-                                    rec = meta.get(mid) or {}
-                                    asked = bool(rec.get('asked', False))
-                                    auth = bool(rec.get('authorized', False))
-                                    if not asked and not auth:
-                                        rec['asked'] = True
-                                        rec['authorized'] = False
-                                        meta[mid] = rec
-                                        try:
-                                            record_officer('Pilot', f'Request permission to engage target {int(pid)} at {dist:.1f} nm.',)
-                                        except Exception:
-                                            pass
+                                if dist > 15.0:
+                                    continue
+                                if int(getattr(m, 'missiles_left', 1) or 0) <= 0:
+                                    continue
+                                perm = wd.CAP.permission_state(mid) if hasattr(wd.CAP, 'permission_state') else None
+                                required = True if perm is None else bool(perm.get('required', True))
+                                authorized = False if perm is None else bool(perm.get('authorized', False))
+                                last_prompt = 0.0 if perm is None else float(perm.get('last_prompt_ts') or 0.0)
+                                if not required or authorized:
+                                    continue
+                                meta = getattr(wd, 'CAP_META', {})
+                                rec = meta.get(mid) or {}
+                                last_prompt = max(last_prompt, float(rec.get('last_request_ts', 0.0) or 0.0))
+                                if (not rec.get('asked')) or (now - last_prompt >= 30.0):
+                                    rec['asked'] = True
+                                    rec['authorized'] = False
+                                    rec['last_request_ts'] = now
+                                    rec['hold_since_ts'] = rec.get('hold_since_ts') or now
+                                    meta[mid] = rec
+                                    try:
+                                        wd.CAP.mark_permission_prompted(mid, now)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        wd.record_officer('Pilot', f'Request permission to engage target {int(pid)} at {dist:.1f} nm.')
+                                    except Exception:
+                                        pass
                             except Exception:
                                 continue
                 except Exception:

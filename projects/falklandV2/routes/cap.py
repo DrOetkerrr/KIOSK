@@ -42,12 +42,24 @@ def cap_authorize():
                                "duration_ms": int((time.time()-t0)*1000),
                                "request": data, "response": payload})
             return jsonify(payload), 400
-        L['CAP_META'][mid]['authorized'] = auth
-        L['CAP_META'][mid]['asked'] = False
+        now = time.time()
+        rec = L['CAP_META'].setdefault(mid, {})
+        rec['authorized'] = auth
+        rec['asked'] = True
+        rec['last_request_ts'] = now
+        if auth:
+            rec['asked'] = False
+            rec['hold_since_ts'] = None
+        else:
+            rec['hold_since_ts'] = now
         if auth:
             L['officer_say']('Pilot', 'cleared', {})
         else:
             L['officer_say']('Pilot', 'hold', {})
+        try:
+            L['CAP'].set_permission(mid, auth, now=now)
+        except Exception:
+            pass
         payload = {"ok": True, "id": mid, "authorized": auth}
         L['record_flight']({"route": route, "method": request.method, "status": 200,
                            "duration_ms": int((time.time()-t0)*1000),
@@ -248,6 +260,16 @@ def cap_request():
                         break
             except Exception:
                 pass
+            try:
+                meta = L['CAP_META'].get(chosen_mid) or {}
+                meta['asked'] = False
+                meta['authorized'] = False
+                meta['last_request_ts'] = 0.0
+                meta['hold_since_ts'] = None
+                L['CAP_META'][chosen_mid] = meta
+                L['CAP'].set_permission(chosen_mid, False)
+            except Exception:
+                pass
             payload = {"ok": True, "message": f"Vectoring airborne pair to {cell}", "mission": {"id": chosen_mid, "target_cell": cell}}
             try:
                 L['voice_emit']('pilot.vector', {'cell': cell}, fallback='Vectoring to %s.' % (cell,), role='Pilot')
@@ -295,7 +317,10 @@ def cap_request():
                 meta['origin_cell'] = hermes_cell
                 meta.setdefault('asked', False)
                 meta.setdefault('authorized', False)
+                meta.setdefault('last_request_ts', 0.0)
+                meta.setdefault('hold_since_ts', None)
                 L['CAP_META'][mid] = meta
+                L['CAP'].set_permission(mid, False)
             except Exception:
                 pass
         L['record_flight']({"route": route, "method": request.method, "status": status,
@@ -376,7 +401,10 @@ def cap_launch_to():
                 meta['origin_cell'] = hermes_cell
                 meta.setdefault('asked', False)
                 meta.setdefault('authorized', False)
+                meta.setdefault('last_request_ts', 0.0)
+                meta.setdefault('hold_since_ts', None)
                 L['CAP_META'][mid] = meta
+                L['CAP'].set_permission(mid, False)
             except Exception:
                 pass
         L['record_flight']({"route": route, "method": request.method, "status": status,

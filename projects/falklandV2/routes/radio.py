@@ -125,6 +125,17 @@ def radio_ask():
                                 L['stamp_cap_launch']()
                             except Exception:
                                 pass
+                            try:
+                                mid = int((res.get('mission') or {}).get('id'))
+                                meta = L['CAP_META'].get(mid) or {}
+                                meta.setdefault('asked', False)
+                                meta.setdefault('authorized', False)
+                                meta.setdefault('last_request_ts', 0.0)
+                                meta.setdefault('hold_since_ts', None)
+                                L['CAP_META'][mid] = meta
+                                L['CAP'].set_permission(mid, False)
+                            except Exception:
+                                pass
                         else:
                             reply = f"Hermes: unable to launch — {res.get('message','denied')}"
         except Exception:
