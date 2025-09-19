@@ -19,9 +19,9 @@ cap.onstation – “Captain, CAP on station around {cell}”
 cap.weapon.fire – “Captain, Harrier fired {weapon}”
 cap.weapon.hit – “Captain, Harrier hit target with {weapon}”
 cap.weapon.miss – “Captain, Harrier missed target with {weapon}”
+cap.mission.rtb – “Captain, SHAR {mission_id} ordered RTB.”
 enemy.bomb.hit – “Captain, we are hit!”
 enemy.bomb.miss – “Captain, bomb missed”
 eng.system.offline – “Captain, alert, System offline: {system}”
 eng.repair.deployed – “Captain, Repair team dispatched to {system}”
 eng.system.timer – “Captain, Alert: repair timer {system}: {seconds}s”
-

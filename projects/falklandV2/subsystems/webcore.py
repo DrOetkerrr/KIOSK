@@ -25,6 +25,9 @@ try:
 except Exception:  # pragma: no cover
     requests = None  # type: ignore
 
+# ---- Logging ----
+LOG = logging.getLogger(__name__)
+
 # ---- Roots and paths ----
 HERE = Path(__file__).resolve()
 REPO_ROOT = HERE.parents[3]
@@ -172,6 +175,11 @@ def _sound_key_for_weapon(name: str) -> str:
         'sea dart': 'seacat',  # legacy key retained in SOUND_MAP
         '4.5in mk.8': 'gun_4_5in',
         '4.5 in mk.8': 'gun_4_5in',
+        '4.5 inch mk.8': 'gun_4_5in',
+        '4.5 inch mk.8 gun': 'gun_4_5in',
+        '4.5" mk.8': 'gun_4_5in',
+        '4.5" mk.8 gun': 'gun_4_5in',
+        'sea dart sam': 'seacat',
         '20mm oerlikon': 'oerlikon_20mm',
         '20 mm oerlikon': 'oerlikon_20mm',
         '20mm gam-bo1 (twin)': 'gam_bo1_20mm',
@@ -227,6 +235,28 @@ def record_flight(ev: Dict[str, Any]) -> None:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         pass
+
+
+def _record_event_guard(wd, event_id: str, payload: Dict[str, Any], *, context: Dict[str, Any] | None = None) -> None:
+    try:
+        wd.record_event(event_id, payload)
+    except Exception as exc:
+        LOG.exception("record_event failed for %s", event_id)
+        try:
+            record_flight({
+                'route': '/event.error',
+                'method': 'INT',
+                'status': 500,
+                'duration_ms': 0,
+                'request': {
+                    'event': event_id,
+                    'payload': payload,
+                    'context': context or {},
+                },
+                'response': {'error': str(exc)},
+            })
+        except Exception:
+            pass
 
 
 def record_radio(kind: str, text: str) -> None:
@@ -1068,16 +1098,76 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
             own_x, own_y = wd.get_own_xy(st)
         except Exception:
             own_x, own_y = (0.0, 0.0)
-        now = time.time(); tasks: list[Dict[str, Any]] = []
+        now = time.time()
+        tasks: list[Dict[str, Any]] = []
+        meta_all = getattr(wd, 'CAP_META', {}) if hasattr(wd, 'CAP_META') else {}
+        contacts = list(getattr(wd.RADAR, 'contacts', []) or [])
+        contact_by_id: Dict[int, Any] = {}
+        contacts_by_cell: Dict[str, list[Any]] = {}
+        for c in contacts:
+            try:
+                cid = int(getattr(c, 'id', -1))
+                if cid >= 0:
+                    contact_by_id[cid] = c
+                cell_label = cell_for_world(float(getattr(c, 'y', 0.0)), float(getattr(c, 'x', 0.0)))
+                contacts_by_cell.setdefault(cell_label, []).append(c)
+            except Exception:
+                continue
+
         for m in missions:
             try:
-                cid = int(m.get('id'))
-                cell = str(m.get('target_cell') or '')
-                tx, ty = cell_to_world(cell) if cell else (None, None)
+                mid = int(m.get('id'))
+                meta_rec = meta_all.get(mid) if isinstance(meta_all, dict) else None
+                origin_cell = str(m.get('origin_cell') or (meta_rec or {}).get('origin_cell') or '')
+                target_cell_raw = str((meta_rec or {}).get('target_cell') or m.get('target_cell') or '')
+                target_id = (meta_rec or {}).get('target_id')
+                target_name = str((meta_rec or {}).get('target_name') or '')
+                target_contact = None
+                if target_id:
+                    try:
+                        target_contact = contact_by_id.get(int(target_id))
+                    except Exception:
+                        target_contact = None
+                if target_contact is None:
+                    try:
+                        eng = m.get('last_engagement') or {}
+                        eng_tid = eng.get('target_id')
+                        if eng_tid is not None:
+                            target_contact = contact_by_id.get(int(eng_tid))
+                            if target_id is None:
+                                target_id = eng_tid
+                    except Exception:
+                        pass
+                if target_contact is None and target_cell_raw:
+                    candidates = contacts_by_cell.get(target_cell_raw)
+                    if candidates:
+                        target_contact = candidates[0]
+
+                tx = ty = None
+                target_cell = target_cell_raw
+                if target_contact is not None:
+                    try:
+                        tx = float(getattr(target_contact, 'x', own_x))
+                        ty = float(getattr(target_contact, 'y', own_y))
+                    except Exception:
+                        tx = ty = None
+                    try:
+                        target_cell = cell_for_world(float(getattr(target_contact, 'y', 0.0)), float(getattr(target_contact, 'x', 0.0)))
+                    except Exception:
+                        pass
+                    if not target_name:
+                        target_name = str(getattr(target_contact, 'name', '') or '')
+                elif target_cell_raw:
+                    try:
+                        tx, ty = cell_to_world(target_cell_raw)
+                    except Exception:
+                        tx = ty = None
+
                 rng = None
                 if tx is not None and ty is not None:
-                    dx = float(tx) - float(own_x); dy = float(ty) - float(own_y)
-                    rng = (dx*dx + dy*dy) ** 0.5
+                    dx = float(tx) - float(own_x)
+                    dy = float(ty) - float(own_y)
+                    rng = math.hypot(dx, dy)
                 ts = (m.get('timestamps') or {})
                 status = str(m.get('status') or '')
                 tot_s = None
@@ -1095,8 +1185,28 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
                 except Exception:
                     tos_s = None
                 vect = bool(ts.get('vector', False))
-                cur_cell = cell or '—'
-                tasks.append({"n": cid, "cur_cell": cur_cell, "target_cell": cell or '—', "range_nm": (round(rng,1) if isinstance(rng,(int,float)) else None), "status": status, "tot_s": tot_s, "tos_s": tos_s, "vector": vect, "engaged": bool(m.get('last_engagement'))})
+                pos_cell = origin_cell or (meta_rec or {}).get('origin_cell') or ''
+                target_cell_disp = target_cell or '—'
+                if target_name:
+                    target_label = f"{target_name} @ {target_cell_disp}" if target_cell_disp != '—' else target_name
+                else:
+                    target_label = target_cell_disp
+                tasks.append({
+                    "n": mid,
+                    "cur_cell": pos_cell or '—',
+                    "origin_cell": origin_cell or (meta_rec or {}).get('origin_cell') or '',
+                    "target_cell": target_cell_disp,
+                    "target_name": target_name,
+                    "target_label": target_label,
+                    "target_id": target_id,
+                    "range_nm": (round(float(rng), 1) if isinstance(rng, (int, float)) and rng is not None else None),
+                    "status": status,
+                    "tot_s": tot_s,
+                    "tos_s": tos_s,
+                    "vector": vect,
+                    "engaged": bool(m.get('last_engagement')),
+                    "permission": m.get('permission') or {},
+                })
             except Exception:
                 continue
         committed = len([t for t in tasks if t.get('status') in ('queued','airborne','onstation','rtb','recovering')])
@@ -1280,27 +1390,69 @@ def engine_thread_run(wd) -> None:
                     herm_x, herm_y = float(hx), float(hy)
                 except Exception:
                     herm_x = herm_y = None
+            grid_cell_nm = 1.0
+            try:
+                eng = getattr(wd, 'ENG', None)
+                pool = getattr(eng, 'pool', None) if eng is not None else None
+                grid = getattr(pool, 'grid', None) if pool is not None else None
+                cell_nm = float(getattr(grid, 'cell_nm', 1.0)) if grid is not None else 1.0
+                if cell_nm > 0.0:
+                    grid_cell_nm = cell_nm
+            except Exception:
+                grid_cell_nm = 1.0
             for c in list(wd.RADAR.contacts):
                 try:
                     if str(getattr(c,'allegiance','')) != 'Hostile':
                         continue
-                    dist_ship = ((c.x-ox)**2 + (c.y-oy)**2) ** 0.5
-                    dist_herm = None
+                    dist_ship_raw = ((c.x-ox)**2 + (c.y-oy)**2) ** 0.5
+                    dist_herm_raw = None
                     if herm_x is not None and herm_y is not None:
-                        dist_herm = ((c.x-herm_x)**2 + (c.y-herm_y)**2) ** 0.5
+                        dist_herm_raw = ((c.x-herm_x)**2 + (c.y-herm_y)**2) ** 0.5
+                    dist_ship_nm = dist_ship_raw * grid_cell_nm
+                    dist_herm_nm = (dist_herm_raw * grid_cell_nm) if dist_herm_raw is not None else None
                     target_options = []
-                    if dist_ship <= 1.0:
-                        target_options.append(('Sheffield', dist_ship))
-                    if dist_herm is not None and dist_herm <= 1.0:
-                        target_options.append(('Hermes', dist_herm))
+                    if dist_ship_nm <= 1.0:
+                        target_options.append(('Sheffield', dist_ship_nm))
+                    if dist_herm_nm is not None and dist_herm_nm <= 1.0:
+                        target_options.append(('Hermes', dist_herm_nm))
                     if target_options:
-                        target_name_choice, target_dist = _rand.choice(target_options)
+                        target_name_choice, target_dist_nm = _rand.choice(target_options)
                         cid = int(getattr(c,'id',-1))
                         entry = att.get(cid)
                         if not isinstance(entry, dict):
                             entry = {}
                         last = float(entry.get('last', 0.0) or 0.0)
                         if now - last >= 15.0:
+                            if LOG.isEnabledFor(logging.DEBUG):
+                                LOG.debug(
+                                    "enemy attack gating: contact=%s target=%s raw_ship=%.3f nm_ship=%.3f raw_herm=%s nm_herm=%s cell_nm=%.3f",
+                                    getattr(c, 'id', 'n/a'),
+                                    target_name_choice,
+                                    dist_ship_raw,
+                                    dist_ship_nm,
+                                    '—' if dist_herm_raw is None else f"{dist_herm_raw:.3f}",
+                                    '—' if dist_herm_nm is None else f"{dist_herm_nm:.3f}",
+                                    grid_cell_nm,
+                                )
+                            try:
+                                record_flight({
+                                    'route': '/enemy.attack.gate',
+                                    'method': 'INT',
+                                    'status': 200,
+                                    'duration_ms': 0,
+                                    'request': {
+                                        'contact_id': cid,
+                                        'target': target_name_choice,
+                                        'dist_ship_raw': round(dist_ship_raw, 3),
+                                        'dist_ship_nm': round(dist_ship_nm, 3),
+                                        'dist_herm_raw': None if dist_herm_raw is None else round(dist_herm_raw, 3),
+                                        'dist_herm_nm': None if dist_herm_nm is None else round(dist_herm_nm, 3),
+                                        'cell_nm': grid_cell_nm,
+                                    },
+                                    'response': {'armed': True},
+                                })
+                            except Exception:
+                                pass
                             entry['last'] = now
                             try:
                                 meta = getattr(c, 'meta', {}) or {}
@@ -1379,33 +1531,49 @@ def engine_thread_run(wd) -> None:
                                                 s['response_deadline_ts'] = now + 120.0
                                                 save_eng_sys(eng)
                                                 system_offlined = True
-                                                try:
-                                                    wd.record_event('eng.system.timer', {'system': s.get('name','System'), 'seconds': s.get('timer_s', 0)})
-                                                except Exception:
-                                                    pass
+                                                _record_event_guard(
+                                                    wd,
+                                                    'eng.system.timer',
+                                                    {'system': s.get('name', 'System'), 'seconds': s.get('timer_s', 0)},
+                                                    context={'source': 'enemy_attack', 'contact_id': cid},
+                                                )
                                         except Exception:
                                             pass
-                                    try:
-                                        wd.record_event('enemy.bomb.hit', {
+                                    _record_event_guard(
+                                        wd,
+                                        'enemy.bomb.hit',
+                                        {
                                             'contact_id': cid,
                                             'name': getattr(c, 'name', ''),
-                                            'range_nm': round(target_dist, 2) if target_dist is not None else None,
+                                            'range_nm': round(target_dist_nm, 2) if target_dist_nm is not None else None,
                                             'attempt': attempt_idx,
                                             'target': target_name_choice,
-                                        })
-                                    except Exception:
-                                        pass
+                                        },
+                                        context={
+                                            'contact_id': cid,
+                                            'weapon': weapon_name,
+                                            'attempt': attempt_idx,
+                                            'target': target_name_choice,
+                                        },
+                                    )
                                 else:
-                                    try:
-                                        wd.record_event('enemy.bomb.miss', {
+                                    _record_event_guard(
+                                        wd,
+                                        'enemy.bomb.miss',
+                                        {
                                             'contact_id': cid,
                                             'name': getattr(c, 'name', ''),
-                                            'range_nm': round(target_dist, 2) if target_dist is not None else None,
+                                            'range_nm': round(target_dist_nm, 2) if target_dist_nm is not None else None,
                                             'attempt': attempt_idx,
                                             'target': target_name_choice,
-                                        })
-                                    except Exception:
-                                        pass
+                                        },
+                                        context={
+                                            'contact_id': cid,
+                                            'weapon': weapon_name,
+                                            'attempt': attempt_idx,
+                                            'target': target_name_choice,
+                                        },
+                                    )
 
                             if results:
                                 try:

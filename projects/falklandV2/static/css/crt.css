@@ -112,6 +112,10 @@ tbody tr td:last-child{border-top-right-radius:6px;border-bottom-right-radius:6p
 .comms-launch-table th,.comms-commit-table th{text-transform:uppercase;font-size:12px;letter-spacing:1px;color:var(--muted);text-align:left}
 .comms-launch-table td,.comms-commit-table td{background:rgba(3,18,7,0.85);border:1px solid var(--border);padding:6px 10px}
 .comms-launch-table td.num,.comms-commit-table td.num{text-align:right;font-variant-numeric:tabular-nums}
+.comms-commit-table th.num{text-align:right}
+.comms-commit-table th.action{text-align:center}
+.comms-commit-table td.action{text-align:center}
+.comms-commit-table td.action .btn{min-width:78px}
 .wpn-primary{background:rgba(3,18,7,0.85);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:16px;box-shadow:0 0 18px rgba(0,0,0,0.6)}
 .wpn-primary-title{text-transform:uppercase;font-size:14px;letter-spacing:2px;color:var(--accent);margin-bottom:8px}
 .wpn-primary-table{width:100%;border-collapse:separate;border-spacing:0 4px;margin-bottom:10px}

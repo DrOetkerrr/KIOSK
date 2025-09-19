@@ -21,6 +21,7 @@
     {"id": "cap.weapon.fire", "text": "{shooter} fired {weapon} at {target}"},
     {"id": "cap.weapon.hit", "text": "{shooter} -> {weapon} at {target} — HIT"},
     {"id": "cap.weapon.miss", "text": "{shooter} -> {weapon} at {target} — MISS"},
+    {"id": "cap.mission.rtb", "text": "SHAR {mission_id} ordered RTB"},
     {"id": "enemy.bomb.hit", "text": "{target} WAS HIT!"},
     {"id": "enemy.bomb.miss", "text": "Bomb missed {target}"},
     {"id": "eng.system.offline", "text": "System offline: {system}"},

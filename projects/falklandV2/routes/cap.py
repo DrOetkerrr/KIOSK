@@ -75,6 +75,62 @@ def cap_authorize():
         return jsonify(payload), 500
 
 
+@bp.post("/cap/rtb")
+def cap_rtb():
+    """Force a CAP mission to return to Hermes immediately."""
+    L = _lazy(); t0 = time.time(); route = "/cap/rtb"
+    try:
+        if L['CAP'] is None:
+            payload = {"ok": False, "error": "CAP unavailable"}
+            L['record_flight']({"route": route, "method": request.method, "status": 503,
+                               "duration_ms": int((time.time()-t0)*1000),
+                               "request": {}, "response": payload})
+            return jsonify(payload), 503
+        data = request.get_json(silent=True) or {}
+        try:
+            mid = int(data.get('mission_id') or data.get('id'))
+        except Exception:
+            mid = 0
+        if mid <= 0:
+            payload = {"ok": False, "error": "missing mission_id"}
+            L['record_flight']({"route": route, "method": request.method, "status": 400,
+                               "duration_ms": int((time.time()-t0)*1000),
+                               "request": data, "response": payload})
+            return jsonify(payload), 400
+
+        mission = next((m for m in getattr(L['CAP'], 'missions', []) if int(getattr(m, 'id', -1)) == int(mid)), None)
+        if mission is None:
+            payload = {"ok": False, "error": "mission not found"}
+            L['record_flight']({"route": route, "method": request.method, "status": 404,
+                               "duration_ms": int((time.time()-t0)*1000),
+                               "request": data, "response": payload})
+            return jsonify(payload), 404
+
+        L['CAP'].force_rtb(mid, reason='manual_rtb')
+        rec = L['CAP_META'].setdefault(mid, {})
+        rec['rtb_requested_ts'] = time.time()
+
+        try:
+            L['voice_emit']('pilot.mission.rtb', {'id': mid}, fallback=f"SHAR {mid}, return to base.", role='Pilot')
+        except Exception:
+            pass
+
+        message = f"SHAR {mid} ordered to RTB"
+        payload = {"ok": True, "message": message, "mission": {"id": mid, "status": 'rtb'}}
+        L['record_flight']({"route": route, "method": request.method, "status": 200,
+                           "duration_ms": int((time.time()-t0)*1000),
+                           "request": data, "response": payload})
+        return jsonify(payload)
+    except Exception as e:
+        logging.exception("/cap/rtb error: %s", e)
+        payload = {"ok": False, "error": str(e)}
+        L = _lazy()
+        L['record_flight']({"route": route, "method": request.method, "status": 500,
+                           "duration_ms": int((time.time()-t0)*1000),
+                           "request": {}, "response": payload})
+        return jsonify(payload), 500
+
+
 @bp.get("/cap/readiness")
 def cap_readiness():
     try:
@@ -262,6 +318,9 @@ def cap_request():
                 pass
             try:
                 meta = L['CAP_META'].get(chosen_mid) or {}
+                meta['target_id'] = int(getattr(tgt, 'id', 0) or 0)
+                meta['target_name'] = getattr(tgt, 'name', '')
+                meta['target_cell'] = cell
                 meta['asked'] = False
                 meta['authorized'] = False
                 meta['last_request_ts'] = 0.0
@@ -316,6 +375,10 @@ def cap_request():
                 meta = L['CAP_META'].get(mid) or {}
                 meta['origin_xy'] = (hx, hy)
                 meta['origin_cell'] = hermes_cell
+                if tgt is not None:
+                    meta['target_id'] = int(getattr(tgt, 'id', 0) or 0)
+                    meta['target_name'] = getattr(tgt, 'name', '')
+                    meta['target_cell'] = L['world_to_cell'](float(getattr(tgt, 'x', 0.0)), float(getattr(tgt, 'y', 0.0)))
                 meta.setdefault('asked', False)
                 meta.setdefault('authorized', False)
                 meta.setdefault('last_request_ts', 0.0)
@@ -525,6 +588,9 @@ def cap_vector():
         # Clear any pending ROE prompt for this mission
         try:
             meta = L['CAP_META'].get(mid) or {}
+            meta['target_id'] = int(getattr(tgt, 'id', 0) or 0)
+            meta['target_name'] = getattr(tgt, 'name', '')
+            meta['target_cell'] = cell
             meta['asked'] = False
             meta['authorized'] = False
             meta['last_request_ts'] = 0.0

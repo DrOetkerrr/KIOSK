@@ -846,7 +846,24 @@ function renderRADIO(j){
   const commitHeader=document.createElement('h3'); commitHeader.className='comms-subhead'; commitHeader.textContent='SHAR commit status:'; p.appendChild(commitHeader);
   const commitTable=document.createElement('table'); commitTable.className='comms-commit-table';
   const commitHead=document.createElement('tr');
-  ['Flight','Status','POS','Target','Range','TOT','TOS','VEC','ENGAGE'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; commitHead.appendChild(th); });
+  const commitCols=[
+    {label:'Flight'},
+    {label:'Status'},
+    {label:'Pos'},
+    {label:'Target'},
+    {label:'Range', className:'num'},
+    {label:'TOT', className:'num'},
+    {label:'TOS', className:'num'},
+    {label:'Vec', className:'action'},
+    {label:'Engage', className:'action'},
+    {label:'RTB', className:'action'}
+  ];
+  commitCols.forEach(function(col){
+    const th=document.createElement('th');
+    th.textContent=col.label;
+    if(col.className) th.className = col.className;
+    commitHead.appendChild(th);
+  });
   commitTable.appendChild(commitHead);
   const tasks = Array.isArray(cap.tasks)? cap.tasks : (Array.isArray(cap.missions)? cap.missions : []);
   function fmtDuration(sec){
@@ -858,14 +875,28 @@ function renderRADIO(j){
     return `${Math.round(s/3600)} hr`;
   }
   if(!tasks.length){
-    const tr=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=9; td.textContent='No active missions'; tr.appendChild(td); commitTable.appendChild(tr);
+    const tr=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=10; td.textContent='No active missions'; tr.appendChild(td); commitTable.appendChild(tr);
   }else{
     tasks.forEach(function(t){
       const tr=document.createElement('tr');
       const flightTd=document.createElement('td'); flightTd.textContent = t.n!=null ? `SHAR ${t.n}` : 'SHAR —'; tr.appendChild(flightTd);
       const statusTd=document.createElement('td'); statusTd.textContent=String(t.status||'—').toUpperCase(); tr.appendChild(statusTd);
-      const posTd=document.createElement('td'); posTd.textContent=String(t.cur_cell||'—'); tr.appendChild(posTd);
-      const tgtTd=document.createElement('td'); tgtTd.textContent=String(t.target_cell||'—'); tr.appendChild(tgtTd);
+      const statusKeyGlobal = String(t.status||'').toLowerCase();
+      const posLabel = String(t.origin_cell || t.cur_cell || '—').trim() || '—';
+      const posTd=document.createElement('td'); posTd.textContent=posLabel || '—'; tr.appendChild(posTd);
+      const tgtTd=document.createElement('td');
+      const tgtLabel = (function(){
+        const name = (t.target_name || '').toString();
+        const cell = (t.target_cell || '').toString();
+        const label = (t.target_label || '').toString();
+        if(label) return label;
+        if(name && cell && cell !== '—') return `${name} @ ${cell}`;
+        if(name) return name;
+        if(cell) return cell;
+        return '—';
+      })();
+      tgtTd.textContent = tgtLabel || '—';
+      tr.appendChild(tgtTd);
       const rngTd=document.createElement('td'); rngTd.className='num'; rngTd.textContent = (t.range_nm!=null && Number.isFinite(Number(t.range_nm)))? `${fmt(t.range_nm,1)} nm`:'—'; tr.appendChild(rngTd);
       function durationLabel(sec, status){
         if(sec===undefined || sec===null) return '—';
@@ -875,8 +906,9 @@ function renderRADIO(j){
       }
       const totTd=document.createElement('td'); totTd.className='num'; totTd.textContent=durationLabel(t.tot_s, t.status); tr.appendChild(totTd);
       const tosTd=document.createElement('td'); tosTd.className='num'; tosTd.textContent=durationLabel(t.tos_s, t.status); tr.appendChild(tosTd);
-      const vecTd=document.createElement('td'); vecTd.className='num';
+      const vecTd=document.createElement('td'); vecTd.className='action';
       const vecBtn=document.createElement('button'); vecBtn.className='btn'; vecBtn.textContent='VECTOR';
+      if(['rtb','recovering','complete'].includes(statusKeyGlobal)) vecBtn.disabled = true;
       vecBtn.onclick = async function(){
         // Vector this mission to the current primary target
         try{
@@ -891,7 +923,7 @@ function renderRADIO(j){
         }catch(_){ capMsg.textContent='Vector failed'; capMsg.className='comms-msg err'; }
       };
       vecTd.appendChild(vecBtn); tr.appendChild(vecTd);
-      const permTd=document.createElement('td'); permTd.className='num';
+      const permTd=document.createElement('td'); permTd.className='action';
       const missionId = (t.id!=null)? t.id : (t.n!=null? t.n : null);
       const perm = (t.permission && typeof t.permission==='object')? t.permission : {};
       if(perm.required){
@@ -920,6 +952,27 @@ function renderRADIO(j){
         permTd.textContent='—';
       }
       tr.appendChild(permTd);
+      const rtbTd=document.createElement('td'); rtbTd.className='action';
+      const rtbBtn=document.createElement('button'); rtbBtn.className='btn'; rtbBtn.textContent='RTB';
+      if(missionId==null || ['rtb','recovering','complete'].includes(statusKeyGlobal)) rtbBtn.disabled=true;
+      rtbBtn.onclick = async function(){
+        if(missionId==null){ capMsg.textContent='Unknown mission id'; capMsg.className='comms-msg err'; return; }
+        capMsg.textContent='Ordering RTB…'; capMsg.className='comms-msg muted';
+        try{
+          const res=await fetch('/cap/rtb',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: missionId})});
+          const data=await res.json();
+          if(data && data.ok){
+            capMsg.textContent=data.message || `SHAR ${missionId} RTB`; capMsg.className='comms-msg ok';
+            rtbBtn.disabled = true;
+            await poll().catch(()=>{});
+          }else{
+            capMsg.textContent=(data && (data.message || data.error)) ? String(data.message || data.error) : 'RTB order failed';
+            capMsg.className='comms-msg err';
+          }
+        }catch(_){ capMsg.textContent='RTB order failed'; capMsg.className='comms-msg err'; }
+      };
+      rtbTd.appendChild(rtbBtn);
+      tr.appendChild(rtbTd);
       commitTable.appendChild(tr);
     });
   }

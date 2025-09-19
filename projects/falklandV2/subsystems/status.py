@@ -71,11 +71,16 @@ def build() -> Dict[str, Any]:
     try:
         st = payload.get('state') if isinstance(payload.get('state'), dict) else {}
         ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
-        # Leader cell via adapter
+        # Leader cell derived from the same world basis used for escorts
+        # to avoid mismatch between different coordinate sources.
         try:
-            own_cell = wd.ship_cell_from_state(st)
+            sx, sy = wd.radar_xy_from_state(st)
+            own_cell = wd.cell_for_world(sy, sx)
         except Exception:
-            own_cell = 'K13'
+            try:
+                own_cell = wd.ship_cell_from_state(st)
+            except Exception:
+                own_cell = 'K13'
         # Build own row
         own_row = {
             'id': 'own',
@@ -335,7 +340,7 @@ def build() -> Dict[str, Any]:
                     pending_radio = None
                 else:
                     try:
-                        wd.RADIO_STATE['busy_until'] = now + 0.75
+                        wd.RADIO_STATE['busy_until'] = max(now, time.time()) + 0.1
                     except Exception:
                         pass
         if pending_radio:

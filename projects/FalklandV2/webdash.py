@@ -229,6 +229,21 @@ def _load_radio_script() -> Dict[str, str]:
 RADIO_EVENTS: Dict[str, str] = _load_radio_script()
 
 
+def _radio_role_for_event(event_id: str) -> str:
+    eid = str(event_id)
+    if eid.startswith('weapon.'):
+        return 'Fire Control'
+    if eid.startswith('cap.'):
+        return 'Pilot'
+    if eid.startswith('eng.'):
+        return 'Engineering'
+    if eid.startswith('nav.'):
+        return 'Navigation'
+    if eid.startswith('enemy.'):
+        return 'Engineering'
+    return 'Ensign'
+
+
 def _emit_radio_event(event_id: str, ctx: Dict[str, Any]) -> None:
     tpl = RADIO_EVENTS.get(str(event_id))
     if not tpl:
@@ -239,7 +254,8 @@ def _emit_radio_event(event_id: str, ctx: Dict[str, Any]) -> None:
     except Exception:
         text = tpl
     if text:
-        record_officer('Bridge', text)
+        role = _radio_role_for_event(event_id)
+        record_officer(role, text)
 
 
 def _contact_label(contact_id: Any) -> str | None:
@@ -311,9 +327,26 @@ def record_event(event_id: str, data: Dict[str, Any] | None = None, *, text: str
         try:
             _emit_radio_event(event_id, payload['data'])
         except Exception:
+            # Radio side-effects are best-effort; do not fail the event
+            logging.debug("radio emit failed for %s", event_id, exc_info=True)
+    except Exception as exc:
+        # Surface failures instead of swallowing them so missing events can be diagnosed
+        logging.exception("record_event failed for %s", event_id)
+        try:
+            record_flight({
+                'route': '/event.error',
+                'method': 'INT',
+                'status': 500,
+                'duration_ms': 0,
+                'request': {
+                    'event': str(event_id),
+                    'payload': dict(data or {}),
+                },
+                'response': {'error': str(exc)},
+            })
+        except Exception:
+            # If even flight logging fails, there is nothing more we can do
             pass
-    except Exception:
-        pass
 
 
 if CAP is not None:
