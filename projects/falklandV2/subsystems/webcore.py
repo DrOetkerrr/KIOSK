@@ -995,10 +995,20 @@ def spawn_initial_friendlies(wd) -> None:
         own_x, own_y = radar_xy_from_state(st)
         if getattr(wd.RADAR, 'contacts', None):
             return
-        for b in (45.0, 135.0, 315.0):
+        friend_bearings = (45.0, 315.0)
+        hostile_bearings = (135.0, 225.0)
+
+        for b in friend_bearings:
             try:
                 r = random.uniform(6.0, 12.0)
                 wd.RADAR.force_spawn(own_x, own_y, 'Friendly', bearing_deg=b, range_nm=r)
+            except Exception:
+                continue
+
+        for b in hostile_bearings:
+            try:
+                r = random.uniform(10.0, 18.0)
+                wd.RADAR.force_spawn(own_x, own_y, 'Hostile', bearing_deg=b, range_nm=r)
             except Exception:
                 continue
     except Exception:
@@ -1227,7 +1237,13 @@ def engine_thread_run(wd) -> None:
                             wd.RADAR.contacts = [c for c in wd.RADAR.contacts if int(getattr(c,'id',-1)) != int(tgt_id)]
                         try:
                             ev_id = 'weapon.result.hit' if outcome == 'hit' else ('weapon.result.miss' if outcome == 'miss' else 'weapon.result.no_effect')
-                            wd.record_event(ev_id, {'weapon': weapon, 'target_id': tgt_id, 'range_nm': rng})
+                            wd.record_event(ev_id, {
+                                'weapon': weapon,
+                                'target_id': tgt_id,
+                                'target': target_name,
+                                'range_nm': rng,
+                                'shooter': 'Sheffield'
+                            })
                         except Exception:
                             pass
                         try:
@@ -1250,64 +1266,133 @@ def engine_thread_run(wd) -> None:
         try:
             hlth = _load_health()
             att = getattr(wd, 'ATTACK_STATE', {})
+            st_attack = wd.ENG.public_state() if hasattr(wd.ENG, 'public_state') else {}
+            ship_state = st_attack.get('ship') if isinstance(st_attack, dict) else {}
+            try:
+                ship_heading = float((ship_state or {}).get('heading', 0.0))
+            except Exception:
+                ship_heading = 0.0
+            convoy = getattr(wd, 'CONVOY', None)
+            herm_x = herm_y = None
+            if convoy is not None:
+                try:
+                    hx, hy = convoy.escort_world_position('hermes', float(ox), float(oy), ship_heading)
+                    herm_x, herm_y = float(hx), float(hy)
+                except Exception:
+                    herm_x = herm_y = None
             for c in list(wd.RADAR.contacts):
                 try:
                     if str(getattr(c,'allegiance','')) != 'Hostile':
                         continue
-                    dist = ((c.x-ox)**2 + (c.y-oy)**2) ** 0.5
-                    if dist <= 1.0:
+                    dist_ship = ((c.x-ox)**2 + (c.y-oy)**2) ** 0.5
+                    dist_herm = None
+                    if herm_x is not None and herm_y is not None:
+                        dist_herm = ((c.x-herm_x)**2 + (c.y-herm_y)**2) ** 0.5
+                    target_options = []
+                    if dist_ship <= 1.0:
+                        target_options.append(('Sheffield', dist_ship))
+                    if dist_herm is not None and dist_herm <= 1.0:
+                        target_options.append(('Hermes', dist_herm))
+                    if target_options:
+                        target_name_choice, target_dist = _rand.choice(target_options)
                         cid = int(getattr(c,'id',-1))
-                        last = float(att.get(cid, 0.0))
+                        entry = att.get(cid)
+                        if not isinstance(entry, dict):
+                            entry = {}
+                        last = float(entry.get('last', 0.0) or 0.0)
                         if now - last >= 15.0:
-                            att[cid] = now
+                            entry['last'] = now
                             try:
                                 meta = getattr(c, 'meta', {}) or {}
                                 weapon_name = str(meta.get('primary_weapon') or getattr(c, 'primary_weapon', '')).lower()
                                 if 'bomb' in weapon_name:
                                     hit_prob = 0.6
-                                    attempts = 2
+                                    bombs_left = entry.get('bombs_left')
+                                    if bombs_left is None:
+                                        bombs_left = 2
+                                    if bombs_left <= 0:
+                                        att[cid] = entry
+                                        continue
+                                    attempts = min(2, int(bombs_left))
+                                    entry['bombs_left'] = bombs_left
                                 elif 'missile' in weapon_name:
                                     hit_prob = 0.75
-                                    attempts = 1
+                                    missiles_left = entry.get('missiles_left')
+                                    if missiles_left is None:
+                                        missiles_left = 1
+                                    if missiles_left <= 0:
+                                        att[cid] = entry
+                                        continue
+                                    attempts = min(1, int(missiles_left))
+                                    entry['missiles_left'] = missiles_left
                                 else:
                                     hit_prob = 0.5
-                                    attempts = 1
+                                    guns_left = entry.get('guns_left')
+                                    if guns_left is None:
+                                        guns_left = 1
+                                    if guns_left <= 0:
+                                        att[cid] = entry
+                                        continue
+                                    attempts = min(1, int(guns_left))
+                                    entry['guns_left'] = guns_left
                             except Exception:
                                 hit_prob = 0.5
                                 attempts = 1
 
                             results: list[dict[str, Any]] = []
+                            attempts_used = 0
+                            system_offlined = False
+                            hermes_hit = False
                             for attempt_idx in range(1, attempts+1):
                                 hit = (_rand.random() < hit_prob)
-                                result_entry = {'attempt': attempt_idx, 'event': 'hit' if hit else 'miss'}
+                                result_entry = {
+                                    'attempt': attempt_idx,
+                                    'event': 'hit' if hit else 'miss',
+                                    'target': target_name_choice,
+                                }
                                 results.append(result_entry)
+                                attempts_used += 1
                                 if hit:
-                                    if int(hlth.get('lives', 1)) > 0:
-                                        hlth['lives'] = int(hlth.get('lives', 1)) - 1
-                                        _save_health(hlth)
+                                    if target_name_choice == 'Hermes':
+                                        try:
+                                            if int(hlth.get('hermes_lives', 1)) > 0:
+                                                hlth['hermes_lives'] = max(0, int(hlth.get('hermes_lives', 1)) - 1)
+                                                _save_health(hlth)
+                                                hermes_hit = True
+                                        except Exception:
+                                            pass
+                                    else:
+                                        try:
+                                            if int(hlth.get('lives', 1)) > 0:
+                                                hlth['lives'] = max(0, int(hlth.get('lives', 1)) - 1)
+                                                _save_health(hlth)
+                                        except Exception:
+                                            pass
+                                        try:
+                                            eng = load_eng_sys()
+                                            sys_list = [s for s in eng.get('systems', []) if str(s.get('status')) == 'OK']
+                                            if sys_list:
+                                                s = _rand.choice(sys_list)
+                                                s['status'] = 'Offline'
+                                                s['timer_s'] = 0
+                                                s['last_damaged_ts'] = now
+                                                s['response_deadline_ts'] = now + 120.0
+                                                save_eng_sys(eng)
+                                                system_offlined = True
+                                                try:
+                                                    wd.record_event('eng.system.timer', {'system': s.get('name','System'), 'seconds': s.get('timer_s', 0)})
+                                                except Exception:
+                                                    pass
+                                        except Exception:
+                                            pass
                                     try:
                                         wd.record_event('enemy.bomb.hit', {
                                             'contact_id': cid,
                                             'name': getattr(c, 'name', ''),
-                                            'range_nm': round(dist, 2),
-                                            'attempt': attempt_idx
+                                            'range_nm': round(target_dist, 2) if target_dist is not None else None,
+                                            'attempt': attempt_idx,
+                                            'target': target_name_choice,
                                         })
-                                    except Exception:
-                                        pass
-                                    try:
-                                        eng = load_eng_sys()
-                                        sys_list = [s for s in eng.get('systems', []) if str(s.get('status')) == 'OK']
-                                        if sys_list:
-                                            s = _rand.choice(sys_list)
-                                            s['status'] = 'Offline'
-                                            s['timer_s'] = 0
-                                            s['last_damaged_ts'] = now
-                                            s['response_deadline_ts'] = now + 120.0
-                                            save_eng_sys(eng)
-                                            try:
-                                                wd.record_event('eng.system.timer', {'system': s.get('name','System'), 'seconds': s.get('timer_s', 0)})
-                                            except Exception:
-                                                pass
                                     except Exception:
                                         pass
                                 else:
@@ -1315,8 +1400,9 @@ def engine_thread_run(wd) -> None:
                                         wd.record_event('enemy.bomb.miss', {
                                             'contact_id': cid,
                                             'name': getattr(c, 'name', ''),
-                                            'range_nm': round(dist, 2),
-                                            'attempt': attempt_idx
+                                            'range_nm': round(target_dist, 2) if target_dist is not None else None,
+                                            'attempt': attempt_idx,
+                                            'target': target_name_choice,
                                         })
                                     except Exception:
                                         pass
@@ -1327,8 +1413,33 @@ def engine_thread_run(wd) -> None:
                                         wd.AUDIO_STATE['enemy_bomb'] = {'ts': time.time(), 'events': results}
                                 except Exception:
                                     pass
+                            if any(r.get('event') == 'hit' for r in results):
+                                if target_name_choice == 'Sheffield' and system_offlined:
+                                    try:
+                                        trigger_alarm('red-alert.wav', message='Sheffield hit! Critical damage reported.', role='Bridge', loop=False)
+                                    except Exception:
+                                        pass
+                                if target_name_choice == 'Hermes' and hermes_hit:
+                                    try:
+                                        trigger_alarm('red-alert.wav', message='Hermes hit! Critical damage reported.', role='Bridge', loop=False)
+                                    except Exception:
+                                        pass
+                            if 'bomb' in weapon_name:
+                                bombs_left = entry.get('bombs_left', 0)
+                                entry['bombs_left'] = max(0, int(bombs_left) - attempts_used)
+                            elif 'missile' in weapon_name:
+                                missiles_left = entry.get('missiles_left', 0)
+                                entry['missiles_left'] = max(0, int(missiles_left) - attempts_used)
+                            else:
+                                guns_left = entry.get('guns_left', 0)
+                                entry['guns_left'] = max(0, int(guns_left) - attempts_used)
+                            att[cid] = entry
                 except Exception:
                     continue
+            try:
+                wd.ATTACK_STATE = att
+            except Exception:
+                pass
         except Exception:
             pass
         # Tick ENG repairs counting down timers

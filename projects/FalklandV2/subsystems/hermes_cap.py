@@ -458,6 +458,8 @@ class HermesCAP:
             else:
                 item['tot_s'] = None
                 item['tos_s'] = None
+            if m.origin_cell and 'origin_cell' not in item:
+                item['origin_cell'] = m.origin_cell
             if 'range_nm' not in item:
                 item['range_nm'] = item.get('distance_nm')
             missions.append(item)

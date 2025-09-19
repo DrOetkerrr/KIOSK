@@ -306,6 +306,8 @@
       const kind = (c.class || c.category || "").toLowerCase();
       const isAircraft = (kind === 'aircraft' || kind === 'helicopter');
       if (!isAircraft) continue;
+      const allegiance = String(c.type || c.allegiance || '').toLowerCase();
+      if (allegiance !== 'hostile') continue;
       const d = typeof c.range_nm === "number" ? c.range_nm : Number(c.range_nm);
       if (!isFinite(d)) continue;
       if (d <= FLY_THRESH) {

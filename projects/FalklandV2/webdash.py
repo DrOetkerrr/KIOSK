@@ -242,12 +242,66 @@ def _emit_radio_event(event_id: str, ctx: Dict[str, Any]) -> None:
         record_officer('Bridge', text)
 
 
+def _contact_label(contact_id: Any) -> str | None:
+    try:
+        cid = int(contact_id)
+    except Exception:
+        return None
+    radar = globals().get('RADAR')
+    if radar is None:
+        return None
+    try:
+        for c in getattr(radar, 'contacts', []) or []:
+            try:
+                if int(getattr(c, 'id', -1)) == cid:
+                    name = getattr(c, 'name', None)
+                    if name:
+                        return str(name)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def _enrich_event_payload(event_id: str, data: Dict[str, Any]) -> None:
+    eid = str(event_id)
+    if eid.startswith('weapon.'):
+        data.setdefault('shooter', 'Sheffield')
+        if 'name' in data and 'weapon' not in data:
+            data['weapon'] = data.get('name')
+        if 'weapon' in data and 'name' not in data:
+            data['name'] = data.get('weapon')
+        if not data.get('target') and data.get('target_id') is not None:
+            label = _contact_label(data.get('target_id'))
+            if label:
+                data['target'] = label
+        data.setdefault('target', 'Target')
+    if eid.startswith('cap.weapon'):
+        data.setdefault('shooter', 'Shar')
+        if 'weapon' not in data and data.get('name'):
+            data['weapon'] = data.get('name')
+        if 'weapon' in data and 'name' not in data:
+            data['name'] = data.get('weapon')
+        if not data.get('target') and data.get('target_id') is not None:
+            label = _contact_label(data.get('target_id'))
+            if label:
+                data['target'] = label
+        data.setdefault('target', 'Target')
+    if eid.startswith('enemy.bomb'):
+        tgt = data.get('target')
+        if isinstance(tgt, str):
+            data['target'] = tgt.title()
+
+
 def record_event(event_id: str, data: Dict[str, Any] | None = None, *, text: str | None = None) -> None:
     try:
+        payload_data = dict(data or {})
+        _enrich_event_payload(event_id, payload_data)
         payload = {
             'id': str(event_id),
             'ts': time.time(),
-            'data': dict(data or {})
+            'data': payload_data
         }
         payload['text'] = text or format_event_text(event_id, payload['data'])
         with STATE_LOCK:
@@ -363,7 +417,7 @@ try:
 except Exception:
     ox0, oy0 = (float(WORLD_N) / 2.0, float(WORLD_N) / 2.0)
 try:
-    RADAR.seed_test_contacts(float(ox0), float(oy0), count=10)
+    RADAR.seed_test_contacts(float(ox0), float(oy0), count=4)
 except Exception:
     pass
 

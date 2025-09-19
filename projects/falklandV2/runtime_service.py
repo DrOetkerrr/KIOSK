@@ -139,7 +139,7 @@ class GameRuntime:
         except Exception:
             pass
         try:
-            radar.seed_test_contacts(seed_x, seed_y, count=10)
+            radar.seed_test_contacts(seed_x, seed_y, count=4)
         except Exception:
             pass
         return radar

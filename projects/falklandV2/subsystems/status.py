@@ -640,7 +640,7 @@ def build() -> Dict[str, Any]:
     try:
         events_raw = []
         with wd.STATE_LOCK:
-            events_raw = list(getattr(wd, 'EVENT_QUEUE', [])[-10:])
+            events_raw = list(getattr(wd, 'EVENT_QUEUE', []))
         formatted = []
         for ev in events_raw:
             if not isinstance(ev, dict):

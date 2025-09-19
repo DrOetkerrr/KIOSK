@@ -9,6 +9,7 @@ let ST = {
   nav: { desiredHeading: '', desiredSpeed: '' },
   wpn: { lockInput: '' },
   events: [],
+  eventHistory: [],
   eventKeys: { launch: null, result: null, cap: null },
   muteRoles: {}
 };
@@ -19,6 +20,7 @@ const STATION_ROLE_MAP = {
   WPN: ['Weapons', 'Fire Control'],
   RADIO: ['Pilot'],
   ENG: ['Engineering'],
+  LOG: [],
   SYS: ['Ensign']
 };
 
@@ -145,16 +147,18 @@ function pushEvent(kind, text){
 function trackEvents(j){
   try{
     if(!ST.eventKeys) ST.eventKeys = { launch: null, result: null, cap: null };
-    if(Array.isArray(j.events) && j.events.length){
-      ST.events = j.events.slice(-5).map(function(ev){
-        const text = String((ev && ev.text) || '—');
+    if(Array.isArray(j.events)){
+      ST.eventHistory = j.events.map(function(ev){
         return {
           kind: ev && ev.id,
-          text,
-          time: formatEventTs(ev && ev.ts)
+          text: String((ev && ev.text) || '—'),
+          time: formatEventTs(ev && ev.ts),
+          ts: ev && ev.ts
         };
       });
+      ST.events = ST.eventHistory.slice(-5);
       renderEventConsole();
+      if(ST.active === 'LOG') renderLOG();
     }
     const audio = (j && j.audio) || {};
     const launch = audio.last_launch;
@@ -859,12 +863,18 @@ function renderRADIO(j){
     tasks.forEach(function(t){
       const tr=document.createElement('tr');
       const flightTd=document.createElement('td'); flightTd.textContent = t.n!=null ? `SHAR ${t.n}` : 'SHAR —'; tr.appendChild(flightTd);
-      const statusTd=document.createElement('td'); statusTd.textContent=String(t.status||'—'); tr.appendChild(statusTd);
+      const statusTd=document.createElement('td'); statusTd.textContent=String(t.status||'—').toUpperCase(); tr.appendChild(statusTd);
       const posTd=document.createElement('td'); posTd.textContent=String(t.cur_cell||'—'); tr.appendChild(posTd);
       const tgtTd=document.createElement('td'); tgtTd.textContent=String(t.target_cell||'—'); tr.appendChild(tgtTd);
-      const rngTd=document.createElement('td'); rngTd.className='num'; rngTd.textContent = t.range_nm!=null? `${fmt(t.range_nm,1)} nm`:'—'; tr.appendChild(rngTd);
-      const totTd=document.createElement('td'); totTd.className='num'; totTd.textContent=fmtDuration(t.tot_s); tr.appendChild(totTd);
-      const tosTd=document.createElement('td'); tosTd.className='num'; tosTd.textContent=fmtDuration(t.tos_s); tr.appendChild(tosTd);
+      const rngTd=document.createElement('td'); rngTd.className='num'; rngTd.textContent = (t.range_nm!=null && Number.isFinite(Number(t.range_nm)))? `${fmt(t.range_nm,1)} nm`:'—'; tr.appendChild(rngTd);
+      function durationLabel(sec, status){
+        if(sec===undefined || sec===null) return '—';
+        const n=Number(sec);
+        if(!Number.isFinite(n) || n <= 0) return status==='onstation' ? 'ON STN' : '—';
+        return fmtDuration(n);
+      }
+      const totTd=document.createElement('td'); totTd.className='num'; totTd.textContent=durationLabel(t.tot_s, t.status); tr.appendChild(totTd);
+      const tosTd=document.createElement('td'); tosTd.className='num'; tosTd.textContent=durationLabel(t.tos_s, t.status); tr.appendChild(tosTd);
       const vecTd=document.createElement('td'); vecTd.className='num';
       const vecBtn=document.createElement('button'); vecBtn.className='btn'; vecBtn.textContent='VECTOR';
       vecBtn.onclick = async function(){
@@ -1028,6 +1038,66 @@ function renderENG(j){
   p.appendChild(wrap);
 }
 
+function renderLOG(){
+  const p = $('#station-panel');
+  p.innerHTML = '';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'log-wrap';
+
+  const title = document.createElement('div');
+  title.className = 'log-title';
+  title.textContent = 'SHIPS LOG';
+  wrap.appendChild(title);
+
+  const entries = Array.isArray(ST.eventHistory) ? ST.eventHistory.slice() : [];
+  const latest = entries.length ? entries[entries.length - 1] : null;
+
+  const headline = document.createElement('div');
+  headline.className = 'log-headline';
+  if (latest) {
+    headline.textContent = String(latest.text || '').toUpperCase();
+  } else {
+    headline.classList.add('muted');
+    headline.textContent = 'NO EVENTS RECORDED';
+  }
+  wrap.appendChild(headline);
+
+  if (latest && latest.time) {
+    const headTime = document.createElement('div');
+    headTime.className = 'log-headline-time';
+    headTime.textContent = latest.time;
+    wrap.appendChild(headTime);
+  }
+
+  const list = document.createElement('div');
+  list.className = 'log-list';
+  const history = entries.slice(0, -1).reverse();
+
+  if (!history.length) {
+    const row = document.createElement('div');
+    row.className = 'log-row muted';
+    row.textContent = latest ? '—' : 'Awaiting first contact…';
+    list.appendChild(row);
+  } else {
+    history.forEach(function(ev){
+      const row = document.createElement('div');
+      row.className = 'log-row';
+      const time = document.createElement('span');
+      time.className = 'log-time';
+      time.textContent = ev.time || '—';
+      const textSpan = document.createElement('span');
+      textSpan.className = 'log-text';
+      textSpan.textContent = ev.text || '';
+      row.append(time, textSpan);
+      list.appendChild(row);
+    });
+  }
+
+  wrap.appendChild(list);
+  p.appendChild(wrap);
+}
+
 function renderSYS(j){
   const p=$('#station-panel'); p.innerHTML='';
   addStationControls(p,'SYS');
@@ -1085,6 +1155,7 @@ function render(j){
   if(ST.active==='WPN') return renderWPN(j);
   if(ST.active==='RADIO') return renderRADIO(j);
   if(ST.active==='ENG') return renderENG(j);
+  if(ST.active==='LOG') return renderLOG();
   if(ST.active==='SYS') return renderSYS(j);
 }
 

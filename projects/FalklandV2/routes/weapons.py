@@ -166,7 +166,12 @@ def weapons_fire():
                 pass
             # Radio cue handled via event feed; avoid duplicate lines with voice_emit
             try:
-                L['record_event']('weapon.fire', {'name': name, 'mode': 'test'})
+                L['record_event']('weapon.fire', {
+                    'weapon': name,
+                    'mode': 'test',
+                    'shooter': 'Sheffield',
+                    'target': 'Test Range'
+                })
             except Exception:
                 pass
             # Apply cooldown
@@ -243,8 +248,9 @@ def weapons_fire():
         _set_cooldown_until(name, now + _cooldown_seconds_by_class(name))
         try:
             L['record_event']('weapon.fire', {
-                'name': name,
+                'weapon': name,
                 'mode': 'real',
+                'shooter': 'Sheffield',
                 'target': primary.get('name'),
                 'target_id': primary.get('id'),
                 'range_ok': True,
