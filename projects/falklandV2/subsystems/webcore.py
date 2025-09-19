@@ -889,6 +889,20 @@ def _tts_synthesize(text: str, role: str) -> str | None:
     txt = (text or '').strip()
     if not txt:
         return None
+    # Normalize any accidental leading labels like "text:" before TTS
+    try:
+        import re
+        m = re.match(r"^(?:\s*(?:text|txt)\s*[:,-]?\s+)(.*)$", txt, flags=re.IGNORECASE)
+        if m and m.group(1):
+            before = txt
+            txt = m.group(1).strip().strip('"\'\u201c\u201d')
+            try:
+                record_flight({'route': '/tts.normalized', 'method': 'INT', 'status': 200, 'duration_ms': 0,
+                               'request': {'role': role}, 'response': {'before': before[:160], 'after': txt[:160]}})
+            except Exception:
+                pass
+    except Exception:
+        pass
     voice_spec = _crew_voice(role).strip()
     provider_env = os.environ.get('TTS_PROVIDER', '').strip().lower()
     provider_default = provider_env or 'openai'
@@ -906,6 +920,19 @@ def _tts_synthesize(text: str, role: str) -> str | None:
     def _hash_name(ext: str) -> tuple[str, Path]:
         h = hashlib.sha1(f"{provider}|{voice_id}|{txt}".encode('utf-8')).hexdigest()[:20]
         fname = f"{h}.{ext}"; return fname, (TTS_DIR / fname)
+    # Log TTS input for diagnostics
+    try:
+        record_flight({
+            'route': '/tts.input',
+            'method': 'INT',
+            'status': 200,
+            'duration_ms': 0,
+            'request': {'role': role, 'provider': provider, 'voice': voice_id},
+            'response': {'text': txt[:500]},
+        })
+    except Exception:
+        pass
+
     if provider == 'macos':  # pragma: no cover
         try:
             fname, aiff = _hash_name('aiff')
@@ -925,43 +952,77 @@ def _tts_synthesize(text: str, role: str) -> str | None:
             logging.warning("macOS TTS error: %s", e)
             return None
     if provider == 'piper':  # pragma: no cover
+        import shutil, subprocess
         try:
-            import shutil
             piper_bin = os.environ.get('TTS_PIPER_BIN', 'piper')
             if not shutil.which(piper_bin):
-                logging.error("Piper forced but binary not found: %s (set TTS_PIPER_BIN)", piper_bin)
-                return None if forced_piper else None
-            model_dir = Path(os.environ.get('TTS_PIPER_MODEL_DIR', str(VOICES_DIR)))
-            model_path = Path(voice_id)
-            if not model_path.exists():
-                model_path = model_dir / (voice_id + ('' if voice_id.endswith('.onnx') else '.onnx'))
-            if not model_path.exists():
-                logging.error("Piper forced but model not found: %s (set TTS_PIPER_MODEL_DIR or TTS_PIPER_DEFAULT_MODEL)", model_path)
-                return None
-            fname_wav, wav = _hash_name('wav')
-            if not wav.exists():
-                import subprocess
-                cmd = [piper_bin, "--model", str(model_path), "--output_file", str(wav), "--text", txt]
-                ls = os.environ.get('TTS_PIPER_LENGTH'); ns = os.environ.get('TTS_PIPER_NOISE'); nw = os.environ.get('TTS_PIPER_NOISEW')
-                if ls: cmd += ["--length_scale", str(ls)]
-                if ns: cmd += ["--noise_scale", str(ns)]
-                if nw: cmd += ["--noise_w", str(nw)]
-                subprocess.run(cmd, check=True, timeout=30)
-            m4a = TTS_DIR / (fname_wav[:-3] + 'm4a')
-            try:
-                import subprocess
-                subprocess.run(["afconvert", str(wav), str(m4a), "-f", "mp4f", "-d", "aac"], check=True, timeout=20)
-                return f"/data/tts/{m4a.name}"
-            except Exception:
-                mp3 = TTS_DIR / (fname_wav[:-3] + 'mp3')
-                try:
-                    import subprocess
-                    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav), str(mp3)], check=True, timeout=20)
-                    return f"/data/tts/{mp3.name}"
-                except Exception:
-                    return f"/data/tts/{wav.name}"
+                logging.error("Piper binary not found: %s (set TTS_PIPER_BIN)", piper_bin)
+                if forced_piper:
+                    return None
+            else:
+                model_dir = Path(os.environ.get('TTS_PIPER_MODEL_DIR', str(VOICES_DIR)))
+                model_path = Path(voice_id)
+                if not model_path.exists():
+                    model_path = model_dir / (voice_id + ('' if voice_id.endswith('.onnx') else '.onnx'))
+                if not model_path.exists():
+                    logging.error("Piper model not found: %s (set TTS_PIPER_MODEL_DIR or TTS_PIPER_DEFAULT_MODEL)", model_path)
+                    if forced_piper:
+                        return None
+                else:
+                    fname_wav, wav = _hash_name('wav')
+                    if not wav.exists():
+                        cmd = [piper_bin, "--model", str(model_path), "--output_file", str(wav), "--text", txt]
+                        ls = os.environ.get('TTS_PIPER_LENGTH'); ns = os.environ.get('TTS_PIPER_NOISE'); nw = os.environ.get('TTS_PIPER_NOISEW')
+                        if ls: cmd += ["--length_scale", str(ls)]
+                        if ns: cmd += ["--noise_scale", str(ns)]
+                        if nw: cmd += ["--noise_w", str(nw)]
+                        # Suppress noisy stderr from piper; capture to log on failure
+                        try:
+                            subprocess.run(cmd, check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                        except subprocess.CalledProcessError as e:
+                            logging.error("Piper failed: %s", e.stderr.strip() if e.stderr else e)
+                            if forced_piper:
+                                return None
+                            # Fall through to OpenAI/macOS fallback
+                        except Exception as e:
+                            logging.error("Piper exec error: %s", e)
+                            if forced_piper:
+                                return None
+                    if wav.exists():
+                        m4a = TTS_DIR / (fname_wav[:-3] + 'm4a')
+                        try:
+                            subprocess.run(["afconvert", str(wav), str(m4a), "-f", "mp4f", "-d", "aac"], check=True, timeout=20, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            try:
+                                record_flight({'route': '/tts.output', 'method': 'INT', 'status': 200, 'duration_ms': 0,
+                                               'request': {'role': role, 'provider': 'piper', 'voice': voice_id},
+                                               'response': {'file': f"/data/tts/{m4a.name}", 'ext': 'm4a'}})
+                            except Exception:
+                                pass
+                            return f"/data/tts/{m4a.name}"
+                        except Exception:
+                            mp3 = TTS_DIR / (fname_wav[:-3] + 'mp3')
+                            try:
+                                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav), str(mp3)], check=True, timeout=20, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                try:
+                                    record_flight({'route': '/tts.output', 'method': 'INT', 'status': 200, 'duration_ms': 0,
+                                                   'request': {'role': role, 'provider': 'piper', 'voice': voice_id},
+                                                   'response': {'file': f"/data/tts/{mp3.name}", 'ext': 'mp3'}})
+                                except Exception:
+                                    pass
+                                return f"/data/tts/{mp3.name}"
+                            except Exception:
+                                try:
+                                    record_flight({'route': '/tts.output', 'method': 'INT', 'status': 200, 'duration_ms': 0,
+                                                   'request': {'role': role, 'provider': 'piper', 'voice': voice_id},
+                                                   'response': {'file': f"/data/tts/{wav.name}", 'ext': 'wav'}})
+                                except Exception:
+                                    pass
+                                return f"/data/tts/{wav.name}"
         except Exception as e:
-            logging.error("Piper TTS error: %s", e); return None if forced_piper else None
+            logging.error("Piper TTS error: %s", e)
+            if forced_piper:
+                return None
+        # If we reach here and not forced, allow fallback below
     # Default: OpenAI TTS
     if forced_piper:
         # Do not silently fall back when Piper is forced
@@ -975,6 +1036,12 @@ def _tts_synthesize(text: str, role: str) -> str | None:
     h = hashlib.sha1(f"{model}|{voice}|{txt}".encode('utf-8')).hexdigest()[:20]
     fname = f"{h}.mp3"; fpath = TTS_DIR / fname
     if fpath.exists():
+        try:
+            record_flight({'route': '/tts.output', 'method': 'INT', 'status': 200, 'duration_ms': 0,
+                           'request': {'role': role, 'provider': 'openai', 'voice': voice},
+                           'response': {'file': f"/data/tts/{fname}", 'ext': 'mp3', 'cached': True}})
+        except Exception:
+            pass
         return f"/data/tts/{fname}"
     url = "https://api.openai.com/v1/audio/speech"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -983,6 +1050,12 @@ def _tts_synthesize(text: str, role: str) -> str | None:
         r = requests.post(url, headers=headers, json=payload, timeout=20)
         if r.status_code == 200:
             fpath.write_bytes(r.content)
+            try:
+                record_flight({'route': '/tts.output', 'method': 'INT', 'status': 200, 'duration_ms': 0,
+                               'request': {'role': role, 'provider': 'openai', 'voice': voice},
+                               'response': {'file': f"/data/tts/{fname}", 'ext': 'mp3', 'cached': False}})
+            except Exception:
+                pass
             return f"/data/tts/{fname}"
         else:
             logging.warning("OpenAI TTS failed %s: %s", r.status_code, r.text[:200])
@@ -1168,6 +1241,73 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
                     dx = float(tx) - float(own_x)
                     dy = float(ty) - float(own_y)
                     rng = math.hypot(dx, dy)
+
+                # Predictive helpers relative to CAP station center
+                fox2_eta_s = None
+                roe_eta_s = None
+                pk_now = None
+                feasibility = None
+                recommendation = None
+                # Resolve target kinematics if available
+                try:
+                    course_deg = float(getattr(target_contact, 'course_deg', getattr(target_contact, 'course', 0.0))) if target_contact is not None else None
+                except Exception:
+                    course_deg = None
+                try:
+                    speed_kts = float(getattr(target_contact, 'speed_kts', getattr(target_contact, 'speed', 0.0))) if target_contact is not None else None
+                except Exception:
+                    speed_kts = None
+                try:
+                    mx, my = cell_to_world(str(m.get('target_cell') or target_cell)) if (m.get('target_cell') or target_cell) else (own_x, own_y)
+                except Exception:
+                    mx, my = (own_x, own_y)
+                if (tx is not None and ty is not None and course_deg is not None and speed_kts is not None):
+                    dxs, dys = float(mx) - float(tx), float(my) - float(ty)
+                    dist_center = math.hypot(dxs, dys)
+                    rad = math.radians(float(course_deg) % 360.0)
+                    vx = math.sin(rad) * (float(speed_kts) / 3600.0)
+                    vy = -math.cos(rad) * (float(speed_kts) / 3600.0)
+                    if dist_center > 1e-6:
+                        ux, uy = dxs / dist_center, dys / dist_center
+                        closure = vx * ux + vy * uy
+                    else:
+                        closure = 0.0
+                    def _eta(R: float):
+                        if dist_center <= R:
+                            return 0.0
+                        if closure <= 1e-9:
+                            return None
+                        return max(0.0, (dist_center - R) / closure)
+                    roe_eta_s = _eta(15.0)
+                    fox2_eta_s = _eta(5.0)
+                    try:
+                        if hasattr(wd.CAP, '_pk_for_range') and dist_center is not None:
+                            pk_now = float(wd.CAP._pk_for_range(float(dist_center)))
+                    except Exception:
+                        pk_now = None
+                    # Feasibility vs time-to-ship arrival
+                    dxh, dyh = float(own_x) - float(tx), float(own_y) - float(ty)
+                    dist_ship = math.hypot(dxh, dyh)
+                    if dist_ship > 1e-6:
+                        uxh, uyh = dxh / dist_ship, dyh / dist_ship
+                        closure_ship = vx * uxh + vy * uyh
+                        tti_ship = None if closure_ship <= 1e-9 else max(0.0, (dist_ship - 3.0) / max(closure_ship, 1e-9))
+                    else:
+                        tti_ship = 0.0
+                    if fox2_eta_s is None:
+                        feasibility = 'not closing' if closure <= 1e-9 else 'unknown'
+                    elif tti_ship is None:
+                        feasibility = 'not closing'
+                    else:
+                        cushion = float(tti_ship) - float(fox2_eta_s)
+                        feasibility = 'good' if cushion > 10 else ('fair' if -10 <= cushion <= 10 else 'poor')
+                    try:
+                        if fox2_eta_s is not None and (m.get('permission', {}).get('authorized') or False):
+                            recommendation = f"CAP FOX2 in {int(round(fox2_eta_s))}s" + (f" (Pk {pk_now:.2f})" if pk_now is not None else "")
+                        elif roe_eta_s is not None and m.get('permission', {}).get('required', True):
+                            recommendation = f"CAP ask in {int(round(roe_eta_s))}s"
+                    except Exception:
+                        recommendation = None
                 ts = (m.get('timestamps') or {})
                 status = str(m.get('status') or '')
                 tot_s = None
@@ -1206,6 +1346,12 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
                     "vector": vect,
                     "engaged": bool(m.get('last_engagement')),
                     "permission": m.get('permission') or {},
+                    "missiles_left": m.get('missiles_left'),
+                    "roe_eta_s": (None if roe_eta_s is None else float(roe_eta_s)),
+                    "fox2_eta_s": (None if fox2_eta_s is None else float(fox2_eta_s)),
+                    "pk_now": (None if pk_now is None else round(float(pk_now), 2)),
+                    "feasibility": feasibility,
+                    "rec": recommendation,
                 })
             except Exception:
                 continue
@@ -1257,64 +1403,120 @@ def engine_thread_run(wd) -> None:
         except Exception:
             pass
         # CAP tick + auto-engage if primary in range
-        try:
-            if wd.CAP is not None:
+        # Keep CAP exceptions local to each sub-step to avoid killing the loop
+        if wd.CAP is not None:
+            try:
                 wd.CAP.tick()
-                pid = getattr(wd.RADAR, 'priority_id', None)
-                if pid is not None:
-                    # compute range to primary
-                    tgt = next((c for c in wd.RADAR.contacts if int(getattr(c,'id',-1))==int(pid)), None)
-                    if tgt is not None:
-                        rng = ((tgt.x-ox)**2 + (tgt.y-oy)**2) ** 0.5
-                        wd.CAP.auto_engage(rng, int(pid))
-                # ROE ask: if any mission is on-station and near the primary, request authorization
-                try:
-                    pid = getattr(wd.RADAR, 'priority_id', None)
-                    tgt = next((c for c in wd.RADAR.contacts if int(getattr(c,'id',-1))==int(pid)), None) if pid is not None else None
-                    if tgt is not None:
-                        tx, ty = float(getattr(tgt,'x',0.0)), float(getattr(tgt,'y',0.0))
+            except Exception:
+                pass
+            pid = getattr(wd.RADAR, 'priority_id', None)
+            tgt = next((c for c in wd.RADAR.contacts if int(getattr(c,'id',-1))==int(pid)), None) if pid is not None else None
+            # Auto-engage based on distance from nearest on-station CAP center
+            try:
+                if tgt is not None:
+                    rng = ((tgt.x-ox)**2 + (tgt.y-oy)**2) ** 0.5
+                    try:
+                        dmins=[]
                         for m in getattr(wd.CAP, 'missions', []) or []:
-                            try:
-                                if str(getattr(m,'status','')) != 'onstation':
-                                    continue
-                                mid = int(getattr(m,'id',0))
-                                cell = str(getattr(m,'target_cell','') or '')
-                                mx, my = cell_to_world(cell) if cell else (ox, oy)
-                                dist = ((tx-mx)**2 + (ty-my)**2) ** 0.5
-                                if dist > 15.0:
-                                    continue
-                                if int(getattr(m, 'missiles_left', 1) or 0) <= 0:
-                                    continue
-                                perm = wd.CAP.permission_state(mid) if hasattr(wd.CAP, 'permission_state') else None
-                                required = True if perm is None else bool(perm.get('required', True))
-                                authorized = False if perm is None else bool(perm.get('authorized', False))
-                                last_prompt = 0.0 if perm is None else float(perm.get('last_prompt_ts') or 0.0)
-                                if not required or authorized:
-                                    continue
-                                meta = getattr(wd, 'CAP_META', {})
-                                rec = meta.get(mid) or {}
-                                last_prompt = max(last_prompt, float(rec.get('last_request_ts', 0.0) or 0.0))
-                                if (not rec.get('asked')) or (now - last_prompt >= 30.0):
-                                    rec['asked'] = True
-                                    rec['authorized'] = False
-                                    rec['last_request_ts'] = now
-                                    rec['hold_since_ts'] = rec.get('hold_since_ts') or now
-                                    meta[mid] = rec
-                                    try:
-                                        wd.CAP.mark_permission_prompted(mid, now)
-                                    except Exception:
-                                        pass
-                                    try:
-                                        wd.record_officer('Pilot', f'Request permission to engage target {int(pid)} at {dist:.1f} nm.')
-                                    except Exception:
-                                        pass
-                            except Exception:
+                            if str(getattr(m,'status','')) != 'onstation':
                                 continue
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        # Resolve pending events
+                            cell = str(getattr(m,'target_cell','') or '')
+                            if not cell:
+                                continue
+                            mx, my = cell_to_world(cell)
+                            dmins.append(((tgt.x - mx)**2 + (tgt.y - my)**2) ** 0.5)
+                        if dmins:
+                            rng = min(dmins)
+                    except Exception:
+                        pass
+                    wd.CAP.auto_engage(rng, int(pid))
+            except Exception:
+                pass
+            # ROE ask window near 15 nm of station center
+            try:
+                if tgt is not None:
+                    tx, ty = float(getattr(tgt,'x',0.0)), float(getattr(tgt,'y',0.0))
+                    for m in getattr(wd.CAP, 'missions', []) or []:
+                        try:
+                            if str(getattr(m,'status','')) != 'onstation':
+                                continue
+                            mid = int(getattr(m,'id',0))
+                            cell = str(getattr(m,'target_cell','') or '')
+                            mx, my = cell_to_world(cell) if cell else (ox, oy)
+                            dist = ((tx-mx)**2 + (ty-my)**2) ** 0.5
+                            if dist > 15.0:
+                                continue
+                            if int(getattr(m, 'missiles_left', 1) or 0) <= 0:
+                                continue
+                            perm = wd.CAP.permission_state(mid) if hasattr(wd.CAP, 'permission_state') else None
+                            required = True if perm is None else bool(perm.get('required', True))
+                            authorized = False if perm is None else bool(perm.get('authorized', False))
+                            last_prompt = 0.0 if perm is None else float(perm.get('last_prompt_ts') or 0.0)
+                            if not required or authorized:
+                                continue
+                            meta = getattr(wd, 'CAP_META', {})
+                            rec = meta.get(mid) or {}
+                            last_prompt = max(last_prompt, float(rec.get('last_request_ts', 0.0) or 0.0))
+                            if (not rec.get('asked')) or (now - last_prompt >= 30.0):
+                                rec['asked'] = True
+                                rec['authorized'] = False
+                                rec['last_request_ts'] = now
+                                rec['hold_since_ts'] = rec.get('hold_since_ts') or now
+                                meta[mid] = rec
+                                try:
+                                    wd.CAP.mark_permission_prompted(mid, now)
+                                except Exception:
+                                    pass
+                                try:
+                                    wd.record_officer('Pilot', f'Request permission to engage target {int(pid)} at {dist:.1f} nm.')
+                                except Exception:
+                                    pass
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+            # Cue: Fox Two soon (<=30s to 5 nm ring)
+            try:
+                if tgt is not None:
+                    meta = getattr(wd, 'CAP_META', {}) if hasattr(wd, 'CAP_META') else {}
+                    for m in getattr(wd.CAP, 'missions', []) or []:
+                        if str(getattr(m,'status','')) != 'onstation':
+                            continue
+                        if int(getattr(m, 'missiles_left', 0) or 0) <= 0:
+                            continue
+                        perm = wd.CAP.permission_state(int(getattr(m,'id',0))) if hasattr(wd.CAP,'permission_state') else None
+                        if not (perm and bool(perm.get('authorized', False))):
+                            continue
+                        cell = str(getattr(m,'target_cell','') or '')
+                        if not cell:
+                            continue
+                        mx, my = cell_to_world(cell)
+                        dxs, dys = float(mx) - float(tgt.x), float(my) - float(tgt.y)
+                        dist_center = (dxs*dxs + dys*dys) ** 0.5
+                        crs = float(getattr(tgt,'course_deg', getattr(tgt,'course', 0.0)))
+                        spd = float(getattr(tgt,'speed_kts', getattr(tgt,'speed', 0.0)))
+                        rad = math.radians(crs % 360.0)
+                        vx = math.sin(rad) * (spd/3600.0)
+                        vy = -math.cos(rad) * (spd/3600.0)
+                        if dist_center > 1e-6:
+                            ux, uy = dxs / dist_center, dys / dist_center
+                            closure = vx * ux + vy * uy
+                        else:
+                            closure = 0.0
+                        eta_fox2 = None if closure <= 1e-9 or dist_center <= 5.0 else (dist_center - 5.0) / closure
+                        if eta_fox2 is not None and eta_fox2 <= 30.0:
+                            rec = meta.setdefault(int(getattr(m,'id',0)), {})
+                            last_cue = float(rec.get('fox2_cue_ts') or 0.0)
+                            if now - last_cue >= 25.0:
+                                try:
+                                    wd.record_officer('Pilot', 'Fox Two in 30 seconds.')
+                                except Exception:
+                                    pass
+                                rec['fox2_cue_ts'] = now
+                                meta[int(getattr(m,'id',0))] = rec
+            except Exception:
+                pass
+# Resolve pending events
         try:
             due = []
             for ev in list(wd.PENDING_EVENTS):
@@ -1372,7 +1574,7 @@ def engine_thread_run(wd) -> None:
                         pass
         except Exception:
             pass
-        # Enemy attack when inside 1 nm (cooldown per contact)
+        # Enemy attack when inside weapon envelope (cooldown per contact)
         try:
             hlth = _load_health()
             att = getattr(wd, 'ATTACK_STATE', {})
@@ -1410,10 +1612,44 @@ def engine_thread_run(wd) -> None:
                         dist_herm_raw = ((c.x-herm_x)**2 + (c.y-herm_y)**2) ** 0.5
                     dist_ship_nm = dist_ship_raw * grid_cell_nm
                     dist_herm_nm = (dist_herm_raw * grid_cell_nm) if dist_herm_raw is not None else None
+
+                    # Determine hostile attack kind and envelope
+                    meta = getattr(c, 'meta', {}) or {}
+                    weapon_name = str(meta.get('primary_weapon') or getattr(c, 'primary_weapon', '')).lower()
+                    cap_meta = meta.get('cap', {}) if isinstance(meta.get('cap'), dict) else {}
+                    try:
+                        env_min = float(cap_meta.get('min_range_nm')) if cap_meta.get('min_range_nm') is not None else None
+                    except Exception:
+                        env_min = None
+                    try:
+                        env_max = float(cap_meta.get('max_range_nm')) if cap_meta.get('max_range_nm') is not None else None
+                    except Exception:
+                        env_max = None
+                    if env_min is None or env_max is None:
+                        if 'rocket' in weapon_name:
+                            env_min, env_max = 0.2, 0.8
+                        elif 'missile' in weapon_name:
+                            env_min, env_max = 2.0, 15.0
+                        elif 'gun' in weapon_name or 'cannon' in weapon_name:
+                            env_min, env_max = 0.2, 1.5
+                        else:
+                            # Default to bomb-like release envelope
+                            env_min, env_max = 0.1, 1.0
+                    attack_kind = ('rocket' if 'rocket' in weapon_name else
+                                   'missile' if 'missile' in weapon_name else
+                                   'gun' if ('gun' in weapon_name or 'cannon' in weapon_name) else
+                                   'bomb' if 'bomb' in weapon_name else 'attack')
+
                     target_options = []
-                    if dist_ship_nm <= 1.0:
+                    # Gate by envelope instead of hard 1.0 nm
+                    def _in_env(dnm: float) -> bool:
+                        try:
+                            return (dnm >= float(env_min)) and (dnm <= float(env_max))
+                        except Exception:
+                            return dnm <= 1.0
+                    if _in_env(dist_ship_nm):
                         target_options.append(('Sheffield', dist_ship_nm))
-                    if dist_herm_nm is not None and dist_herm_nm <= 1.0:
+                    if dist_herm_nm is not None and _in_env(dist_herm_nm):
                         target_options.append(('Hermes', dist_herm_nm))
                     if target_options:
                         target_name_choice, target_dist_nm = _rand.choice(target_options)
@@ -1448,15 +1684,16 @@ def engine_thread_run(wd) -> None:
                                         'dist_herm_raw': None if dist_herm_raw is None else round(dist_herm_raw, 3),
                                         'dist_herm_nm': None if dist_herm_nm is None else round(dist_herm_nm, 3),
                                         'cell_nm': grid_cell_nm,
+                                        'env_min_nm': env_min,
+                                        'env_max_nm': env_max,
+                                        'attack_kind': attack_kind,
                                     },
-                                    'response': {'armed': True},
+                                    'response': {'in_envelope': True},
                                 })
                             except Exception:
                                 pass
                             entry['last'] = now
                             try:
-                                meta = getattr(c, 'meta', {}) or {}
-                                weapon_name = str(meta.get('primary_weapon') or getattr(c, 'primary_weapon', '')).lower()
                                 if 'bomb' in weapon_name:
                                     hit_prob = 0.6
                                     bombs_left = entry.get('bombs_left')
@@ -1539,41 +1776,25 @@ def engine_thread_run(wd) -> None:
                                                 )
                                         except Exception:
                                             pass
-                                    _record_event_guard(
-                                        wd,
-                                        'enemy.bomb.hit',
-                                        {
-                                            'contact_id': cid,
-                                            'name': getattr(c, 'name', ''),
-                                            'range_nm': round(target_dist_nm, 2) if target_dist_nm is not None else None,
-                                            'attempt': attempt_idx,
-                                            'target': target_name_choice,
-                                        },
-                                        context={
-                                            'contact_id': cid,
-                                            'weapon': weapon_name,
-                                            'attempt': attempt_idx,
-                                            'target': target_name_choice,
-                                        },
-                                    )
+                                    payload = {
+                                        'contact_id': cid,
+                                        'name': getattr(c, 'name', ''),
+                                        'range_nm': round(target_dist_nm, 2) if target_dist_nm is not None else None,
+                                        'attempt': attempt_idx,
+                                        'target': target_name_choice,
+                                        'attack_kind': attack_kind,
+                                    }
+                                    _record_event_guard(wd, 'enemy.attack.hit', dict(payload), context={'source': 'enemy_attack', 'contact_id': cid})
                                 else:
-                                    _record_event_guard(
-                                        wd,
-                                        'enemy.bomb.miss',
-                                        {
-                                            'contact_id': cid,
-                                            'name': getattr(c, 'name', ''),
-                                            'range_nm': round(target_dist_nm, 2) if target_dist_nm is not None else None,
-                                            'attempt': attempt_idx,
-                                            'target': target_name_choice,
-                                        },
-                                        context={
-                                            'contact_id': cid,
-                                            'weapon': weapon_name,
-                                            'attempt': attempt_idx,
-                                            'target': target_name_choice,
-                                        },
-                                    )
+                                    payload = {
+                                        'contact_id': cid,
+                                        'name': getattr(c, 'name', ''),
+                                        'range_nm': round(target_dist_nm, 2) if target_dist_nm is not None else None,
+                                        'attempt': attempt_idx,
+                                        'target': target_name_choice,
+                                        'attack_kind': attack_kind,
+                                    }
+                                    _record_event_guard(wd, 'enemy.attack.miss', dict(payload), context={'source': 'enemy_attack', 'contact_id': cid})
 
                             if results:
                                 try:

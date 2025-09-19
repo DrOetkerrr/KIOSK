@@ -345,6 +345,14 @@ class HermesCAP:
                         self._emit_event('cap.permission.timeout', {'mission_id': m.id, 'cell': m.target_cell})
                         self.force_rtb(m.id, reason='permission_timeout', now=t)
                         continue
+                # Winchester: if out of missiles, RTB immediately
+                try:
+                    if int(getattr(m, 'missiles_left', 0) or 0) <= 0:
+                        self._emit_event('cap.mission.rtb', {'mission_id': m.id, 'reason': 'winchester'})
+                        self._transition_to_rtb(m, t)
+                        continue
+                except Exception:
+                    pass
                 if t >= (m.ts.get("etd_rtb") or t):
                     self._transition_to_rtb(m, t)
             elif m.status == "rtb":
@@ -422,6 +430,13 @@ class HermesCAP:
 
         m.last_engagement = result
         m.last_engagement_s = t
+        # If now out of missiles, start RTB immediately
+        try:
+            if int(getattr(m, 'missiles_left', 0) or 0) <= 0:
+                self._emit_event('cap.mission.rtb', {'mission_id': m.id, 'reason': 'winchester'})
+                self._transition_to_rtb(m, t)
+        except Exception:
+            pass
         return result
 
     # ---------- effects surface for Engine (to hook into spawn/defence)

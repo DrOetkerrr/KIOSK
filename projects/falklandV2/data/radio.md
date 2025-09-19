@@ -22,6 +22,8 @@ cap.weapon.miss – “Captain, Harrier missed target with {weapon}”
 cap.mission.rtb – “Captain, SHAR {mission_id} ordered RTB.”
 enemy.bomb.hit – “Captain, we are hit!”
 enemy.bomb.miss – “Captain, bomb missed”
+enemy.attack.hit – “Captain, we are hit by {attack_kind}!”
+enemy.attack.miss – “Captain, enemy {attack_kind} missed”
 eng.system.offline – “Captain, alert, System offline: {system}”
 eng.repair.deployed – “Captain, Repair team dispatched to {system}”
 eng.system.timer – “Captain, Alert: repair timer {system}: {seconds}s”

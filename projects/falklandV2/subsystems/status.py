@@ -547,17 +547,21 @@ def build() -> Dict[str, Any]:
         pass
 
     try:
-        cap_obj = getattr(wd, 'CAP', None)
-        if cap_obj is not None:
-            snap = cap_obj.snapshot()
-            if isinstance(snap, dict):
-                if 'tasks' not in snap and 'missions' in snap:
-                    snap['tasks'] = list(snap.get('missions') or [])
-            payload['cap'] = snap
-        else:
-            payload['cap'] = {'readiness': {}, 'missions': [], 'tasks': []}
+        # Use enriched UI snapshot for CAP to provide decision helpers
+        payload['cap'] = core.cap_ui_snapshot(wd)
     except Exception:
-        payload['cap'] = {'readiness': {}, 'missions': [], 'tasks': []}
+        try:
+            cap_obj = getattr(wd, 'CAP', None)
+            if cap_obj is not None:
+                snap = cap_obj.snapshot()
+                if isinstance(snap, dict):
+                    if 'tasks' not in snap and 'missions' in snap:
+                        snap['tasks'] = list(snap.get('missions') or [])
+                payload['cap'] = snap
+            else:
+                payload['cap'] = {'readiness': {}, 'missions': [], 'tasks': []}
+        except Exception:
+            payload['cap'] = {'readiness': {}, 'missions': [], 'tasks': []}
 
     try:
         rules_doc = core._load_json(core.BASE_DIR / 'templates' / 'Validation.json', {})

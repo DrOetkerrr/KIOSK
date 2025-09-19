@@ -66,6 +66,7 @@ _bp_safe_register('projects.falklandV2.routes.pages')
 _bp_safe_register('projects.falklandV2.routes.diag')
 _bp_safe_register('projects.falklandV2.routes.flight')
 _bp_safe_register('projects.falklandV2.routes.eng')
+_bp_safe_register('projects.falklandV2.routes.resupply')
 
 
 # One-shot startup selftest
@@ -113,6 +114,7 @@ def _bind_runtime(rt: GameRuntime) -> None:
     global _load_json, _save_json, _load_health, _save_health
     global load_ammo, save_ammo, load_arming, save_arming, compute_in_range
     global RADAR, CAP
+    global RESUPPLY
 
     ENG = rt.engine
     STATE_LOCK = rt.state_lock
@@ -155,6 +157,9 @@ def _bind_runtime(rt: GameRuntime) -> None:
 
     RADAR = rt.radar
     CAP = rt.cap
+    # Resupply state (Sea King)
+    if 'RESUPPLY' not in globals():
+        RESUPPLY = {"active": False, "eta_ts": 0.0, "started_ts": 0.0, "stage": None}
     hook = globals().get('record_event')
     if CAP is not None and callable(hook):
         try:
@@ -305,6 +310,10 @@ def _enrich_event_payload(event_id: str, data: Dict[str, Any]) -> None:
                 data['target'] = label
         data.setdefault('target', 'Target')
     if eid.startswith('enemy.bomb'):
+        tgt = data.get('target')
+        if isinstance(tgt, str):
+            data['target'] = tgt.title()
+    if eid.startswith('enemy.attack'):
         tgt = data.get('target')
         if isinstance(tgt, str):
             data['target'] = tgt.title()
@@ -688,6 +697,23 @@ def _fmt_msg(tpl: str, ctx: Dict[str, Any]) -> str:
 
 def record_officer(role: str, text: str) -> None:
     role_str = str(role or "OFFICER"); msg = str(text or ""); low = msg.lower()
+    # Sanitize accidental leading prefixes like "text " that might leak into TTS
+    try:
+        import re
+        m = re.match(r"^(?:\s*(?:text|txt)\s*[:,-]?\s+)(.*)$", msg, flags=re.IGNORECASE)
+        if m and m.group(1):
+            old = msg
+            msg = m.group(1).strip()
+            low = msg.lower()
+            try:
+                record_flight({
+                    'route': '/radio.sanitize', 'method': 'INT', 'status': 200, 'duration_ms': 0,
+                    'request': {'role': role_str}, 'response': {'before': old[:120], 'after': msg[:120]}
+                })
+            except Exception:
+                pass
+    except Exception:
+        pass
     prio = (role_str in ("Fire Control",)) or any(w in low for w in ("priority", "threat", "hit", "miss", "locked", "destroyed"))
     with STATE_LOCK:
         ts = time.time()

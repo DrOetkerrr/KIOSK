@@ -24,6 +24,8 @@
     {"id": "cap.mission.rtb", "text": "SHAR {mission_id} ordered RTB"},
     {"id": "enemy.bomb.hit", "text": "{target} WAS HIT!"},
     {"id": "enemy.bomb.miss", "text": "Bomb missed {target}"},
+    {"id": "enemy.attack.hit", "text": "Enemy {attack_kind} hit {target}"},
+    {"id": "enemy.attack.miss", "text": "Enemy {attack_kind} missed {target}"},
     {"id": "eng.system.offline", "text": "System offline: {system}"},
     {"id": "eng.repair.deployed", "text": "Repair team dispatched to {system}"},
     {"id": "eng.system.timer", "text": "Repair timer {system}: {seconds}s"}

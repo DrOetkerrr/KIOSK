@@ -112,6 +112,9 @@
       const ctx = ensureCtx();
       const url = file.startsWith('/') ? file : (BASE + file);
       const el = new Audio(url);
+      // Accessibility: hide programmatic audio elements from screen readers to prevent
+      // announcements like reading field names (e.g., "text") before playback.
+      try{ el.setAttribute('aria-hidden','true'); el.setAttribute('role','presentation'); el.setAttribute('tabindex','-1'); }catch(_){ }
       el.crossOrigin = 'anonymous';
       const src = (ctx && ctx.createMediaElementSource) ? ctx.createMediaElementSource(el) : null;
       if (!ctx || !src) {

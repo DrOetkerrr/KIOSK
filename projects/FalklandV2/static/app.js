@@ -160,6 +160,19 @@ function renderCAP(cap){
     const statusCell = document.createElement('div');
     statusCell.textContent = String(t.status || '—');
     if (t.vector) statusCell.appendChild(badge('VECTOR','badge accent'));
+    // Decision-support badges
+    try{
+      const msl = (t.missiles_left!=null)? Number(t.missiles_left): null;
+      if(msl!=null) statusCell.appendChild(badge(`MSL ${msl}`, 'badge'+(msl<=0?' warn':'')));
+      const roe = (t.roe_eta_s!=null)? Number(t.roe_eta_s): null;
+      if(roe!=null){ const cls = (roe<=0)? 'badge ok':'badge'; statusCell.appendChild(badge(`ROE ${Math.round(Math.max(0,roe))}s`, cls)); }
+      const fox = (t.fox2_eta_s!=null)? Number(t.fox2_eta_s): null;
+      if(fox!=null){ const cls = (fox<=30)? 'badge accent':'badge'; statusCell.appendChild(badge(`FOX2 ${Math.round(Math.max(0,fox))}s`, cls)); }
+      if(t.pk_now!=null) statusCell.appendChild(badge(`Pk ${Number(t.pk_now).toFixed(2)}`, 'badge'));
+      const feas = String(t.feasibility||'');
+      if(feas){ const cls = (feas==='good')?'badge ok':(feas==='poor')?'badge warn':'badge'; statusCell.appendChild(badge(feas.toUpperCase(), cls)); }
+      if(t.rec){ const rec=document.createElement('div'); rec.className='mono muted'; rec.textContent=String(t.rec); statusCell.appendChild(rec); }
+    }catch(_){ }
     body.appendChild(rowEl([
       t.n ?? '—',
       t.cur_cell ?? '—',
