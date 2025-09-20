@@ -130,6 +130,46 @@ class GameRuntime:
             radar.cap_effects_provider = (lambda: self.cap.current_effects() if self.cap is not None else {"active": False})
         except Exception:
             pass
+        try:
+            radar.cap_missions_provider = (lambda: (self.cap.snapshot().get('missions') if self.cap is not None else []))
+        except Exception:
+            pass
+        # Bind CAP hooks: resolve target class/name and apply hit effects
+        try:
+            if self.cap is not None:
+                self.cap.bind_target_resolver(lambda cid: next((c for c in radar.contacts if int(getattr(c, 'id', -1)) == int(cid)), None))  # type: ignore[attr-defined]
+                def _cap_hit(cid: int, name: str, klass: str) -> None:
+                    try:
+                        nm = str(name or '')
+                        kl = str(klass or '')
+                    except Exception:
+                        nm = str(name)
+                        kl = str(klass)
+                    # Belgrano special: 8 lives; sink at 0
+                    if 'belgrano' in nm.lower():
+                        try:
+                            hl = self.core._load_health()
+                            if 'belgrano_max_lives' not in hl:
+                                hl['belgrano_max_lives'] = 8
+                            if 'belgrano_lives' not in hl:
+                                hl['belgrano_lives'] = hl.get('belgrano_max_lives', 8)
+                            if int(hl.get('belgrano_lives', 0)) > 0:
+                                hl['belgrano_lives'] = max(0, int(hl.get('belgrano_lives', 0)) - 1)
+                                self.core._save_health(hl)
+                            # Remove contact only when lives reach zero
+                            if int(hl.get('belgrano_lives', 0)) <= 0:
+                                radar.contacts = [c for c in radar.contacts if int(getattr(c, 'id', -1)) != int(cid)]
+                        except Exception:
+                            pass
+                    else:
+                        # Remove other targets immediately on hit
+                        try:
+                            radar.contacts = [c for c in radar.contacts if int(getattr(c, 'id', -1)) != int(cid)]
+                        except Exception:
+                            pass
+                self.cap.bind_hit_callback(_cap_hit)  # type: ignore[attr-defined]
+        except Exception:
+            pass
         seed_x = float(WORLD_N) / 2.0
         seed_y = float(WORLD_N) / 2.0
         try:

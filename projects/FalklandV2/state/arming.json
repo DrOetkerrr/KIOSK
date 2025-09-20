@@ -1,24 +1,27 @@
 {
   "MM38 Exocet": {
-    "armed": false,
-    "arming_until": 0
+    "armed": true,
+    "arming_until": 0,
+    "cooldown_until": 1758373340.427207
   },
   "Sea Dart SAM": {
     "armed": true,
     "arming_until": 0,
-    "cooldown_until": 1758304865.348128
+    "cooldown_until": 1758373385.8648808
   },
   "20mm GAM-BO1 (twin)": {
     "armed": true,
     "arming_until": 0,
-    "cooldown_until": 1758300365.87375
+    "cooldown_until": 1758373400.35496
   },
   "20mm Oerlikon": {
-    "armed": false,
-    "arming_until": 0
+    "armed": true,
+    "arming_until": 0,
+    "cooldown_until": 1758373335.990299
   },
   "4.5 inch Mk.8 gun": {
     "armed": true,
-    "arming_until": 0
+    "arming_until": 0,
+    "cooldown_until": 1758373337.1016068
   }
 }

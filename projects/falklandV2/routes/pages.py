@@ -21,6 +21,16 @@ def index():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@bp.get("/radio/test")
+def radio_test_page():
+    L = _lazy()
+    try:
+        return render_template("radio_test.html", app_version=L['APP_VERSION'])
+    except Exception as e:
+        logging.exception("/radio/test page error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @bp.get("/menu")
 def menu_page():
     try:
@@ -37,4 +47,3 @@ def skirmish_page():
     except Exception as e:
         logging.exception("/skirmish page error: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
-

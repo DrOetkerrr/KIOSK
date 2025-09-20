@@ -37,6 +37,10 @@ body{
 .btn[disabled]{opacity:.4;cursor:not-allowed}
 .btn.ready{background:#0c471a;border-color:#1aa357;color:var(--accent)}
 .btn.ready:hover{background:#115a22;color:var(--accent)}
+.btn.ptt-btn{min-width:56px}
+.btn.ptt-btn.recording{background:#6a1c1c;border-color:#c73d3d;color:#ffbfbf}
+.btn.radio-mute{min-width:86px}
+.btn.radio-mute.muted{background:#3a2c10;border-color:#a67c1a;color:#ffe16a}
 .station-offline{display:flex;align-items:center;justify-content:center;min-height:320px;background:#020402;color:#47ff8a;font-size:22px;text-transform:uppercase;letter-spacing:3px;box-shadow:inset 0 0 25px rgba(0,0,0,0.8)}
 .btn.danger{background:#451414;border-color:#c73d3d;color:#ffbfbf}
 .btn.danger:hover{background:#6a1c1c;color:#ffe3e3}

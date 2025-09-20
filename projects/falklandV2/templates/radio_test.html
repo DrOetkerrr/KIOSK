@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Radio Test</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/crt.css', v=app_version|default('dev')) }}" />
+  <script src="{{ url_for('static', filename='sound.js', v=app_version|default('dev')) }}"></script>
+  <style>
+    .wrap{max-width:720px}
+    .row{display:flex;gap:10px;align-items:center}
+    .grow{flex:1}
+    .small{font-size:12px;color:var(--muted)}
+    .out{white-space:pre-wrap; background:rgba(3,18,7,0.85); padding:10px; border:1px solid var(--border); border-radius:8px}
+  </style>
+  <script>
+  function _pickReply(j){
+    try { if (j && j.ai && j.ai.parsed && j.ai.parsed.radio) return String(j.ai.parsed.radio); } catch(_){ }
+    try { if (j && j.spoken && j.spoken.text) return String(j.spoken.text); } catch(_){ }
+    return '';
+  }
+  async function speak(){
+    const text = document.getElementById('txt').value.trim();
+    const role = document.getElementById('role').value;
+    const out = document.getElementById('out'); out.textContent = '…';
+    try{
+      const r = await fetch('/radio/voice?speak=1&voice_role='+encodeURIComponent(role), {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text})
+      });
+      const j = await r.json().catch(()=>({}));
+      const line = _pickReply(j);
+      out.textContent = line || '(no reply)';
+    }catch(e){ out.textContent = String(e); }
+  }
+  </script>
+</head>
+<body>
+  <div class="wrap">
+    <h2>Radio Test</h2>
+    <p class="small">Type what you want to say. Click “Speak reply” — the game will parse it with AI and speak back in the selected crew voice. No game actions are executed.</p>
+    <div class="row">
+      <select id="role" class="input">
+        <option>Weapons</option>
+        <option>Radar</option>
+        <option>Bridge</option>
+        <option>Fire Control</option>
+        <option>Engineering</option>
+      </select>
+      <input id="txt" class="input grow" placeholder="e.g., Weapons, status report" />
+      <button class="btn" onclick="speak()">Speak reply</button>
+    </div>
+    <div style="height:10px"></div>
+    <div id="out" class="out mono"></div>
+    <div style="height:14px"></div>
+    <p class="small">Tip: On the main Stations page, you can also hold the PTT button or the Spacebar to record your voice and get a reply.</p>
+  </div>
+</body>
+</html>

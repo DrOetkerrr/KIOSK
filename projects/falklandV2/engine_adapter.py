@@ -126,7 +126,7 @@ def contact_to_ui(c: Contact, own_xy: Tuple[float, float]) -> Dict[str, Any]:
     typ = str(c.allegiance)
     name = str(c.name)
     # Flat primitives with exact keys the UI reads; include label-style aliases for compatibility
-    return {
+    ui = {
         "id": cid,
         "ID": cid,
         "cell": cell,
@@ -139,3 +139,13 @@ def contact_to_ui(c: Contact, own_xy: Tuple[float, float]) -> Dict[str, Any]:
         "speed": spd,
         "SPD": spd,
     }
+    # Disambiguate multiple CAP flights by adding a pennant
+    try:
+        meta = getattr(c, 'meta', {}) or {}
+        if bool(meta.get('cap_flight')):
+            mid = meta.get('mission_id')
+            if mid is not None:
+                ui['pennant'] = f"CAP-{int(mid)}"
+    except Exception:
+        pass
+    return ui

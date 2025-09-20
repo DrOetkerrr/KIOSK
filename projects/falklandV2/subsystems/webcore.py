@@ -86,6 +86,9 @@ def _load_health() -> Dict[str, Any]:
     # Spec: Hermes max lives = 8
     if 'hermes_max_lives' not in obj: obj['hermes_max_lives'] = 8
     if 'hermes_lives' not in obj: obj['hermes_lives'] = obj['hermes_max_lives']
+    # Spec: Belgrano max lives = 8 (tracked separately)
+    if 'belgrano_max_lives' not in obj: obj['belgrano_max_lives'] = 8
+    if 'belgrano_lives' not in obj: obj['belgrano_lives'] = obj['belgrano_max_lives']
     try:
         _save_json(HEALTH_PATH, obj)
     except Exception:
@@ -106,6 +109,8 @@ def reset_health_state() -> None:
         'lives': 4,
         'hermes_max_lives': 8,
         'hermes_lives': 8,
+        'belgrano_max_lives': 8,
+        'belgrano_lives': 8,
     }
     _save_health(base)
 
@@ -313,11 +318,22 @@ def clear_alarm() -> None:
         pass
 
 
-def stamp_cap_launch(sound_file: str = "SHAR.wav", volume: float = 0.10, fade_s: float = 2.0) -> None:
+def stamp_cap_launch(sound_file: str = "SHAR.wav", volume: float = 0.10, fade_s: float = 2.0, *, fade_in_ms: int | float | None = None, on_end_url: str | None = None) -> None:
     try:
         from .. import webdash as wd  # type: ignore
         with wd.STATE_LOCK:
-            AUDIO_STATE['cap_launch'] = {"file": str(sound_file), "vol": float(max(0.0, min(1.0, volume))), "fade_s": float(max(0.0, fade_s)), "ts": time.time()}
+            rec = {"file": str(sound_file), "vol": float(max(0.0, min(1.0, volume))), "fade_s": float(max(0.0, fade_s)), "ts": time.time()}
+            try:
+                if fade_in_ms is not None:
+                    rec['fade_in_ms'] = int(max(0, float(fade_in_ms)))
+            except Exception:
+                pass
+            try:
+                if on_end_url:
+                    rec['on_end_url'] = str(on_end_url)
+            except Exception:
+                pass
+            AUDIO_STATE['cap_launch'] = rec
     except Exception:
         pass
 
@@ -544,15 +560,13 @@ def load_ammo() -> Dict[str,int]:
     except Exception:
         normalized = {}
     base = {**WEAP_DEFAULT_AMMO, **_ammo_defaults_from_ship()}
+    # Respect explicit zeros from state; overlay normalized values onto defaults
     merged = dict(base)
     for k, v in normalized.items():
         try:
-            vi = int(v)
+            merged[k] = max(0, int(v))
         except Exception:
             continue
-        if vi > 0: merged[k] = vi
-        else:
-            if base.get(k, 0) <= 0: merged[k] = 0
     try:
         if isinstance(raw, dict):
             flat_like = all(not isinstance(v, dict) for v in raw.values()) and 'weapons' not in raw
@@ -907,6 +921,7 @@ def _tts_synthesize(text: str, role: str) -> str | None:
     provider_env = os.environ.get('TTS_PROVIDER', '').strip().lower()
     provider_default = provider_env or 'openai'
     forced_piper = (provider_env == 'piper')
+    forced_openai = (provider_env == 'openai')
     if ':' in voice_spec:
         provider, voice_id = voice_spec.split(':', 1)
         provider = provider.strip().lower(); voice_id = voice_id.strip()
@@ -917,6 +932,12 @@ def _tts_synthesize(text: str, role: str) -> str | None:
         provider = 'piper'
         if not voice_id or voice_id.lower() in ('', 'alloy', 'ash', 'verse', 'openai'):
             voice_id = os.environ.get('TTS_PIPER_DEFAULT_MODEL', 'en_GB-alan-medium')
+    # Force OpenAI globally if requested, regardless of crew.json
+    if forced_openai and provider != 'openai':
+        provider = 'openai'
+        # Map Piper-style voices to OpenAI default when forcing
+        if not voice_id or voice_id.lower().endswith('.onnx') or '-' in voice_id:
+            voice_id = os.environ.get('OPENAI_TTS_VOICE', 'alloy')
     def _hash_name(ext: str) -> tuple[str, Path]:
         h = hashlib.sha1(f"{provider}|{voice_id}|{txt}".encode('utf-8')).hexdigest()[:20]
         fname = f"{h}.{ext}"; return fname, (TTS_DIR / fname)
@@ -1432,6 +1453,7 @@ def engine_thread_run(wd) -> None:
                     wd.CAP.auto_engage(rng, int(pid))
             except Exception:
                 pass
+            # (Radar already injects CAP flights; no fallback injection here.)
             # ROE ask window near 15 nm of station center
             try:
                 if tgt is not None:
@@ -1475,6 +1497,72 @@ def engine_thread_run(wd) -> None:
                             continue
             except Exception:
                 pass
+            # Remove targets on confirmed CAP hits (robust fallback)
+            try:
+                meta_all = getattr(wd, 'CAP_META', {}) if hasattr(wd, 'CAP_META') else {}
+                for m in list(getattr(wd.CAP, 'missions', []) or []):
+                    eng = getattr(m, 'last_engagement', None)
+                    if not isinstance(eng, dict) or not eng.get('hit'):
+                        continue
+                    tid = eng.get('target_id'); when = eng.get('when')
+                    if tid is None:
+                        continue
+                    mid = int(getattr(m,'id',0)) if hasattr(m,'id') else int((m.get('id') or 0))
+                    rec = meta_all.setdefault(mid, {}) if isinstance(meta_all, dict) else {}
+                    if rec.get('last_cap_hit_when') == when and rec.get('last_cap_hit_tid') == tid:
+                        continue
+                    try:
+                        wd.RADAR.contacts = [c for c in wd.RADAR.contacts if int(getattr(c,'id',-1)) != int(tid)]
+                    except Exception:
+                        pass
+                    rec['last_cap_hit_when'] = when
+                    rec['last_cap_hit_tid'] = tid
+                    if isinstance(meta_all, dict):
+                        meta_all[mid] = rec
+            except Exception:
+                pass
+        # Resupply (Sea King) completion check and refill
+        try:
+            st = getattr(wd, 'RESUPPLY', {}) if hasattr(wd, 'RESUPPLY') else {}
+            if isinstance(st, dict):
+                now_ts = time.time()
+                eta = float(st.get('eta_ts', 0.0) or 0.0)
+                stage = str(st.get('stage') or '')
+                # Arrival moment → play sound, enter landing stage, set fallback completion deadline
+                if bool(st.get('active', False)) and eta > 0.0 and now_ts >= eta and stage != 'landing':
+                    try:
+                        stamp_cap_launch('Seaking.wav', volume=0.20, fade_s=2.0, fade_in_ms=1200, on_end_url='/resupply/complete')
+                    except Exception:
+                        pass
+                    st['stage'] = 'landing'
+                    st['complete_after_ts'] = now_ts + 15.0  # fallback deadline
+                # Fallback completion if UI didn’t notify after audio end
+                if str(st.get('stage') or '') == 'landing':
+                    due = float(st.get('complete_after_ts', 0.0) or 0.0)
+                    if due > 0.0 and now_ts >= due:
+                        try:
+                            # Refill ammo to defaults; preserve any higher-than-default values
+                            cur = load_ammo(); base = {**WEAP_DEFAULT_AMMO, **_ammo_defaults_from_ship()}
+                            out = dict(cur)
+                            for k, v in base.items():
+                                try:
+                                    if int(cur.get(k, 0)) < int(v):
+                                        out[k] = int(v)
+                                except Exception:
+                                    out[k] = int(v)
+                            save_ammo(out)
+                        except Exception:
+                            pass
+                        st['active'] = False
+                        st['stage'] = 'complete'
+                        st['completed_ts'] = now_ts
+                        st['eta_ts'] = 0.0
+                        try:
+                            wd.record_officer('Pilot', 'Sea King resupply complete.')
+                        except Exception:
+                            pass
+        except Exception:
+            pass
             # Cue: Fox Two soon (<=30s to 5 nm ring)
             try:
                 if tgt is not None:
@@ -1733,6 +1821,23 @@ def engine_thread_run(wd) -> None:
                             system_offlined = False
                             hermes_hit = False
                             for attempt_idx in range(1, attempts+1):
+                                # Announce enemy attack (fire)
+                                try:
+                                    _record_event_guard(
+                                        wd,
+                                        'enemy.attack.fire',
+                                        {
+                                            'contact_id': cid,
+                                            'name': getattr(c, 'name', ''),
+                                            'range_nm': round(target_dist_nm, 2) if target_dist_nm is not None else None,
+                                            'attempt': attempt_idx,
+                                            'target': target_name_choice,
+                                            'attack_kind': attack_kind,
+                                        },
+                                        context={'source': 'enemy_attack', 'contact_id': cid},
+                                    )
+                                except Exception:
+                                    pass
                                 hit = (_rand.random() < hit_prob)
                                 result_entry = {
                                     'attempt': attempt_idx,

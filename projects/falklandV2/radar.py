@@ -95,7 +95,10 @@ class Catalog:
                 if allegiance == 'Hostile':
                     self._hostile.append((name, speed, max(1, weight), klass))
                 elif allegiance == 'Friendly':
-                    self._friendly.append((name, speed, max(1, weight), klass))
+                    # Policy: do not include Sea Harrier as a random friendly.
+                    # Sea Harriers are represented via Hermes CAP only.
+                    if name.lower() not in ('sea harrier frs.1', 'sea harrier', 'shar', 'sea harrier frs1'):
+                        self._friendly.append((name, speed, max(1, weight), klass))
         except Exception:
             # Leave lists possibly empty; caller can handle
             pass
@@ -218,6 +221,11 @@ class Radar:
         self._manual_lock = False
         # Optional CAP effects provider (callable returning dict with keys: active, effects)
         self.cap_effects_provider: Optional[Callable[[], Dict[str, Any]]] = None
+        # Optional CAP missions provider for placing friendly CAP flights on radar
+        # Expected to return a list of dicts with keys: id, status, target_cell, origin_cell (optional)
+        self.cap_missions_provider: Optional[Callable[[], List[Dict[str, Any]]]] = None
+        # Track injected CAP contacts by mission id -> contact id
+        self._cap_contacts: Dict[int, int] = {}
         # Catalog
         if catalog_path:
             self.catalog = Catalog(catalog_path, rng=self.rng)
@@ -257,13 +265,27 @@ class Radar:
         for c in self.contacts:
             c.tick(dt_s, own_x, own_y)
 
+        # Inject or update CAP-friendly contacts so they appear on radar
+        try:
+            self._sync_cap_contacts()
+        except Exception:
+            pass
+
         # priority + alarms
         self._select_priority(own_x, own_y)
         self._check_close_alarm(own_x, own_y)
 
         # cap count
-        if len(self.contacts) > self.cfg["max_contacts"]:
-            self.contacts = self.contacts[: self.cfg["max_contacts"]]
+        try:
+            max_contacts = int(self.cfg.get("max_contacts", 10))
+        except Exception:
+            max_contacts = 10
+        if len(self.contacts) > max_contacts:
+            # Preserve CAP contacts; trim others
+            caps = [c for c in self.contacts if bool(getattr(c, 'meta', {}).get('cap_flight'))]
+            others = [c for c in self.contacts if not bool(getattr(c, 'meta', {}).get('cap_flight'))]
+            allow = max(0, max_contacts - len(caps))
+            self.contacts = caps + others[:allow]
 
     def scan(self, own_x: float, own_y: float):
         # Scans are observational and decoupled from spawns (spawns are time-based in tick)
@@ -429,6 +451,121 @@ class Radar:
             except Exception:
                 pass
         return c
+
+    # ---- CAP contact injection --------------------------------------------
+    @staticmethod
+    def _cell_to_world(cell: str) -> Tuple[float, float]:
+        # Map grid cell like 'K13' to approximate world (x,y) inside 40x40 world
+        s = str(cell or '').strip().upper()
+        if not s:
+            return (float(WORLD_N) / 2.0, float(WORLD_N) / 2.0)
+        i = 0
+        while i < len(s) and s[i].isalpha():
+            i += 1
+        letters = s[:i] or 'A'
+        digits = s[i:] or '1'
+        col_idx = 0
+        for ch in letters:
+            if 'A' <= ch <= 'Z':
+                col_idx = col_idx * 26 + (ord(ch) - ord('A') + 1)
+        try:
+            row_idx = int(digits)
+        except Exception:
+            row_idx = 1
+        col_idx = max(1, min(BOARD_N, col_idx)) - 1
+        row_idx = max(1, min(BOARD_N, row_idx)) - 1
+        # World min offset so that A1 maps to (BOARD_MIN, BOARD_MIN)
+        board_min = (float(WORLD_N) - float(BOARD_N)) / 2.0
+        x = board_min + float(col_idx)
+        y = board_min + float(row_idx)
+        return (x, y)
+
+    def _sync_cap_contacts(self) -> None:
+        if self.cap_missions_provider is None:
+            return
+        missions: List[Dict[str, Any]] = []
+        try:
+            missions = list(self.cap_missions_provider() or [])
+        except Exception:
+            missions = []
+
+        # Active-air statuses
+        ACTIVE = {"queued", "airborne", "onstation", "rtb", "recovering"}
+        want: Dict[int, Tuple[float, float, str]] = {}
+        for m in missions:
+            try:
+                status = str(m.get('status') or '').lower()
+                if status not in ACTIVE:
+                    continue
+                mid = int(m.get('id'))
+                # Choose placement by status: queued/rtb/recovering at origin; onstation/airborne at target
+                if status in ("queued", "rtb", "recovering"):
+                    cell = str(m.get('origin_cell') or m.get('cur_cell') or m.get('target_cell') or '').strip()
+                else:
+                    cell = str(m.get('cur_cell') or m.get('target_cell') or m.get('origin_cell') or '').strip()
+                if not cell:
+                    continue
+                x, y = self._cell_to_world(cell)
+                want[mid] = (x, y, cell)
+            except Exception:
+                continue
+
+        # Remove stale CAP contacts
+        keep_ids: set[int] = set()
+        for mid, cid in list(self._cap_contacts.items()):
+            if mid not in want:
+                # Drop contact with id=cid if present
+                self.contacts = [c for c in self.contacts if int(getattr(c, 'id', -1)) != int(cid)]
+                self._cap_contacts.pop(mid, None)
+            else:
+                keep_ids.add(mid)
+
+        # Ensure/update required CAP contacts
+        # Resolve catalog details (capability + speed)
+        cap_name = 'Sea Harrier FRS.1'
+        # Try to find a speed value for the CAP type
+        try:
+            # Probe friendly pool to find matching speed
+            # Note: Catalog intentionally excludes Harrier from friendlies; fall back to 420
+            speed_kts = float(self.catalog._details.get(cap_name, {}).get('speed_kts') or 420.0)
+        except Exception:
+            speed_kts = 420.0
+        for mid, (x, y, cell) in want.items():
+            cid = self._cap_contacts.get(mid)
+            if cid is not None:
+                # Update existing
+                c = next((k for k in self.contacts if int(getattr(k, 'id', -1)) == int(cid)), None)
+                if c is not None:
+                    c.x = float(x)
+                    c.y = float(y)
+                    # keep other fields as-is
+                    continue
+                else:
+                    # stale index entry; remove and re-create
+                    self._cap_contacts.pop(mid, None)
+
+            # Create a new friendly CAP contact
+            cid = int(self._next_id)
+            self._next_id += 1
+            meta = {
+                'cap_flight': True,
+                'mission_id': mid,
+                'station_cell': cell,
+                'kind': 'cap',
+                'cap': self.catalog.details(cap_name),
+            }
+            c = Contact(
+                id=cid,
+                name=cap_name,
+                allegiance='Friendly',
+                x=float(x), y=float(y),
+                course_deg=0.0,
+                speed_kts=float(speed_kts),
+                threat='low',
+                meta=meta,
+            )
+            self.contacts.append(c)
+            self._cap_contacts[mid] = cid
 
     def set_manual_lock(self, contact_id: Optional[int]) -> None:
         if contact_id is None:

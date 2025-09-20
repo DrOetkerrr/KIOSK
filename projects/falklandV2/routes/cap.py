@@ -350,8 +350,19 @@ def cap_request():
                                "request": {"id": tid, "cell": cell, "range_nm": round(rng_nm, 2), "vector": True}, "response": payload})
             return jsonify(payload)
 
-        # Fallback: launch a fresh pair
-        res = L['CAP'].request_cap_to_cell(cell, distance_nm=float(rng_nm), origin_xy=(hx, hy), origin_cell=hermes_cell, mission_kind='intercept')
+        # Fallback: launch a fresh pair (honour optional loadout)
+        try:
+            loadout = str((data.get('loadout') or 'aim9')).lower()
+        except Exception:
+            loadout = 'aim9'
+        res = L['CAP'].request_cap_to_cell(
+            cell,
+            distance_nm=float(rng_nm),
+            origin_xy=(hx, hy),
+            origin_cell=hermes_cell,
+            mission_kind='intercept',
+            loadout=loadout,
+        )
         status = 200 if res.get("ok") else 400
         payload = {"ok": bool(res.get("ok")), "message": res.get("message"), "mission": res.get("mission")}
         if res.get('ok'):
@@ -442,7 +453,19 @@ def cap_launch_to():
             sm = None; rm = None
         if sm is None: sm = 10
         if rm is None: rm = 10
-        res = L['CAP'].request_cap_to_cell(cell, distance_nm=float(rng_nm), station_minutes=float(sm), radius_nm=float(rm), origin_xy=(hx, hy), origin_cell=hermes_cell)
+        try:
+            loadout = str((data.get('loadout') or 'aim9')).lower()
+        except Exception:
+            loadout = 'aim9'
+        res = L['CAP'].request_cap_to_cell(
+            cell,
+            distance_nm=float(rng_nm),
+            station_minutes=float(sm),
+            radius_nm=float(rm),
+            origin_xy=(hx, hy),
+            origin_cell=hermes_cell,
+            loadout=loadout,
+        )
         status = 200 if res.get("ok") else 400
         payload = {"ok": bool(res.get("ok")), "message": res.get("message"), "mission": res.get("mission")}
         if res.get('ok'):

@@ -7,8 +7,8 @@
     "max_ready_pairs": 4,
     "airframe_pool_total": 8,
     "pair_rearm_refuel_min": 5,
-    "scramble_cooldown_min": 3,
-    "min_launch_interval_s": 180,
+    "scramble_cooldown_min": 1,
+    "min_launch_interval_s": 60,
     "default_pair_size": 2,
     "default_onstation_min": 20,
     "intercept_onstation_min": 2,
@@ -44,6 +44,10 @@
         "missiles_total": 4,
         "engagement_cooldown_s": 5,
         "pk_points": [[2.0,0.90],[3.0,0.80],[4.0,0.70],[5.0,0.60]]
+      },
+      "bombs": {
+        "bombs_total": 4,
+        "engagement_cooldown_s": 5
       }
     }
   }

@@ -183,11 +183,9 @@ function trackEvents(j){
       const key = String(result.ts)+':'+String(result.event||'');
       if(ST.eventKeys.result !== key){
         ST.eventKeys.result = key;
-        if(String(result.event||'').toLowerCase()==='miss'){
-          pushEvent('miss','Enemy bomb missed');
-        }else if(String(result.event||'').toLowerCase()==='hit'){
-          pushEvent('hit','Target hit');
-        }
+        const kind = String(result.event||'').toLowerCase();
+        if(kind==='miss') pushEvent('miss','Shot missed');
+        else if(kind==='hit') pushEvent('hit','Target hit');
       }
     }
   }catch(_){ }
@@ -747,6 +745,14 @@ function renderRADIO(j){
   p.appendChild(consoleMsg);
 
   const capHeader=document.createElement('h3'); capHeader.className='comms-subhead'; capHeader.textContent='SHAR menu:'; p.appendChild(capHeader);
+  // Loadout selector
+  const loadoutRow=document.createElement('div'); loadoutRow.className='row section';
+  const loadoutLabel=document.createElement('span'); loadoutLabel.textContent='Loadout:'; loadoutLabel.style.marginRight='8px';
+  const loadoutSelect=document.createElement('select'); loadoutSelect.className='input'; loadoutSelect.style.marginRight='8px';
+  const optA=document.createElement('option'); optA.value='aim9'; optA.textContent='Sidewinder (AIM-9)'; loadoutSelect.appendChild(optA);
+  const optB=document.createElement('option'); optB.value='bombs'; optB.textContent='Bombs (ships)'; loadoutSelect.appendChild(optB);
+  loadoutRow.appendChild(loadoutLabel); loadoutRow.appendChild(loadoutSelect);
+  p.appendChild(loadoutRow);
   const cap=j.cap || {};
   const sharSummary=document.createElement('div'); sharSummary.className='shar-summary';
   const readyPairs = (cap.readiness && typeof cap.readiness==='object')? cap.readiness.ready_pairs : (cap.pairs ?? cap.ready_pairs);
@@ -798,6 +804,20 @@ function renderRADIO(j){
   if(!primaryContact) interceptBtn.disabled = true;
   interceptAction.appendChild(interceptBtn); interceptRow.appendChild(interceptAction);
   launchTable.appendChild(interceptRow);
+
+  // RESUPPLY (Sea King)
+  const resRow=document.createElement('tr');
+  const resFlight=document.createElement('td'); resFlight.textContent='RESUPPLY'; resRow.appendChild(resFlight);
+  const resCall=document.createElement('td'); resCall.textContent='Sea King'; resRow.appendChild(resCall);
+  const resGrid=document.createElement('td');
+  let left = 0; try { left = Number((j.resupply && j.resupply.left_s) || 0); } catch(_) { left = 0; }
+  resGrid.textContent = (j.resupply && j.resupply.active) ? `${Math.max(0,left)}s` : '—';
+  resRow.appendChild(resGrid);
+  const resAct=document.createElement('td'); resAct.className='num';
+  const resBtn=document.createElement('button'); resBtn.className='btn'; resBtn.textContent = (j.resupply && j.resupply.active)? 'ENROUTE' : 'LAUNCH';
+  if(j.resupply && j.resupply.active) resBtn.disabled = true;
+  resAct.appendChild(resBtn); resRow.appendChild(resAct);
+  launchTable.appendChild(resRow);
   p.appendChild(launchTable);
 
   const capMsg=document.createElement('div'); capMsg.className='comms-msg muted'; p.appendChild(capMsg);
@@ -807,7 +827,7 @@ function renderRADIO(j){
     if(!cell){ capMsg.textContent='Enter CAP grid cell'; capMsg.className='comms-msg err'; return; }
     capMsg.textContent='Requesting CAP...'; capMsg.className='comms-msg muted';
     try{
-      const body={cell, station_minutes: 20, radius_nm: 5};
+      const body={cell, station_minutes: 20, radius_nm: 5, loadout: String(loadoutSelect.value||'aim9')};
       const res=await fetch('/cap/launch_to',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
       const data=await res.json();
       if(data && data.ok){
@@ -828,7 +848,7 @@ function renderRADIO(j){
     if(!primaryContact){ capMsg.textContent='No locked target.'; capMsg.className='comms-msg err'; return; }
     capMsg.textContent='Vectoring intercept...'; capMsg.className='comms-msg muted';
     try{
-      const res=await fetch('/cap/request',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: primaryContact.id})});
+      const res=await fetch('/cap/request',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: primaryContact.id, loadout: String(loadoutSelect.value||'aim9')})});
       const data=await res.json();
       if(data && data.ok){
         capMsg.textContent=data.message || 'Intercept pair launching';
@@ -841,6 +861,17 @@ function renderRADIO(j){
     }catch(e){
       capMsg.textContent='Intercept request failed'; capMsg.className='comms-msg err';
     }
+  };
+
+  resBtn.onclick=async function(){
+    if(resBtn.disabled){ capMsg.textContent='Resupply already en route'; capMsg.className='comms-msg muted'; return; }
+    capMsg.textContent='Launching Sea King…'; capMsg.className='comms-msg muted';
+    try{
+      const res=await fetch('/resupply/launch',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
+      const data=await res.json();
+      if(data && data.ok){ capMsg.textContent='Resupply on its way'; capMsg.className='comms-msg ok'; await poll().catch(()=>{}); }
+      else { capMsg.textContent=(data&&data.error)?String(data.error):'Resupply failed'; capMsg.className='comms-msg err'; }
+    }catch(_){ capMsg.textContent='Resupply failed'; capMsg.className='comms-msg err'; }
   };
 
   const commitHeader=document.createElement('h3'); commitHeader.className='comms-subhead'; commitHeader.textContent='SHAR commit status:'; p.appendChild(commitHeader);
@@ -1224,8 +1255,113 @@ async function poll(){
 
 function playKlik(){ try{ const a=new Audio('/data/sounds/klik.m4a'); a.volume=0.6; a.play().catch(function(){}); }catch(e){} }
 
+// --- Push-To-Talk (PTT) mic capture + browser STT fallback ---
+const PTT = { rec: null, chunks: [], stream: null, recording: false, stt: null, transcript: '' };
+
+async function _pttStart(){
+  if(PTT.recording) return;
+  try{
+    const btn = $('#ptt-btn'); if(btn) btn.classList.add('recording');
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    PTT.stream = stream;
+    const mt = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : (MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '');
+    const rec = new MediaRecorder(stream, mt?{ mimeType: mt }:{});
+    PTT.chunks = [];
+    rec.ondataavailable = function(e){ if(e && e.data && e.data.size>0) PTT.chunks.push(e.data); };
+    rec.onstop = async function(){
+      try{
+        const url = '/radio/voice?speak=1&voice_role=' + encodeURIComponent('Weapons');
+        // If browser STT produced a transcript, prefer that (more robust cross-browser)
+        const txt = (PTT.transcript||'').trim();
+        if(txt){
+          await fetch(url, { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text: txt}) });
+        }else{
+          const blob = new Blob(PTT.chunks, { type: mt || 'audio/webm' });
+          // Upload to interpreter voice chain; speak via Weapons voice; no execution
+          const form = new FormData();
+          form.append('file', blob, 'ptt.webm');
+          await fetch(url, { method: 'POST', body: form });
+        }
+      }catch(_){ /* swallow */ }
+      finally{
+        try{ if(PTT.stream){ PTT.stream.getTracks().forEach(t=>t.stop()); } }catch(_){ }
+        PTT.stream = null; PTT.rec = null; PTT.chunks = []; PTT.recording = false; PTT.transcript='';
+        const btn = $('#ptt-btn'); if(btn) btn.classList.remove('recording');
+      }
+    };
+    PTT.rec = rec; PTT.recording = true; rec.start();
+    // Start browser STT if available (fallback when server ASR fails)
+    try{
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if(SR){
+        const r = new SR();
+        r.lang = 'en-GB';
+        r.interimResults = false;
+        r.maxAlternatives = 1;
+        r.onresult = function(ev){ try{ const s = ev.results && ev.results[0] && ev.results[0][0] && ev.results[0][0].transcript; if(s) PTT.transcript = String(s); }catch(_){ } };
+        r.onerror = function(){ /* ignore */ };
+        r.onend = function(){ /* end of STT */ };
+        PTT.stt = r; r.start();
+      } else { PTT.stt = null; }
+    }catch(_){ PTT.stt = null; }
+  }catch(e){
+    const btn = $('#ptt-btn'); if(btn) btn.classList.remove('recording');
+    // Optional: user feedback could be added here
+  }
+}
+
+function _pttStop(){
+  try{ if(PTT.rec && PTT.recording){ PTT.rec.stop(); } }catch(_){ }
+  try{ if(PTT.stt && PTT.recording){ PTT.stt.stop(); } }catch(_){ }
+}
+
 function wire(){
-  $$('.toolbar .btn').forEach(function(b){ b.addEventListener('click', function(ev){ playKlik(); setActive(b.dataset.st); }); });
+  $$('.toolbar .btn').forEach(function(b){ b.addEventListener('click', function(ev){
+    playKlik();
+    const st = (b && b.dataset) ? b.dataset.st : undefined;
+    if(st) setActive(st);
+  }); });
+  // Global Radio Mute button
+  const gbtn = $('#radio-mute-btn');
+  function _radioMuteState(){ try{ return localStorage.getItem('MUTE_ALL_RADIO')==='1'; }catch(_){ return false; } }
+  function _setRadioMute(on){ try{ if(on) localStorage.setItem('MUTE_ALL_RADIO','1'); else localStorage.removeItem('MUTE_ALL_RADIO'); }catch(_){ } }
+  function _updateG(){ const on=_radioMuteState(); if(gbtn){ gbtn.textContent = on? 'RADIO OFF':'RADIO ON'; gbtn.classList.toggle('radio-mute', true); gbtn.classList.toggle('muted', on); } }
+  if(gbtn){ _updateG(); gbtn.onclick = function(){ const on=_radioMuteState(); _setRadioMute(!on); _updateG(); }; }
+  // Wire PTT button events (press to record, release to send)
+  const ptt = $('#ptt-btn');
+  if(ptt){
+    ptt.addEventListener('mousedown', _pttStart);
+    ptt.addEventListener('touchstart', function(e){ e.preventDefault(); _pttStart(); }, { passive:false });
+    ['mouseup','mouseleave'].forEach(function(ev){ ptt.addEventListener(ev, _pttStop); });
+    ptt.addEventListener('touchend', function(e){ e.preventDefault(); _pttStop(); }, { passive:false });
+    ptt.addEventListener('touchcancel', function(e){ e.preventDefault(); _pttStop(); }, { passive:false });
+  }
+  // Keyboard PTT: hold Spacebar to record; release to send
+  function _isTyping(){
+    try{
+      const ae = document.activeElement;
+      if(!ae) return false;
+      const tag = (ae.tagName||'').toLowerCase();
+      if(tag==='input' || tag==='textarea' || ae.isContentEditable) return true;
+    }catch(_){ }
+    return false;
+  }
+  document.addEventListener('keydown', function(e){
+    if(e.code==='Space'){
+      if(_isTyping()) return;
+      if(e.repeat){ e.preventDefault(); return; }
+      e.preventDefault();
+      _pttStart();
+    }
+  }, true);
+  document.addEventListener('keyup', function(e){
+    if(e.code==='Space'){
+      if(_isTyping()) return;
+      e.preventDefault();
+      _pttStop();
+    }
+  }, true);
+  window.addEventListener('blur', _pttStop);
   // Global KLIK on all button presses
   document.addEventListener('click', function(ev){ const t=ev.target; if(t && t.matches && t.matches('button.btn')){ playKlik(); } }, true);
   renderEventConsole();

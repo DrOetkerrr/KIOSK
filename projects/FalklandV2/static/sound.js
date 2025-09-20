@@ -32,6 +32,18 @@
   const BASE = "/data/sounds/";
   let unlocked = false;
 
+  // Feature flags via URL or localStorage
+  function _qsFlag(name){
+    try{
+      const u=new URL(window.location.href);
+      const v=(u.searchParams.get(name)||'').toLowerCase();
+      return v==='1'||v==='true'||v==='yes'||v==='on';
+    }catch(_){ return false; }
+  }
+  const DISABLE_BRIDGE = _qsFlag('nobridge') || (function(){ try{ return localStorage.getItem('DISABLE_BRIDGE')==='1'; }catch(_){ return false; } })();
+  const IGNORE_MUTE = _qsFlag('nomute');
+  function _muteAllRadio(){ if(IGNORE_MUTE) return false; try{ return localStorage.getItem('MUTE_ALL_RADIO')==='1'; }catch(_){ return false; } }
+
   function getMuteMap(){
     try {
       if (window.__stationMute) return window.__stationMute;
@@ -43,6 +55,11 @@
 
   function roleMuted(role){
     if(!role) return false;
+    try{
+      const u=new URL(window.location.href);
+      const v=(u.searchParams.get('nomute')||'').toLowerCase();
+      if(v==='1'||v==='true'||v==='yes'||v==='on') return false;
+    }catch(_){ }
     try {
       const map = getMuteMap();
       return !!map[String(role)];
@@ -54,11 +71,12 @@
   // ---- Ambient bridge loop (starts on first user gesture) ----
   let bridgeAudio = null;
   function startBridge() {
+    if (DISABLE_BRIDGE) { try{ stopBridge(); }catch(_){ } return; }
     try {
       if (bridgeAudio) return;
       bridgeAudio = new Audio(BASE + SOUND_MAP.bridge_loop);
       bridgeAudio.loop = true;
-      bridgeAudio.volume = 0.5;    // gentle bed, adjust later if you like
+      bridgeAudio.volume = 0.5 * SFX_GAIN;    // gentle bed, adjust later if you like
       bridgeAudio.play().catch(() => {});
     } catch (_) {}
   }
@@ -96,6 +114,34 @@
   let alarmAudio = null;
   let lastCapLaunch = null;
   let lastEnemyBomb = null;
+  let duckUntil = 0;
+  let SFX_GAIN = 1.0; // global multiplier for SFX/ambience
+
+  function updateAmbientVolumes(){
+    try{ if(bridgeAudio) bridgeAudio.volume = 0.5 * SFX_GAIN; }catch(_){ }
+    try{ if(alarmAudio) alarmAudio.volume = 1.0 * SFX_GAIN; }catch(_){ }
+  }
+
+  function maybeRestoreDuck(){
+    try{
+      if(Date.now() >= duckUntil){ SFX_GAIN = 1.0; updateAmbientVolumes(); }
+    }catch(_){ }
+  }
+
+  function setDucking(active, seconds){
+    try{
+      const now = Date.now();
+      if(active){
+        const extraMs = Math.max(0, Math.floor((seconds||0)*1000));
+        duckUntil = Math.max(duckUntil, now + extraMs + 250);
+        SFX_GAIN = 0.6; // gentle duck, not mute
+        updateAmbientVolumes();
+        setTimeout(()=>{ maybeRestoreDuck(); }, extraMs + 300);
+      }else{
+        duckUntil = 0; SFX_GAIN = 1.0; updateAmbientVolumes();
+      }
+    }catch(_){ }
+  }
 
   // ---- Web Audio context + radio filter helper ----
   let ACtx = null;
@@ -119,7 +165,9 @@
       const src = (ctx && ctx.createMediaElementSource) ? ctx.createMediaElementSource(el) : null;
       if (!ctx || !src) {
         // Fallback: normal playback
-        el.volume = Math.max(0, Math.min(1, Number((opts&&opts.vol)!=null?opts.vol:0.6)));
+        const targetVol = Math.max(0, Math.min(1, Number((opts&&opts.vol)!=null?opts.vol:0.6)));
+        const fadeInMs = Math.max(0, Number((opts&&opts.fadeInMs)!=null?opts.fadeInMs:0));
+        if (fadeInMs > 0) { el.volume = 0.0001; } else { el.volume = targetVol; }
         // Gentle fade-out
         el.addEventListener('loadedmetadata', ()=>{
           const dur = el.duration || 0;
@@ -129,7 +177,13 @@
             let i=0; const steps=Math.max(4, Math.floor(fadeMs/50)); const v0=el.volume;
             const id=setInterval(()=>{ i++; el.volume=Math.max(0, v0*(1 - i/steps)); if(i>=steps||el.paused) clearInterval(id); }, 50);
           }, startMs);
+          if (fadeInMs > 0) {
+            let j=0; const jsteps=Math.max(4, Math.floor(fadeInMs/50));
+            const id2=setInterval(()=>{ j++; const t=j/jsteps; el.volume = Math.max(0, Math.min(targetVol, targetVol*t)); if(j>=jsteps||el.paused) clearInterval(id2); }, 50);
+          }
         });
+        // Completion callback
+        try { if (opts && opts.onEndUrl) { el.addEventListener('ended', ()=>{ try{ fetch(String(opts.onEndUrl), { method:'POST' }); }catch(_){ } }); } } catch(_){}
         el.play().catch(()=>{});
         return;
       }
@@ -138,7 +192,9 @@
       const lpf = ctx.createBiquadFilter(); lpf.type = 'lowpass'; lpf.frequency.value = (opts&&opts.lp)||3400;
       const comp = ctx.createDynamicsCompressor();
       try { comp.threshold.value = -20; comp.knee.value = 20; comp.ratio.value = 3; comp.attack.value = 0.01; comp.release.value = 0.25; } catch(_){ }
-      const gain = ctx.createGain(); gain.gain.value = Math.max(0, Math.min(1, Number((opts&&opts.vol)!=null?opts.vol:0.6)));
+      const targetVol = Math.max(0, Math.min(1, Number((opts&&opts.vol)!=null?opts.vol:0.6)));
+      const fadeInMs = Math.max(0, Number((opts&&opts.fadeInMs)!=null?opts.fadeInMs:0));
+      const gain = ctx.createGain(); gain.gain.value = fadeInMs > 0 ? 0.0001 : targetVol;
       src.connect(hpf); hpf.connect(lpf); lpf.connect(comp); comp.connect(gain); gain.connect(ctx.destination);
       // Fade-out near end via gain ramp
       el.addEventListener('loadedmetadata', ()=>{
@@ -150,7 +206,14 @@
             const id=setInterval(()=>{ i++; const t=i/steps; gain.gain.value=Math.max(0, v0*(1-t)); if(i>=steps||el.paused) clearInterval(id); }, 50);
           }catch(_){ }
         }, startMs);
+        if (fadeInMs > 0) {
+          try {
+            let j=0; const jsteps=Math.max(4, Math.floor(fadeInMs/50));
+            const id2=setInterval(()=>{ j++; const t=j/jsteps; gain.gain.value=Math.max(0, targetVol * t); if(j>=jsteps||el.paused) clearInterval(id2); }, 50);
+          } catch(_){}
+        }
       });
+      try { if (opts && opts.onEndUrl) { el.addEventListener('ended', ()=>{ try{ fetch(String(opts.onEndUrl), { method:'POST' }); }catch(_){ } }); } } catch(_){}
       el.play().catch(()=>{});
     } catch (_) {}
   }
@@ -192,10 +255,13 @@
         if (!lastRadio || lastRadio.ts !== ts3) {
           const roleLabel = String(rs.role || '').trim();
           lastRadio = { ts: ts3, role: roleLabel };
-          if (!roleMuted(roleLabel) && unlocked) {
+          if (!_muteAllRadio() && !roleMuted(roleLabel) && unlocked) {
             if (rs.file) {
               // Play synthesized voice via radio filter for realism
               playRadio(rs.file, {vol: 0.8, fadeOutMs: 250});
+              // Duck SFX while radio speaks, then restore
+              setDucking(true, durMs/1000);
+              setTimeout(()=>{ maybeRestoreDuck(); }, durMs + 300);
             }
           }
         }
@@ -217,7 +283,7 @@
               alarmAudio = new Audio(file.startsWith('/')? file : (BASE + file));
               // Always one-shot: do not loop alarms
               alarmAudio.loop = false;
-              alarmAudio.volume = 1.0;
+              alarmAudio.volume = 1.0 * SFX_GAIN;
               alarmAudio.play().catch(()=>{});
             } catch (_) {}
           }
@@ -230,7 +296,7 @@
         const ts5 = cap.ts || 0;
         if (!lastCapLaunch || lastCapLaunch.ts !== ts5) {
           lastCapLaunch = { ts: ts5 };
-          if (unlocked) playRadio(cap.file || 'SHAR.wav', {vol: Number(cap.vol || 0.1), fadeOutMs: Number(cap.fade_s || 2.0)*1000});
+          if (unlocked) playRadio(cap.file || 'SHAR.wav', {vol: Number(cap.vol || 0.1), fadeOutMs: Number(cap.fade_s || 2.0)*1000, fadeInMs: Number(cap.fade_in_ms || 0), onEndUrl: (cap.on_end_url || null)});
         }
       }
 
@@ -263,7 +329,7 @@
   function playOne(file) {
     try {
       const a = new Audio(file.startsWith('/')? file : (BASE + file));
-      a.volume = 1.0;
+      a.volume = Math.max(0, Math.min(1, 1.0 * SFX_GAIN));
       a.play().catch(() => {});
     } catch (_) {}
   }
@@ -271,7 +337,7 @@
   function playWithFade(file, volume, fadeSeconds) {
     try {
       const a = new Audio(file.startsWith('/')? file : (BASE + file));
-      a.volume = Math.max(0, Math.min(1, isFinite(volume)? volume : 0.1));
+      a.volume = Math.max(0, Math.min(1, (isFinite(volume)? volume : 0.1) * SFX_GAIN));
       a.loop = false;
       const doFade = (sec) => {
         const duration = a.duration || 0;

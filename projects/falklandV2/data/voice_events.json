@@ -14,4 +14,5 @@
   {"event":"nav.set.speed.ack","role":"Navigation","intent":"Speed change acknowledged","hint":"Speed now {spd} knots; heading {hdg}°."},
   {"event":"nav.hermes.close_in.request","role":"Navigation","intent":"Close on Hermes","hint":"Recommend closing on Hermes: bearing {ref_brg}°, range {ref_rng} nm. New course {rec_hdg}°."},
   {"event":"nav.hermes.stand_off.request","role":"Navigation","intent":"Hermes stand-off","hint":"Recommend Hermes stand-off {standoff_nm} nm; current bearing {ref_brg}°, range {ref_rng} nm."}
+ ,{"event":"cap.engage.denied","role":"Pilot","intent":"Engagement denied","hint":"Negative, captain — wrong payload."}
 ]

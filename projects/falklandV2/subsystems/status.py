@@ -300,6 +300,25 @@ def build() -> Dict[str, Any]:
     except Exception:
         pass
 
+    # Resupply (Sea King) status for COMMS
+    try:
+        rs = getattr(wd, 'RESUPPLY', {}) if hasattr(wd, 'RESUPPLY') else {}
+        if isinstance(rs, dict):
+            eta_ts = float(rs.get('eta_ts', 0.0) or 0.0)
+            left_s = 0
+            if bool(rs.get('active', False)) and eta_ts > 0.0:
+                try:
+                    left_s = max(0, int(round(eta_ts - time.time())))
+                except Exception:
+                    left_s = 0
+            payload['resupply'] = {
+                'active': bool(rs.get('active', False)),
+                'left_s': left_s,
+                'stage': rs.get('stage') or None,
+            }
+    except Exception:
+        pass
+
     # Primary from module-level PRIMARY_ID (best-effort)
     try:
         if 'PRIMARY_ID' in wd.globals() and wd.PRIMARY_ID is not None:  # type: ignore
