@@ -19,6 +19,7 @@ def _lazy():
     # Late import to avoid circular deps; reuse webdash singletons
     from ..webdash import (
         RESUPPLY, record_flight, stamp_cap_launch, record_officer,
+        ENG, CONVOY, radar_xy_from_state, world_to_cell, ship_cell_from_state,
     )
     return locals()
 
@@ -52,6 +53,23 @@ def resupply_launch():
         # Hermes confirmation
         try:
             L['record_officer']('Pilot', 'Resupply on its way.')
+        except Exception:
+            pass
+        # Seed origin_cell so radar can place Sea King contact
+        try:
+            st = L['ENG'].public_state() if hasattr(L['ENG'], 'public_state') else {}
+            own_x, own_y = L['radar_xy_from_state'](st)
+            ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
+            try:
+                crs = float(ship.get('heading', 0.0) or 0.0)
+            except Exception:
+                crs = 0.0
+            convoy = L.get('CONVOY')
+            if convoy is not None:
+                hx, hy, hermes_cell = convoy.escort_world_cell('hermes', own_x, own_y, crs)
+            else:
+                hermes_cell = L['ship_cell_from_state'](st)
+            state['origin_cell'] = hermes_cell
         except Exception:
             pass
         payload = {"ok": True, "resupply": {"active": True, "eta_s": int(state['eta_ts'] - now)}}

@@ -226,6 +226,9 @@ class Radar:
         self.cap_missions_provider: Optional[Callable[[], List[Dict[str, Any]]]] = None
         # Track injected CAP contacts by mission id -> contact id
         self._cap_contacts: Dict[int, int] = {}
+        # Optional resupply state provider (returns dict with keys: active, stage, origin_cell)
+        self.resupply_state_provider: Optional[Callable[[], Dict[str, Any]]] = None
+        self._resupply_contact_id: Optional[int] = None
         # Catalog
         if catalog_path:
             self.catalog = Catalog(catalog_path, rng=self.rng)
@@ -268,6 +271,11 @@ class Radar:
         # Inject or update CAP-friendly contacts so they appear on radar
         try:
             self._sync_cap_contacts()
+        except Exception:
+            pass
+        # Inject/update Sea King when resupply active
+        try:
+            self._sync_resupply_contact()
         except Exception:
             pass
 
@@ -451,6 +459,42 @@ class Radar:
             except Exception:
                 pass
         return c
+
+    # ---- Resupply Sea King injection ---------------------------------------
+    def _sync_resupply_contact(self) -> None:
+        if self.resupply_state_provider is None:
+            return
+        try:
+            st = self.resupply_state_provider() or {}
+        except Exception:
+            st = {}
+        active = bool(st.get('active', False))
+        stage = str(st.get('stage') or '')
+        if not active or stage not in ('enroute', 'landing'):
+            # Remove existing
+            if self._resupply_contact_id is not None:
+                self.contacts = [c for c in self.contacts if int(getattr(c,'id',-1)) != int(self._resupply_contact_id)]
+                self._resupply_contact_id = None
+            return
+        cell = str(st.get('origin_cell') or st.get('cell') or '')
+        if not cell:
+            return
+        try:
+            from projects.falklandV2.grid.mapping import label_to_world  # late import
+            x, y = label_to_world(cell, world_n=float(WORLD_N))
+        except Exception:
+            return
+        if self._resupply_contact_id is not None:
+            c = next((k for k in self.contacts if int(getattr(k,'id',-1)) == int(self._resupply_contact_id)), None)
+            if c is not None:
+                c.x = float(x); c.y = float(y)
+                return
+        # Create contact
+        cid = int(self._next_id); self._next_id += 1
+        meta = {'resupply': True, 'stage': stage}
+        c = Contact(id=cid, name='Sea King Helicopter', allegiance='Friendly', x=float(x), y=float(y), course_deg=0.0, speed_kts=90.0, threat='low', meta=meta)
+        self.contacts.append(c)
+        self._resupply_contact_id = cid
 
     # ---- CAP contact injection --------------------------------------------
     @staticmethod

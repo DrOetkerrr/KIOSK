@@ -34,6 +34,10 @@ def cap_authorize():
     L = _lazy(); t0 = time.time(); route = "/cap/authorize"
     try:
         data = request.get_json(silent=True) or {}
+        try:
+            desired_loadout = str((data.get('loadout') or 'aim9')).lower()
+        except Exception:
+            desired_loadout = 'aim9'
         mid = int(data.get('id', 0))
         auth = bool(data.get('authorize', True))
         if mid <= 0 or mid not in L['CAP_META']:
@@ -278,6 +282,11 @@ def cap_request():
                 try:
                     if str(m.get('status','')) != 'airborne':
                         continue
+                    try:
+                        if desired_loadout and str(m.get('loadout','aim9')).lower() != desired_loadout:
+                            continue
+                    except Exception:
+                        pass
                     cx, cy = _mission_pos(m)
                     dist_nm = ((float(getattr(tgt,'x',0.0)) - cx)**2 + (float(getattr(tgt,'y',0.0)) - cy)**2) ** 0.5
                     spd = float(getattr(L['CAP'], 'cruise_speed_kts', 420.0) or 420.0)
@@ -497,9 +506,46 @@ def cap_launch_to():
         L['record_flight']({"route": route, "method": request.method, "status": status,
                            "duration_ms": int((time.time()-t0)*1000),
                            "request": {"cell": cell, "range_nm": round(rng_nm, 2)}, "response": payload})
-        return jsonify(payload), status
+    return jsonify(payload), status
     except Exception as e:
         logging.exception("/cap/launch_to error: %s", e)
+        payload = {"ok": False, "error": str(e)}
+        L = _lazy()
+        L['record_flight']({"route": route, "method": request.method, "status": 500,
+                           "duration_ms": int((time.time()-t0)*1000),
+                           "request": {}, "response": payload})
+        return jsonify(payload), 500
+
+
+@bp.post("/cap/convert_to_cap")
+def cap_convert_to_cap():
+    """Retask an airborne/onstation mission to hold CAP at a cell.
+
+    JSON: { mission_id:int, cell:str, minutes?:float }
+    Only works for AIM-9 loadout with missiles left.
+    """
+    L = _lazy(); t0 = time.time(); route = "/cap/convert_to_cap"
+    try:
+        if L['CAP'] is None:
+            return jsonify({"ok": False, "error": "CAP unavailable"}), 503
+        data = request.get_json(silent=True) or {}
+        try:
+            mid = int(data.get('mission_id') or data.get('id'))
+        except Exception:
+            mid = 0
+        cell = str(data.get('cell') or '').strip().upper()
+        minutes = data.get('minutes')
+        if mid <= 0 or not cell:
+            return jsonify({"ok": False, "error": "missing mission_id or cell"}), 400
+        res = L['CAP'].convert_to_cap(mid, cell, minutes=(float(minutes) if minutes is not None else None))
+        status = 200 if res.get('ok') else 400
+        payload = {"ok": bool(res.get('ok')), "message": res.get('message'), "mission": res.get('mission')}
+        L['record_flight']({"route": route, "method": request.method, "status": status,
+                           "duration_ms": int((time.time()-t0)*1000),
+                           "request": data, "response": payload})
+        return jsonify(payload), status
+    except Exception as e:
+        logging.exception("/cap/convert_to_cap error: %s", e)
         payload = {"ok": False, "error": str(e)}
         L = _lazy()
         L['record_flight']({"route": route, "method": request.method, "status": 500,

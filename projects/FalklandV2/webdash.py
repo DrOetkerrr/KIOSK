@@ -167,22 +167,28 @@ def _bind_runtime(rt: GameRuntime) -> None:
             CAP._event_hook = hook  # type: ignore[attr-defined]
         except Exception:
             pass
+    # Provide resupply state to radar for Sea King injection
+    try:
+        if RADAR is not None:
+            RADAR.resupply_state_provider = (lambda: RESUPPLY)
+    except Exception:
+        pass
 
 
 _bind_runtime(RUNTIME)
 RUNTIME.register_rebinder(_bind_runtime)
 
-# Grid helpers
+# Grid helpers (canonical AA00)
 clamp = core.clamp
-world_to_board = core.world_to_board
-board_to_cell = core.board_to_cell
 cell_for_world = core.cell_for_world
 ship_cell_from_state = core.ship_cell_from_state
 radar_xy_from_state = core.radar_xy_from_state
 cell_to_world = core.cell_to_world
 WORLD_N = core.WORLD_N
-BOARD_N = core.BOARD_N
-BOARD_MIN = core.BOARD_MIN
+try:
+    from projects.falklandV2.grid.config import MASTER_COLS as GRID_COLS, MASTER_ROWS as GRID_ROWS
+except Exception:
+    GRID_COLS = 40; GRID_ROWS = 40
 
 # Weapons helpers
 WEAP_CATALOG = core.WEAP_CATALOG
@@ -649,7 +655,7 @@ def about():
             "files": {"webdash": _file_info(HERE), "radar": _file_info(radar_path), "index": _file_info(index_path)},
             "app": {"port": PORT, "pid": os.getpid(), "started_iso": APP_STARTED.isoformat()},
             "template_folder": str(tpl_folder),
-            "grid": {"world_n": WORLD_N, "board_n": BOARD_N, "scheme": "A1..Z26"},
+            "grid": {"world_n": WORLD_N, "cols": GRID_COLS, "rows": GRID_ROWS, "scheme": "AA00"},
         }
         record_flight({"route": route, "method": "GET", "status": 200, "duration_ms": int((time.time()-t0)*1000), "request": {}, "response": payload})
         return jsonify(payload)

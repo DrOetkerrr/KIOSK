@@ -336,9 +336,21 @@ function renderRADAR(j){
     renderStationOffline(p,'SYSTEM OFFLINE','RADAR');
     return;
   }
+  // Own-fleet toggle (persist via localStorage)
+  let showOwnFleet = true;
+  try{ const raw = localStorage.getItem('radar_show_ownfleet'); if(raw!==null) showOwnFleet = raw==='1'; }catch(_){ showOwnFleet = true; }
+
+  const toggleWrap=document.createElement('div'); toggleWrap.className='row section';
+  const ownLabel=document.createElement('span'); ownLabel.textContent='Show Own Fleet'; ownLabel.style.marginRight='8px';
+  const ownTgl=document.createElement('button'); ownTgl.className='btn'; ownTgl.textContent = showOwnFleet ? 'ON' : 'OFF';
+  ownTgl.onclick=function(){ showOwnFleet = !showOwnFleet; ownTgl.textContent = showOwnFleet ? 'ON' : 'OFF'; try{ localStorage.setItem('radar_show_ownfleet', showOwnFleet?'1':'0'); }catch(_){} render(j); };
+  toggleWrap.appendChild(ownLabel); toggleWrap.appendChild(ownTgl); p.appendChild(toggleWrap);
+
   const lockedId = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id): null;
   const primary = (j.primary && typeof j.primary==='object')? j.primary : null;
-  const contacts = Array.isArray(j.contacts)? j.contacts.slice(): [];
+  let contacts = Array.isArray(j.contacts)? j.contacts.slice(): [];
+  // Apply own-fleet visibility filter (own-fleet entries use id prefix 'fleet:')
+  if(!showOwnFleet){ contacts = contacts.filter(c => String(c.id||'').slice(0,6) !== 'fleet:'); }
   const lockedContact = contacts.find(c=>Number(c.id)===lockedId) || null;
   const primaryBox=document.createElement('div'); primaryBox.className='primary-box';
   const primFields=[
@@ -741,6 +753,7 @@ function renderRADIO(j){
   });
   table.appendChild(data); p.appendChild(table);
 
+  if(!ST.comms) ST.comms = { loadout: 'aim9', capCell: '' };
   const consoleMsg=document.createElement('div'); consoleMsg.className='comms-msg muted';
   p.appendChild(consoleMsg);
 
@@ -751,6 +764,9 @@ function renderRADIO(j){
   const loadoutSelect=document.createElement('select'); loadoutSelect.className='input'; loadoutSelect.style.marginRight='8px';
   const optA=document.createElement('option'); optA.value='aim9'; optA.textContent='Sidewinder (AIM-9)'; loadoutSelect.appendChild(optA);
   const optB=document.createElement('option'); optB.value='bombs'; optB.textContent='Bombs (ships)'; loadoutSelect.appendChild(optB);
+  try{ if(ST.comms && ST.comms.loadout){ loadoutSelect.value = String(ST.comms.loadout); } }catch(_){ }
+  loadoutSelect.addEventListener('change', function(){ try{ ST.comms.loadout = String(loadoutSelect.value||'aim9'); localStorage.setItem('comms_loadout', ST.comms.loadout); }catch(_){ } });
+  try{ const saved = localStorage.getItem('comms_loadout'); if(saved){ loadoutSelect.value = saved; ST.comms.loadout = saved; } }catch(_){ }
   loadoutRow.appendChild(loadoutLabel); loadoutRow.appendChild(loadoutSelect);
   p.appendChild(loadoutRow);
   const cap=j.cap || {};
@@ -788,7 +804,7 @@ function renderRADIO(j){
   const capRow=document.createElement('tr');
   const capFlight=document.createElement('td'); capFlight.textContent='CAP'; capRow.appendChild(capFlight);
   const capCellTd=document.createElement('td');
-  const capCellInput=document.createElement('input'); capCellInput.className='input mono'; capCellInput.placeholder='Cell'; capCellInput.style.width='90px'; capCellTd.appendChild(capCellInput); capRow.appendChild(capCellTd);
+  const capCellInput=document.createElement('input'); capCellInput.className='input mono'; capCellInput.placeholder='Cell'; capCellInput.style.width='90px'; if(ST.comms && ST.comms.capCell){ capCellInput.value = ST.comms.capCell; } capCellTd.appendChild(capCellInput); capRow.appendChild(capCellTd);
   const capGridTd=document.createElement('td'); capGridTd.textContent='—'; capRow.appendChild(capGridTd);
   const capActionTd=document.createElement('td'); capActionTd.className='num';
   const capLaunchBtn=document.createElement('button'); capLaunchBtn.className='btn'; capLaunchBtn.textContent='LAUNCH';
@@ -822,17 +838,25 @@ function renderRADIO(j){
 
   const capMsg=document.createElement('div'); capMsg.className='comms-msg muted'; p.appendChild(capMsg);
 
+  function _normalizeCell(s){
+    try{ let t=String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,''); if(!t) return ''; const m=t.match(/^([A-Z]+)([0-9]+)$/); return m? (m[1]+m[2]) : ''; }catch(_){ return ''; }
+  }
+  capCellInput.addEventListener('input', function(){ try{ ST.comms.capCell = String(capCellInput.value||''); localStorage.setItem('comms_capCell', ST.comms.capCell); }catch(_){ } });
+  try{ const savedCell = localStorage.getItem('comms_capCell'); if(savedCell && !capCellInput.value){ capCellInput.value = savedCell; ST.comms.capCell = savedCell; } }catch(_){ }
+
   capLaunchBtn.onclick=async function(){
-    const cell = (capCellInput.value||'').trim().toUpperCase();
+    const cellRaw = (capCellInput.value||'');
+    const cell = _normalizeCell(cellRaw);
     if(!cell){ capMsg.textContent='Enter CAP grid cell'; capMsg.className='comms-msg err'; return; }
     capMsg.textContent='Requesting CAP...'; capMsg.className='comms-msg muted';
     try{
-      const body={cell, station_minutes: 20, radius_nm: 5, loadout: String(loadoutSelect.value||'aim9')};
+      const body={cell, station_minutes: 20, radius_nm: 5, loadout: String(loadoutSelect.value||ST.comms.loadout||'aim9')};
       const res=await fetch('/cap/launch_to',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
       const data=await res.json();
       if(data && data.ok){
         capMsg.textContent=data.message || 'CAP launching';
         capMsg.className='comms-msg ok';
+        try{ ST.comms.capCell = ''; localStorage.setItem('comms_capCell',''); }catch(_){ }
         capCellInput.value='';
         await poll().catch(()=>{});
       }else{
@@ -848,7 +872,7 @@ function renderRADIO(j){
     if(!primaryContact){ capMsg.textContent='No locked target.'; capMsg.className='comms-msg err'; return; }
     capMsg.textContent='Vectoring intercept...'; capMsg.className='comms-msg muted';
     try{
-      const res=await fetch('/cap/request',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: primaryContact.id, loadout: String(loadoutSelect.value||'aim9')})});
+      const res=await fetch('/cap/request',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: primaryContact.id, loadout: String(loadoutSelect.value||ST.comms.loadout||'aim9')})});
       const data=await res.json();
       if(data && data.ok){
         capMsg.textContent=data.message || 'Intercept pair launching';
@@ -862,6 +886,32 @@ function renderRADIO(j){
       capMsg.textContent='Intercept request failed'; capMsg.className='comms-msg err';
     }
   };
+
+  // Add CAP HERE button for airborne missions (AIM-9 only)
+  const capHereRow=document.createElement('div'); capHereRow.className='row section';
+  const capHereBtn=document.createElement('button'); capHereBtn.className='btn'; capHereBtn.textContent='CAP HERE (AIRBORNE)';
+  capHereBtn.title = 'Retask an airborne SHAR to hold CAP at the cell';
+  capHereBtn.onclick=async function(){
+    const cell = (capCellInput.value||'').trim().toUpperCase();
+    if(!cell){ capMsg.textContent='Enter CAP grid cell'; capMsg.className='comms-msg err'; return; }
+    // Pick last airborne mission from table
+    const tasks = Array.isArray(cap.tasks)? cap.tasks : (Array.isArray(cap.missions)? cap.missions : []);
+    const airborne = tasks.filter(t=>String(t.status||'').toLowerCase()==='airborne');
+    if(!airborne.length){ capMsg.textContent='No airborne SHAR'; capMsg.className='comms-msg err'; return; }
+    const m = airborne[airborne.length-1];
+    const mid = (m.id!=null)? m.id : (m.n!=null? m.n : null);
+    if(mid==null){ capMsg.textContent='Unknown mission id'; capMsg.className='comms-msg err'; return; }
+    // Respect loadout: only AIM-9
+    try{ if(String(m.loadout||'aim9').toLowerCase()!=='aim9'){ capMsg.textContent='Wrong payload (Bombs)'; capMsg.className='comms-msg err'; return; } }catch(_){ }
+    capMsg.textContent='Retasking to CAP…'; capMsg.className='comms-msg muted';
+    try{
+      const res=await fetch('/cap/convert_to_cap',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: mid, cell})});
+      const data=await res.json();
+      if(data && data.ok){ capMsg.textContent=data.message || 'Holding CAP'; capMsg.className='comms-msg ok'; await poll().catch(()=>{}); }
+      else { capMsg.textContent=(data&&data.error)?String(data.error):'Retask failed'; capMsg.className='comms-msg err'; }
+    }catch(_){ capMsg.textContent='Retask failed'; capMsg.className='comms-msg err'; }
+  };
+  capHereRow.appendChild(capHereBtn); p.appendChild(capHereRow);
 
   resBtn.onclick=async function(){
     if(resBtn.disabled){ capMsg.textContent='Resupply already en route'; capMsg.className='comms-msg muted'; return; }

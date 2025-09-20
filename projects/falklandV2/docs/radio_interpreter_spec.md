@@ -18,14 +18,14 @@ Minimal fields to keep prompts tight and cheap.
 ```
 {
   "who": {"role": "Captain", "ship": "HMS Sheffield", "class": "Type 42"},
-  "ship": {"cell": "M14", "heading": 270, "speed": 15},
+  "ship": {"cell": "AU20", "heading": 270, "speed": 15},
   "world": {"year": 1982, "theater": "San Carlos Water", "side": "Royal Navy", "adversary": "Argentina", "ship": "HMS Sheffield", "ship_class": "Type 42", "carrier": "HMS Hermes"},
   "radar": {
     "locked_id": 4,
     "top_threat_id": 4,
     "contacts": [
-      {"id": 4, "name": "A-4 Skyhawk", "type": "Hostile", "cell": "A1", "range_nm": 24.8, "course": 315, "speed": 289},
-      {"id": 3, "name": "Sea Harrier FRS.1", "type": "Friendly", "cell": "A26", "range_nm": 27.7, "course": 212, "speed": 315}
+      {"id": 4, "name": "A-4 Skyhawk", "type": "Hostile", "cell": "AA00", "range_nm": 24.8, "course": 315, "speed": 289},
+      {"id": 3, "name": "Sea Harrier FRS.1", "type": "Friendly", "cell": "AJ26", "range_nm": 27.7, "course": 212, "speed": 315}
     ]
   },
   "weapons": [
@@ -61,7 +61,7 @@ Response Schema (LLM must return only this JSON)
     {"type": "RADAR.LOCK", "params": {"id": 4}},
     {"type": "WEAPON.ARM",  "params": {"name": "Sea Dart SAM", "state": "Armed"}},
     {"type": "WEAPON.FIRE", "params": {"weapon": "Sea Dart SAM", "target_id": 4, "mode": "real"}},
-    {"type": "CAP.LAUNCH", "params": {"cell": "K13"}},
+    {"type": "CAP.LAUNCH", "params": {"cell": "AF05"}},
     {"type": "CAP.AUTHORIZE", "params": {"mission_id": 12, "authorize": true}}
   ],
   "advisories": [                         // optional suggestions (never auto-executed)
@@ -112,7 +112,7 @@ Validation Matrix (server-side)
   - primary lock exists and equals target_id; in_range(name, primary) == True.
   - always confirm before POST /weapons/fire.
 - CAP.LAUNCH:
-  - CAP available; ready_pairs > 0; not on cooldown; cell valid A1..Z26.
+  - CAP available; ready_pairs > 0; not on cooldown; cell valid AA00..AN39.
   - confirm before POST /cap/launch_to.
 - CAP.AUTHORIZE:
   - mission_id exists; confirm required before POST /cap/authorize.

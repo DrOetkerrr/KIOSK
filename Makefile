@@ -27,6 +27,8 @@ smoke:
 check:
 	@echo "→ Static checks (compile + size guard + route summary)"
 	@python3 ./tools/check_repo.py
+	@echo "→ Legacy grid guard (AA00 only)"
+	@python3 ./tools/check_legacy_coords.py || (echo "legacy grid patterns detected (use AA00)" && exit 3)
 
 .PHONY: desktop
 desktop:

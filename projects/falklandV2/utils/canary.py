@@ -87,9 +87,9 @@ def _smoke_engine(mod, eng, ticks: int) -> dict:
 
 def _stability_suite(mod, eng) -> list[str]:
     """
-    Baseline checks against DesignSpecs.md:
-      - WORLD_N==40, BOARD_N==26
-      - start cell K13
+    Baseline checks against DesignSpecs.md (updated):
+      - WORLD_N == 40
+      - AA00 labeling via grid module is available (spot-check via world coords)
       - 18 kts for 60s to the east moves ~0.30 nm, ~0.00 nm north/south
       - border warning triggers when 60s lookahead would leave the captain board
     """
@@ -97,14 +97,17 @@ def _stability_suite(mod, eng) -> list[str]:
 
     # S1: World/board constants
     WORLD_N = getattr(mod, "WORLD_N", None)
-    BOARD_N = getattr(mod, "BOARD_N", None)
     if WORLD_N != 40: errs.append(f"WORLD_N expected 40, got {WORLD_N}")
-    if BOARD_N != 26: errs.append(f"BOARD_N expected 26, got {BOARD_N}")
+    # AA00 mapping smoke-check: convert ship world xy to AA00; accept any value
+    try:
+        from projects.falklandV2.grid.mapping import world_to_label as _w2l
+        lbl = _w2l(float(eng.ship.x), float(eng.ship.y), world_n=float(WORLD_N))
+        if not isinstance(lbl, str) or len(lbl) < 4:
+            errs.append(f"grid mapping failed: label={lbl!r}")
+    except Exception as e:
+        errs.append(f"grid mapping not available: {e}")
 
-    # S2: Start cell K13
-    cell = eng.ship.board_cell() if hasattr(eng, "ship") else None
-    if not cell or cell[0] != "K" or cell[1] != 13:
-        errs.append(f"start cell expected K13, got {cell}")
+    # S2: Start cell — no fixed legacy letter/number check anymore (AA00 system)
 
     # S3: Movement physics — 18 kts for 60s east ≈ 0.3 nm dx, ~0 dy
     x0, y0 = eng.ship.x, eng.ship.y

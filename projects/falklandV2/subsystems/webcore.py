@@ -290,6 +290,9 @@ AUDIO_STATE: Dict[str, Any] = {
     "shots_in_flight": []
 }
 
+# Enemy hit throttle to avoid clustered multiple system offlines in a single instant
+ENEMY_HIT_GUARD: Dict[str, Any] = {"last_ts": 0.0}
+
 
 def trigger_alarm(sound: str = "red-alert.wav", *, message: str | None = None, role: str | None = None, loop: bool = False) -> None:
     try:
@@ -338,56 +341,40 @@ def stamp_cap_launch(sound_file: str = "SHAR.wav", volume: float = 0.10, fade_s:
         pass
 
 
-# ---- Grid conversion (world 40×40 → board A..Z × 1..26) ----
+# ---- Grid conversion (canonical AA00 on 40×40; captain sub-board 30×30) ----
 WORLD_N = 40
-BOARD_N = 26
-BOARD_MIN = (WORLD_N - BOARD_N) / 2.0
+from projects.falklandV2.grid.coords import parse_coord as _parse_label, format_coord as _fmt_label, center_subboard
+from projects.falklandV2.grid.mapping import world_to_label as _world_to_label, label_to_world as _label_to_world
+
+# Centered 30×30 sub-board inside 40×40 (AF05 .. BI34)
+(_SUB_TL_C, _SUB_TL_R), (_SUB_BR_C, _SUB_BR_R) = center_subboard(40, 40, 30, 30)
 
 
 def clamp(v: float, lo: float, hi: float) -> float:
     return lo if v < lo else hi if v > hi else v
 
 
-def _idx_to_letters(idx: int) -> str:
-    s = ""; n = max(1, int(idx))
-    while n > 0:
-        n -= 1
-        s = chr(ord('A') + (n % 26)) + s
-        n //= 26
-    return s
-
-
-def world_to_board(row: float, col: float) -> tuple[int, int]:
-    def mapv(v: float) -> int:
-        t = (v - BOARD_MIN)
-        return int(round(clamp(1.0 + t, 1.0, float(BOARD_N))))
-    return mapv(row), mapv(col)
-
-
-def board_to_cell(row_i: int, col_i: int) -> str:
-    return f"{_idx_to_letters(int(col_i))}{int(row_i)}"
-
-
 def cell_for_world(row: float, col: float) -> str:
-    r_i, c_i = world_to_board(row, col)
-    return board_to_cell(r_i, c_i)
+    # world y=row, x=col
+    return _world_to_label(float(col), float(row), world_n=float(WORLD_N))
 
 
 def ship_cell_from_state(state: Dict[str, Any]) -> str:
     ship = (state or {}).get('ship', {}) if isinstance(state, dict) else {}
+    # Prefer webdash.get_own_xy mapping if available
+    try:
+        from .. import webdash as wd  # type: ignore
+        x, y = wd.get_own_xy(state)
+        return _world_to_label(float(x), float(y), world_n=float(WORLD_N))
+    except Exception:
+        pass
+    # Fallback legacy fields
     try:
         col = float(ship.get('col', 0.0))
         row = float(ship.get('row', 0.0))
     except Exception:
         col, row = 0.0, 0.0
-    if (col > float(WORLD_N)) or (row > float(WORLD_N)):
-        try:
-            legacy_span = 100.0
-            col = (float(col) / legacy_span) * float(WORLD_N)
-            row = (float(row) / legacy_span) * float(WORLD_N)
-        except Exception:
-            pass
-    return cell_for_world(row, col)
+    return _world_to_label(float(col), float(row), world_n=float(WORLD_N))
 
 
 def radar_xy_from_state(state: Dict[str, Any]) -> tuple[float, float]:
@@ -408,26 +395,10 @@ def radar_xy_from_state(state: Dict[str, Any]) -> tuple[float, float]:
 
 
 def cell_to_world(cell: str) -> tuple[float, float]:
-    s = str(cell or "").strip().upper()
-    if not s:
-        return (0.0, 0.0)
-    i = 0
-    while i < len(s) and s[i].isalpha():
-        i += 1
-    col_letters = s[:i] or "A"
-    row_str = s[i:] or "1"
-    col_i = 0
-    for ch in col_letters:
-        col_i = col_i * 26 + (ord(ch) - ord('A') + 1)
     try:
-        row_i = int(row_str)
+        return _label_to_world(str(cell or ''), world_n=float(WORLD_N))
     except Exception:
-        row_i = 1
-    col_i = max(1, min(BOARD_N, col_i))
-    row_i = max(1, min(BOARD_N, row_i))
-    x = float(BOARD_MIN) + float(col_i - 1)
-    y = float(BOARD_MIN) + float(row_i - 1)
-    return (x, y)
+        return (0.0, 0.0)
 
 
 # ---- Weapons data and helpers ----
@@ -664,23 +635,18 @@ def _ownfleet_snapshot(state: Dict[str, Any]) -> list[Dict[str, Any]]:
     try:
         convoy = _load_json(DATA_DIR / 'convoy.json', {})
         escorts = convoy.get('escorts', []) if isinstance(convoy, dict) else []
-        # Parse own cell into indices
-        i = 0
-        while i < len(cell) and cell[i].isalpha():
-            i += 1
-        col_letters = cell[:i] or 'A'
-        row_str = cell[i:] or '1'
-        col_i = 0
-        for ch in col_letters:
-            col_i = col_i*26 + (ord(ch)-ord('A')+1)
+        # Parse own cell into 0-based master indices
         try:
-            row_i = int(row_str)
+            col_i, row_i = _parse_label(cell)
         except Exception:
-            row_i = 1
+            col_i, row_i = (0, 0)
         for e in escorts[:3]:
             try:
                 dx, dy = (e.get('offset_cells') or [0,0])
-                ec = board_to_cell(int(clamp(row_i + int(dy), 1, BOARD_N)), int(clamp(col_i + int(dx), 1, BOARD_N)))
+                # Clamp within 30×30 centered sub-board bounds
+                nc = int(clamp(col_i + int(dx), _SUB_TL_C, _SUB_BR_C))
+                nr = int(clamp(row_i + int(dy), _SUB_TL_R, _SUB_BR_R))
+                ec = _fmt_label(nc, nr)
                 out.append({
                     'id': e.get('id','esc'),
                     'name': e.get('name','Escort'),
@@ -1423,6 +1389,23 @@ def engine_thread_run(wd) -> None:
             wd.RADAR.tick(dt, ox, oy)
         except Exception:
             pass
+        # Cull transient missile contacts (spawned on enemy attack) when TTL expires
+        try:
+            now_ts = time.time()
+            kept = []
+            for c in getattr(wd.RADAR, 'contacts', []) or []:
+                try:
+                    meta = getattr(c, 'meta', {}) or {}
+                    if str(meta.get('kind','')) == 'missile':
+                        ttl = float(meta.get('ttl_ts', 0.0) or 0.0)
+                        if ttl and now_ts >= ttl:
+                            continue
+                except Exception:
+                    pass
+                kept.append(c)
+            wd.RADAR.contacts = kept
+        except Exception:
+            pass
         # CAP tick + auto-engage if primary in range
         # Keep CAP exceptions local to each sub-step to avoid killing the loop
         if wd.CAP is not None:
@@ -1838,6 +1821,20 @@ def engine_thread_run(wd) -> None:
                                     )
                                 except Exception:
                                     pass
+                                # Spawn a transient hostile missile contact so UI shows incoming even if shooter drops
+                                try:
+                                    from ..radar import Contact, WORLD_N  # late import
+                                    ttl = now + 20.0
+                                    meta = {'kind': 'missile', 'ttl_ts': ttl}
+                                    next_id = getattr(wd.RADAR, "_next_id", len(getattr(wd.RADAR,'contacts',[]) or []) + 1)
+                                    mc = Contact(id=int(next_id), name='Incoming weapon', allegiance='Hostile', x=float(getattr(c,'x',ox)), y=float(getattr(c,'y',oy)), course_deg=float(getattr(c,'course_deg',0.0)), speed_kts=450.0, threat='high', meta=meta)
+                                    try:
+                                        wd.RADAR._next_id = int(next_id) + 1  # type: ignore[attr-defined]
+                                    except Exception:
+                                        pass
+                                    wd.RADAR.contacts.append(mc)
+                                except Exception:
+                                    pass
                                 hit = (_rand.random() < hit_prob)
                                 result_entry = {
                                     'attempt': attempt_idx,
@@ -1908,6 +1905,14 @@ def engine_thread_run(wd) -> None:
                                 except Exception:
                                     pass
                             if any(r.get('event') == 'hit' for r in results):
+                                # Global throttle: at most one enemy-hit side effect per 1.5s
+                                try:
+                                    last = float(ENEMY_HIT_GUARD.get('last_ts', 0.0) or 0.0)
+                                except Exception:
+                                    last = 0.0
+                                if now - last < 1.5:
+                                    continue
+                                ENEMY_HIT_GUARD['last_ts'] = now
                                 if target_name_choice == 'Sheffield' and system_offlined:
                                     try:
                                         trigger_alarm('red-alert.wav', message='Sheffield hit! Critical damage reported.', role='Bridge', loop=False)

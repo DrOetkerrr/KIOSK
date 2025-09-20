@@ -140,6 +140,38 @@ def build() -> Dict[str, Any]:
             except Exception:
                 pass
         radar_list = [wd.contact_to_ui(c, own_xy) for c in wd.RADAR.contacts]
+        # Also surface key friendlies (Hermes, escorts) so Radar station shows them
+        try:
+            fleet = payload.get('ownfleet') if isinstance(payload.get('ownfleet'), list) else []
+            for u in (fleet or []):
+                try:
+                    if str(u.get('id','')) == 'own':
+                        continue
+                    cell = str(u.get('cell') or '')
+                    if not cell:
+                        continue
+                    # Compute range from own ship to this friendly
+                    try:
+                        mx, my = wd.cell_to_world(cell)
+                        ox, oy = own_xy
+                        rng = ((float(mx)-float(ox))**2 + (float(my)-float(oy))**2) ** 0.5
+                    except Exception:
+                        rng = None
+                    rec = {
+                        'id': f"fleet:{u.get('id') or u.get('name','?')}",
+                        'cell': cell,
+                        'name': u.get('name','Friendly'),
+                        'type': 'Friendly',
+                        'class': u.get('class','Ship'),
+                        'range_nm': (None if rng is None else float(rng)),
+                        'course': int(u.get('heading') or 0),
+                        'speed': int(u.get('speed') or 0),
+                    }
+                    radar_list.append(rec)
+                except Exception:
+                    continue
+        except Exception:
+            pass
         # normalize cells, classes, and caps
         for d, c in zip(radar_list, wd.RADAR.contacts):
             try:
@@ -170,6 +202,71 @@ def build() -> Dict[str, Any]:
                 pass
     except Exception:
         radar_list = []
+    # Inject mission friendlies (CAP) and Sea King resupply as UI-level fallbacks,
+    # to ensure visibility even if radar-side injection is delayed or trimmed.
+    try:
+        own_xy = wd.radar_xy_from_state(payload.get('state') or {})
+    except Exception:
+        own_xy = (0.0, 0.0)
+    # CAP missions
+    try:
+        if wd.CAP is not None:
+            snap = wd.CAP.snapshot()  # type: ignore[attr-defined]
+            for m in (snap.get('missions') or []):
+                try:
+                    mid = int(m.get('id'))
+                    status = str(m.get('status') or '')
+                    if status not in ('queued','airborne','onstation','rtb','recovering'):
+                        continue
+                    cell = str(m.get('cur_cell') or m.get('target_cell') or m.get('origin_cell') or '')
+                    if not cell:
+                        continue
+                    try:
+                        mx, my = wd.cell_to_world(cell)
+                        ox, oy = own_xy
+                        rng = ((float(mx)-float(ox))**2 + (float(my)-float(oy))**2) ** 0.5
+                    except Exception:
+                        rng = None
+                    radar_list.append({
+                        'id': f'cap:{mid}',
+                        'cell': cell,
+                        'name': 'Sea Harrier FRS.1',
+                        'type': 'Friendly',
+                        'class': 'Aircraft',
+                        'range_nm': (None if rng is None else float(rng)),
+                        'course': None,
+                        'speed': 315,
+                        'pennant': f'CAP-{mid}',
+                    })
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    # Sea King (resupply)
+    try:
+        rs = getattr(wd, 'RESUPPLY', {}) if hasattr(wd, 'RESUPPLY') else {}
+        if isinstance(rs, dict) and bool(rs.get('active', False)) and str(rs.get('stage') or '') in ('enroute','landing'):
+            cell = str(rs.get('origin_cell') or '')
+            if cell:
+                try:
+                    mx, my = wd.cell_to_world(cell)
+                    ox, oy = own_xy
+                    rng = ((float(mx)-float(ox))**2 + (float(my)-float(oy))**2) ** 0.5
+                except Exception:
+                    rng = None
+                radar_list.append({
+                    'id': 'resupply:seaking',
+                    'cell': cell,
+                    'name': 'Sea King Helicopter',
+                    'type': 'Friendly',
+                    'class': 'Helicopter',
+                    'range_nm': (None if rng is None else float(rng)),
+                    'course': None,
+                    'speed': 90,
+                    'hull': 'resupply',
+                })
+    except Exception:
+        pass
     # Invariant guard: consistency suite — de-duplicate contacts per tick by identity unless annotated
     def _identity_key(d: dict) -> tuple:
         name = str(d.get('name') or '').strip().lower()
@@ -240,6 +337,13 @@ def build() -> Dict[str, Any]:
                     primary_ui = next((d for d in radar_list if int(d.get('id', -1)) == int(locked_id)), None)
             except Exception:
                 primary_ui = None
+        # Fallback: if still no primary, use nearest hostile to drive in_range
+        if primary_ui is None:
+            try:
+                if threats:
+                    primary_ui = threats[0]
+            except Exception:
+                pass
         def _order_key(rec: Dict[str,Any]):
             nm = rec.get('name',''); cls = rec.get('class','Other')
             if nm == 'MM38 Exocet': return (0, nm)

@@ -536,3 +536,41 @@ class HermesCAP:
                 item['range_nm'] = item.get('distance_nm')
             missions.append(item)
         return {"readiness": r, "missions": missions}
+
+    # ---------- retask helpers
+    def convert_to_cap(self, mission_id: int, target_cell: str, *, minutes: Optional[float] = None, now: Optional[float] = None) -> Dict[str, Any]:
+        """Retask an airborne/onstation mission to hold CAP at target_cell.
+
+        Rules:
+        - Only allowed for AIM-9 loadout and missiles_left > 0.
+        - Sets status to 'onstation' immediately with a fresh on-station timer.
+        - If minutes provided, overrides default onstation duration.
+        """
+        m = self._mission_by_id(mission_id)
+        if m is None:
+            return {"ok": False, "error": "mission not found"}
+        if getattr(m, 'loadout', 'aim9') != 'aim9':
+            return {"ok": False, "error": "wrong payload"}
+        try:
+            if int(getattr(m, 'missiles_left', 0) or 0) <= 0:
+                return {"ok": False, "error": "winchester"}
+        except Exception:
+            pass
+        t = now or time.time()
+        try:
+            m.target_cell = str(target_cell)
+        except Exception:
+            pass
+        # Set CAP status/timers
+        m.status = 'onstation'
+        m.ts['onstation'] = t
+        dur_s = int((float(minutes) * 60.0) if minutes is not None else self.cfg.get('default_onstation_min', 20) * 60)
+        m.onstation_s = max(60, int(dur_s))
+        m.ts['etd_rtb'] = t + m.onstation_s
+        self._emit_event('cap.onstation', {'mission_id': m.id, 'cell': m.target_cell})
+        # Reset permission to require authorization again
+        try:
+            self.set_permission(m.id, False, now=t)
+        except Exception:
+            pass
+        return {"ok": True, "message": f"SHAR {m.id} holding CAP at {m.target_cell}", "mission": m.to_dict()}
