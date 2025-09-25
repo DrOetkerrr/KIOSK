@@ -43,12 +43,18 @@ app = Flask(__name__, template_folder=str(TPL_DIR))
 
 
 def _bp_safe_register(import_path: str, attr: str = "bp") -> None:
+    """Register a blueprint, logging import/registration failures instead of failing silently.
+    This makes missing-route bugs (404) easier to diagnose.
+    """
     try:
         mod = __import__(import_path, fromlist=[attr])
         bp = getattr(mod, attr)
         app.register_blueprint(bp)
-    except Exception:
-        pass
+    except Exception as e:
+        try:
+            logging.exception("Failed to register blueprint %s.%s: %s", import_path, attr, e)
+        except Exception:
+            pass
 
 
 # Register blueprints
@@ -68,6 +74,160 @@ _bp_safe_register('projects.falklandV2.routes.diag')
 _bp_safe_register('projects.falklandV2.routes.flight')
 _bp_safe_register('projects.falklandV2.routes.eng')
 _bp_safe_register('projects.falklandV2.routes.resupply')
+
+# --- Fallbacks for critical routes when a blueprint fails to load ---
+def _ensure_cap_fallbacks():
+    try:
+        from flask import request, jsonify  # local import to avoid top-level dependency
+        existing = {r.rule for r in app.url_map.iter_rules()}
+        # Fallback for POST /cap/request (Intercept)
+        if '/cap/request' not in existing:
+            @app.post('/cap/request')
+            def _cap_request_fallback():
+                try:
+                    if CAP is None:
+                        return jsonify({"ok": False, "error": "CAP unavailable"}), 503
+                    data = request.get_json(silent=True) or {}
+                    # Resolve target: prefer explicit id -> PRIMARY_ID -> radar.priority_id
+                    tid = data.get('id')
+                    try:
+                        tid = int(tid) if tid is not None else tid
+                    except Exception:
+                        tid = None
+                    if tid is None:
+                        pid = globals().get('PRIMARY_ID')
+                        try:
+                            tid = int(pid) if pid is not None else None
+                        except Exception:
+                            tid = None
+                    if tid is None:
+                        tid = getattr(RADAR, 'priority_id', None)
+                    tgt = next((c for c in getattr(RADAR, 'contacts', []) if int(getattr(c,'id',-1)) == int(tid)), None) if tid is not None else None
+                    # Accept client-provided cell when the exact target object no longer exists
+                    cs = data.get('cell'); fallback_cell = (str(cs).strip().upper() if cs else None)
+                    if tgt is None and not fallback_cell:
+                        return jsonify({"ok": False, "error": "no locked/selected target"}), 400
+                    st = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+                    own_x, own_y = radar_xy_from_state(st)
+                    ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
+                    try:
+                        course_deg = float(ship.get('heading', 0.0) or 0.0)
+                    except Exception:
+                        course_deg = 0.0
+                    convoy = globals().get('CONVOY')
+                    if convoy is not None:
+                        hx, hy, hermes_cell = convoy.escort_world_cell('hermes', own_x, own_y, course_deg)
+                    else:
+                        hx, hy = own_x, own_y
+                        hermes_cell = ship_cell_from_state(st)
+                    if tgt is not None:
+                        dx = float(getattr(tgt,'x',0.0)) - float(hx)
+                        dy = float(getattr(tgt,'y',0.0)) - float(hy)
+                        rng_nm = (dx*dx + dy*dy) ** 0.5
+                        try:
+                            cell = world_to_cell(float(getattr(tgt,'x',0.0)), float(getattr(tgt,'y',0.0)))
+                        except Exception:
+                            cell = 'K13'
+                    else:
+                        tx, ty = cell_to_world(fallback_cell)
+                        dx, dy = float(tx) - float(hx), float(ty) - float(hy)
+                        rng_nm = (dx*dx + dy*dy) ** 0.5
+                        cell = fallback_cell
+                    try:
+                        loadout = str((data.get('loadout') or 'aim9')).lower()
+                    except Exception:
+                        loadout = 'aim9'
+                    res = CAP.request_cap_to_cell(
+                        cell,
+                        distance_nm=float(rng_nm),
+                        origin_xy=(hx, hy),
+                        origin_cell=hermes_cell,
+                        mission_kind='intercept',
+                        loadout=loadout,
+                    )
+                    status = 200 if res.get('ok') else 400
+                    payload = {"ok": bool(res.get('ok')), "message": res.get('message'), "mission": res.get('mission')}
+                    try:
+                        record_flight({"route": '/cap/request.fallback', "method": request.method, "status": status,
+                                       "duration_ms": 0, "request": {"cell": cell, "range_nm": round(rng_nm,2)}, "response": payload})
+                    except Exception:
+                        pass
+                    return jsonify(payload), status
+                except Exception as e:
+                    try:
+                        record_flight({"route": '/cap/request.fallback', "method": request.method, "status": 500,
+                                       "duration_ms": 0, "request": {}, "response": {"ok": False, "error": str(e)}})
+                    except Exception:
+                        pass
+                    return jsonify({"ok": False, "error": str(e)}), 500
+        # Fallback for POST /cap/launch_to (CAP station)
+        if '/cap/launch_to' not in existing:
+            @app.post('/cap/launch_to')
+            def _cap_launch_to_fallback():
+                try:
+                    if CAP is None:
+                        return jsonify({"ok": False, "error": "CAP unavailable"}), 503
+                    data = request.get_json(silent=True) or {}
+                    cell = str(data.get('cell') or '').strip().upper()
+                    if not cell:
+                        return jsonify({"ok": False, "error": "missing cell"}), 400
+                    st = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+                    own_x, own_y = radar_xy_from_state(st)
+                    ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
+                    try:
+                        course_deg = float(ship.get('heading', 0.0) or 0.0)
+                    except Exception:
+                        course_deg = 0.0
+                    convoy = globals().get('CONVOY')
+                    if convoy is not None:
+                        hx, hy, hermes_cell = convoy.escort_world_cell('hermes', own_x, own_y, course_deg)
+                    else:
+                        hx, hy = own_x, own_y
+                        hermes_cell = ship_cell_from_state(st)
+                    tx, ty = cell_to_world(cell)
+                    dx, dy = float(tx) - float(hx), float(ty) - float(hy)
+                    rng_nm = (dx*dx + dy*dy) ** 0.5
+                    sm = data.get('station_minutes', 20)
+                    rm = data.get('radius_nm', 5)
+                    follow = None
+                    try:
+                        f = data.get('follow')
+                        follow = str(f).lower() if f else None
+                    except Exception:
+                        follow = None
+                    try:
+                        loadout = str((data.get('loadout') or 'aim9')).lower()
+                    except Exception:
+                        loadout = 'aim9'
+                    res = CAP.request_cap_to_cell(
+                        cell,
+                        distance_nm=float(rng_nm),
+                        station_minutes=float(sm),
+                        radius_nm=float(rm),
+                        origin_xy=(hx, hy),
+                        origin_cell=hermes_cell,
+                        loadout=loadout,
+                        follow=follow,
+                    )
+                    status = 200 if res.get('ok') else 400
+                    payload = {"ok": bool(res.get('ok')), "message": res.get('message'), "mission": res.get('mission')}
+                    try:
+                        record_flight({"route": '/cap/launch_to.fallback', "method": request.method, "status": status,
+                                       "duration_ms": 0, "request": {"cell": cell, "range_nm": round(rng_nm,2)}, "response": payload})
+                    except Exception:
+                        pass
+                    return jsonify(payload), status
+                except Exception as e:
+                    try:
+                        record_flight({"route": '/cap/launch_to.fallback', "method": request.method, "status": 500,
+                                       "duration_ms": 0, "request": {}, "response": {"ok": False, "error": str(e)}})
+                    except Exception:
+                        pass
+                    return jsonify({"ok": False, "error": str(e)}), 500
+    except Exception:
+        pass
+
+_ensure_cap_fallbacks()
 
 
 # One-shot startup selftest

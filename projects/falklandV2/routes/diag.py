@@ -4,6 +4,7 @@ import time
 import logging
 import threading
 from flask import Blueprint, jsonify, request
+from flask import current_app
 import os
 import importlib
 
@@ -189,6 +190,25 @@ def reset_runtime():
         except Exception:
             pass
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@bp.get("/diag/routes")
+def list_routes():
+    try:
+        rules = []
+        for rule in current_app.url_map.iter_rules():
+            try:
+                methods = sorted(m for m in (rule.methods or set()) if m not in ("HEAD","OPTIONS"))
+            except Exception:
+                methods = []
+            rules.append({
+                'rule': str(rule),
+                'endpoint': str(rule.endpoint),
+                'methods': methods,
+            })
+        return jsonify({'ok': True, 'routes': rules})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @bp.post("/diag/quit")

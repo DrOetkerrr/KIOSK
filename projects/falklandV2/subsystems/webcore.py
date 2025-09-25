@@ -1320,6 +1320,8 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
                     target_label = target_cell_disp
                 tasks.append({
                     "n": mid,
+                    "loadout": m.get('loadout'),
+                    "follow": m.get('follow'),
                     "cur_cell": pos_cell or '—',
                     "origin_cell": origin_cell or (meta_rec or {}).get('origin_cell') or '',
                     "target_cell": target_cell_disp,
@@ -1411,6 +1413,32 @@ def engine_thread_run(wd) -> None:
         if wd.CAP is not None:
             try:
                 wd.CAP.tick()
+            except Exception:
+                pass
+            # Dynamic follow: retarget CAP missions flagged to follow Hermes to Hermes' current cell
+            try:
+                st2 = wd.ENG.public_state() if hasattr(wd.ENG, "public_state") else {}
+                ship = (st2 or {}).get('ship', {}) if isinstance(st2, dict) else {}
+                try:
+                    course_deg2 = float(ship.get('heading', 0.0) or 0.0)
+                except Exception:
+                    course_deg2 = 0.0
+                convoy = getattr(wd, 'CONVOY', None)
+                if convoy is not None:
+                    hx, hy, hermes_cell = convoy.escort_world_cell('hermes', ox, oy, course_deg2)
+                else:
+                    hx, hy = ox, oy
+                    hermes_cell = wd.ship_cell_from_state(st2)
+                for m in getattr(wd.CAP, 'missions', []) or []:
+                    try:
+                        if str(getattr(m, 'kind', '')) != 'cap':
+                            continue
+                        if str(getattr(m, 'follow', '')) != 'hermes':
+                            continue
+                        # Update station center to Hermes current cell
+                        setattr(m, 'target_cell', hermes_cell)
+                    except Exception:
+                        continue
             except Exception:
                 pass
             pid = getattr(wd.RADAR, 'priority_id', None)
@@ -1870,12 +1898,43 @@ def engine_thread_run(wd) -> None:
                                                 s['response_deadline_ts'] = now + 120.0
                                                 save_eng_sys(eng)
                                                 system_offlined = True
+                                                system_name = s.get('name', 'System')
+                                                try:
+                                                    _record_event_guard(
+                                                        wd,
+                                                        'eng.system.offline',
+                                                        {'system': system_name},
+                                                        context={'source': 'enemy_attack', 'contact_id': cid},
+                                                    )
+                                                except Exception:
+                                                    pass
                                                 _record_event_guard(
                                                     wd,
                                                     'eng.system.timer',
-                                                    {'system': s.get('name', 'System'), 'seconds': s.get('timer_s', 0)},
+                                                    {'system': system_name, 'seconds': s.get('timer_s', 0)},
                                                     context={'source': 'enemy_attack', 'contact_id': cid},
                                                 )
+                                                try:
+                                                    record_flight({
+                                                        'route': '/enemy/system.offline',
+                                                        'method': 'INT',
+                                                        'status': 200,
+                                                        'duration_ms': 0,
+                                                        'request': {
+                                                            'contact_id': cid,
+                                                            'contact_name': getattr(c, 'name', ''),
+                                                            'range_nm': round(target_dist_nm, 2) if target_dist_nm is not None else None,
+                                                            'target': target_name_choice,
+                                                            'attack_kind': attack_kind,
+                                                        },
+                                                        'response': {
+                                                            'system': system_name,
+                                                            'status': 'Offline',
+                                                            'reason': 'enemy_hit'
+                                                        }
+                                                    })
+                                                except Exception:
+                                                    pass
                                         except Exception:
                                             pass
                                     payload = {

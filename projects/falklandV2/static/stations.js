@@ -774,6 +774,7 @@ function renderRADIO(j){
   const readyPairs = (cap.readiness && typeof cap.readiness==='object')? cap.readiness.ready_pairs : (cap.pairs ?? cap.ready_pairs);
   const airframes = (cap.readiness && typeof cap.readiness==='object')? cap.readiness.airframes : (cap.airframes ?? cap.airframe_pool_total);
   const cooldownRaw = (cap.readiness && typeof cap.readiness==='object')? cap.readiness.cooldown_s : (cap.cooldown_s ?? 0);
+  const deckLeftRaw = (cap.readiness && typeof cap.readiness==='object')? (cap.readiness.launch_interval_left_s ?? 0) : 0;
   const readyPairsNum = Number(readyPairs ?? 0);
   const airframesNum = Number(airframes ?? 0);
   const hasCooldown = Number(cooldownRaw || 0) > 0;
@@ -785,6 +786,7 @@ function renderRADIO(j){
     `pairs: ${readyPairsNum}`,
     `airframes: ${airframesNum}`,
     `cooldown: ${hasCooldown ? Math.max(0, Number(cooldownRaw)).toFixed(0)+'s' : '—'}`,
+    `deck: ${Math.max(0, Number(deckLeftRaw||0)).toFixed(0)}s`,
     `committed: ${cap.committed ?? (cap.tasks? cap.tasks.length : 0)}`
   ];
   summaryItems.forEach(function(txt, idx){
@@ -792,6 +794,7 @@ function renderRADIO(j){
     if(idx===0 && readyPairsNum<=0) span.classList.add('warn');
     if(idx===1 && airframesNum<2) span.classList.add('warn');
     if(idx===2 && hasCooldown) span.classList.add('warn');
+    if(idx===3 && Number(deckLeftRaw||0)>0) span.classList.add('warn');
     sharSummary.appendChild(span);
   });
   p.appendChild(sharSummary);
@@ -808,7 +811,11 @@ function renderRADIO(j){
   const capGridTd=document.createElement('td'); capGridTd.textContent='—'; capRow.appendChild(capGridTd);
   const capActionTd=document.createElement('td'); capActionTd.className='num';
   const capLaunchBtn=document.createElement('button'); capLaunchBtn.className='btn'; capLaunchBtn.textContent='LAUNCH';
-  capActionTd.appendChild(capLaunchBtn); capRow.appendChild(capActionTd);
+  // Follow Hermes small toggle
+  const followWrap=document.createElement('label'); followWrap.style.marginLeft='8px'; followWrap.style.fontSize='0.9em';
+  const followChk=document.createElement('input'); followChk.type='checkbox'; followChk.style.marginRight='6px';
+  followWrap.appendChild(followChk); followWrap.appendChild(document.createTextNode('Follow Hermes'));
+  capActionTd.appendChild(capLaunchBtn); capActionTd.appendChild(followWrap); capRow.appendChild(capActionTd);
   launchTable.appendChild(capRow);
 
   const interceptRow=document.createElement('tr');
@@ -843,18 +850,32 @@ function renderRADIO(j){
   }
   capCellInput.addEventListener('input', function(){ try{ ST.comms.capCell = String(capCellInput.value||''); localStorage.setItem('comms_capCell', ST.comms.capCell); }catch(_){ } });
   try{ const savedCell = localStorage.getItem('comms_capCell'); if(savedCell && !capCellInput.value){ capCellInput.value = savedCell; ST.comms.capCell = savedCell; } }catch(_){ }
+  // Press Enter in the cell field to launch
+  capCellInput.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); try{ capLaunchBtn.click(); }catch(_){ } } });
 
   capLaunchBtn.onclick=async function(){
     const cellRaw = (capCellInput.value||'');
-    const cell = _normalizeCell(cellRaw);
-    if(!cell){ capMsg.textContent='Enter CAP grid cell'; capMsg.className='comms-msg err'; return; }
+    const cellNorm = _normalizeCell(cellRaw);
+    // When following Hermes, we can omit a cell
+    if(!followChk.checked && !cellNorm){ capMsg.textContent='Enter CAP grid cell'; capMsg.className='comms-msg err'; return; }
     capMsg.textContent='Requesting CAP...'; capMsg.className='comms-msg muted';
     try{
-      const body={cell, station_minutes: 20, radius_nm: 5, loadout: String(loadoutSelect.value||ST.comms.loadout||'aim9')};
+      let body={cell: cellNorm, station_minutes: 20, radius_nm: 5, loadout: String(loadoutSelect.value||ST.comms.loadout||'aim9')};
+      if(followChk.checked){
+        body.follow = 'hermes';
+        // Use flagship cell as initial destination if none typed
+        if(!body.cell){ try{ body.cell = flagshipCell || ''; }catch(_){ body.cell=''; } }
+      }
+      capLaunchBtn.disabled = true;
       const res=await fetch('/cap/launch_to',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
       const data=await res.json();
       if(data && data.ok){
-        capMsg.textContent=data.message || 'CAP launching';
+        try{
+          const ms = (data.mission && data.mission.timestamps && Number(data.mission.timestamps.eta_onstation)) || null;
+          const now = Math.floor(Date.now()/1000);
+          const tot = (ms && (ms>now)) ? (ms-now) : null;
+          capMsg.textContent = (data.message || 'CAP launching') + (tot!=null? ` — TOT ~${tot}s` : '');
+        }catch(_){ capMsg.textContent=data.message || 'CAP launching'; }
         capMsg.className='comms-msg ok';
         try{ ST.comms.capCell = ''; localStorage.setItem('comms_capCell',''); }catch(_){ }
         capCellInput.value='';
@@ -865,14 +886,16 @@ function renderRADIO(j){
       }
     }catch(e){
       capMsg.textContent='CAP request failed'; capMsg.className='comms-msg err';
-    }
+    } finally { capLaunchBtn.disabled = false; }
   };
 
   interceptBtn.onclick=async function(){
     if(!primaryContact){ capMsg.textContent='No locked target.'; capMsg.className='comms-msg err'; return; }
     capMsg.textContent='Vectoring intercept...'; capMsg.className='comms-msg muted';
     try{
-      const res=await fetch('/cap/request',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: primaryContact.id, loadout: String(loadoutSelect.value||ST.comms.loadout||'aim9')})});
+      const body = { id: primaryContact.id, loadout: String(loadoutSelect.value||ST.comms.loadout||'aim9') };
+      try{ if(primaryContact.cell) body.cell = String(primaryContact.cell); }catch(_){ }
+      const res=await fetch('/cap/request',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
       const data=await res.json();
       if(data && data.ok){
         capMsg.textContent=data.message || 'Intercept pair launching';
@@ -887,10 +910,12 @@ function renderRADIO(j){
     }
   };
 
-  // Add CAP HERE button for airborne missions (AIM-9 only)
+  // Add CAP HERE / CAP HERMES buttons for airborne missions
   const capHereRow=document.createElement('div'); capHereRow.className='row section';
   const capHereBtn=document.createElement('button'); capHereBtn.className='btn'; capHereBtn.textContent='CAP HERE (AIRBORNE)';
+  const capHermesBtn=document.createElement('button'); capHermesBtn.className='btn'; capHermesBtn.textContent='CAP HERMES'; capHermesBtn.style.marginLeft='8px';
   capHereBtn.title = 'Retask an airborne SHAR to hold CAP at the cell';
+  capHermesBtn.title = 'Retask an airborne SHAR to hold CAP centered on Hermes (follows)';
   capHereBtn.onclick=async function(){
     const cell = (capCellInput.value||'').trim().toUpperCase();
     if(!cell){ capMsg.textContent='Enter CAP grid cell'; capMsg.className='comms-msg err'; return; }
@@ -901,8 +926,6 @@ function renderRADIO(j){
     const m = airborne[airborne.length-1];
     const mid = (m.id!=null)? m.id : (m.n!=null? m.n : null);
     if(mid==null){ capMsg.textContent='Unknown mission id'; capMsg.className='comms-msg err'; return; }
-    // Respect loadout: only AIM-9
-    try{ if(String(m.loadout||'aim9').toLowerCase()!=='aim9'){ capMsg.textContent='Wrong payload (Bombs)'; capMsg.className='comms-msg err'; return; } }catch(_){ }
     capMsg.textContent='Retasking to CAP…'; capMsg.className='comms-msg muted';
     try{
       const res=await fetch('/cap/convert_to_cap',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: mid, cell})});
@@ -911,7 +934,24 @@ function renderRADIO(j){
       else { capMsg.textContent=(data&&data.error)?String(data.error):'Retask failed'; capMsg.className='comms-msg err'; }
     }catch(_){ capMsg.textContent='Retask failed'; capMsg.className='comms-msg err'; }
   };
-  capHereRow.appendChild(capHereBtn); p.appendChild(capHereRow);
+  capHermesBtn.onclick=async function(){
+    // Pick last airborne mission from table
+    const tasks = Array.isArray(cap.tasks)? cap.tasks : (Array.isArray(cap.missions)? cap.missions : []);
+    const airborne = tasks.filter(t=>String(t.status||'').toLowerCase()==='airborne');
+    if(!airborne.length){ capMsg.textContent='No airborne SHAR'; capMsg.className='comms-msg err'; return; }
+    const m = airborne[airborne.length-1];
+    const mid = (m.id!=null)? m.id : (m.n!=null? m.n : null);
+    if(mid==null){ capMsg.textContent='Unknown mission id'; capMsg.className='comms-msg err'; return; }
+    capMsg.textContent='Retasking to CAP Hermes…'; capMsg.className='comms-msg muted';
+    try{
+      const body = { mission_id: mid, cell: (flagshipCell||''), follow: 'hermes' };
+      const res=await fetch('/cap/convert_to_cap',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      const data=await res.json();
+      if(data && data.ok){ capMsg.textContent=data.message || 'Holding CAP (Hermes)'; capMsg.className='comms-msg ok'; await poll().catch(()=>{}); }
+      else { capMsg.textContent=(data&&data.error)?String(data.error):'Retask failed'; capMsg.className='comms-msg err'; }
+    }catch(_){ capMsg.textContent='Retask failed'; capMsg.className='comms-msg err'; }
+  };
+  capHereRow.appendChild(capHereBtn); capHereRow.appendChild(capHermesBtn); p.appendChild(capHereRow);
 
   resBtn.onclick=async function(){
     if(resBtn.disabled){ capMsg.textContent='Resupply already en route'; capMsg.className='comms-msg muted'; return; }
@@ -1003,7 +1043,23 @@ function renderRADIO(j){
           else { capMsg.textContent=(data&&data.error)?String(data.error):'Vector failed'; capMsg.className='comms-msg err'; }
         }catch(_){ capMsg.textContent='Vector failed'; capMsg.className='comms-msg err'; }
       };
-      vecTd.appendChild(vecBtn); tr.appendChild(vecTd);
+      // Add CAP@ retask per mission (convert to CAP at input cell)
+      const capAtBtn=document.createElement('button'); capAtBtn.className='btn'; capAtBtn.textContent='CAP@'; capAtBtn.style.marginLeft='6px';
+      if(['rtb','recovering','complete'].includes(statusKeyGlobal)) capAtBtn.disabled = true;
+      capAtBtn.title = 'Retask this flight to CAP at the cell';
+      capAtBtn.onclick = async function(){
+        const cellRaw = (capCellInput && capCellInput.value) ? String(capCellInput.value) : '';
+        const cell = (function(){ try{ let s=String(cellRaw||'').toUpperCase().replace(/[^A-Z0-9]/g,''); const m=s.match(/^([A-Z]+)([0-9]+)$/); return m? (m[1]+m[2]) : ''; }catch(_){ return ''; } })();
+        if(!cell){ capMsg.textContent='Enter CAP grid cell'; capMsg.className='comms-msg err'; return; }
+        capMsg.textContent='Retasking to CAP…'; capMsg.className='comms-msg muted';
+        try{
+          const res = await fetch('/cap/convert_to_cap',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: t.n, cell})});
+          const data = await res.json();
+          if(data && data.ok){ capMsg.textContent=data.message||'Holding CAP'; capMsg.className='comms-msg ok'; await poll().catch(()=>{}); }
+          else { capMsg.textContent=(data&&data.error)?String(data.error):'Retask failed'; capMsg.className='comms-msg err'; }
+        }catch(_){ capMsg.textContent='Retask failed'; capMsg.className='comms-msg err'; }
+      };
+      vecTd.appendChild(vecBtn); vecTd.appendChild(capAtBtn); tr.appendChild(vecTd);
       const permTd=document.createElement('td'); permTd.className='action';
       const missionId = (t.id!=null)? t.id : (t.n!=null? t.n : null);
       const perm = (t.permission && typeof t.permission==='object')? t.permission : {};

@@ -41,6 +41,7 @@ class CAPMission:
                  origin_cell: Optional[str] = None,
                  kind: str = "cap",
                  loadout: str = "aim9",
+                 follow: Optional[str] = None,
                  intercept_speed_kts: Optional[float] = None,
                  intercept_target_kts: Optional[float] = None,
                  intercept_deck_cycle_s: Optional[int] = None):
@@ -56,6 +57,8 @@ class CAPMission:
         else:
             self.origin_xy = None
         self.origin_cell: Optional[str] = str(origin_cell) if origin_cell else None
+        # Optional dynamic follow mode (e.g., 'hermes')
+        self.follow: Optional[str] = str(follow) if follow else None
 
         # Static params
         base_deck = int(cfg.get("deck_cycle_per_pair_s", 180))
@@ -69,6 +72,13 @@ class CAPMission:
             self.onstation_s = int(onstation_min if onstation_min is not None else cfg.get("default_onstation_min", 20)) * 60
         self.bingo_rtb_buffer_s = int(cfg.get("bingo_rtb_buffer_min", 4)) * 60
         self.cruise_speed_kts = float(cfg.get("cruise_speed_kts", 420))
+        if self.kind == "intercept":
+            if intercept_speed_kts is not None:
+                self.intercept_speed_kts = float(intercept_speed_kts)
+            else:
+                self.intercept_speed_kts = max(self.cruise_speed_kts, 540.0)
+        else:
+            self.intercept_speed_kts = self.cruise_speed_kts
         self.station_radius_nm = float(station_radius_nm if station_radius_nm is not None else cfg.get("station_radius_nm", 5))
 
         # Loadout: 'aim9' (Sidewinders) or 'bombs'
@@ -92,7 +102,7 @@ class CAPMission:
 
         # Transit times from distance (one way)
         if self.kind == "intercept":
-            dash_kts = float(intercept_speed_kts if intercept_speed_kts is not None else max(self.cruise_speed_kts, 540.0))
+            dash_kts = float(self.intercept_speed_kts)
             tgt_kts = float(intercept_target_kts if intercept_target_kts is not None else 350.0)
             dash_nmps = max(dash_kts / 3600.0, 0.05)
             tgt_nmps = max(tgt_kts / 3600.0, 0.0)
@@ -117,9 +127,15 @@ class CAPMission:
             "cur_cell": self.target_cell,
             "kind": self.kind,
             "loadout": self.loadout,
+            "follow": self.follow,
             "status": self.status,
             "distance_nm": self.distance_nm,
             "station_radius_nm": self.station_radius_nm,
+            "deck_cycle_s": self.deck_cycle_s,
+            "outbound_s": self.outbound_s,
+            "inbound_s": self.inbound_s,
+            "cruise_speed_kts": self.cruise_speed_kts,
+            "intercept_speed_kts": self.intercept_speed_kts,
             "origin_xy": list(self.origin_xy) if self.origin_xy is not None else None,
             "origin_cell": self.origin_cell,
             "timestamps": self.ts,
@@ -139,6 +155,7 @@ class HermesCAP:
         self.data_path = data_path
         self.cfg = self._load_cfg()
         self.airframe_pool_total = int(self.cfg.get("airframe_pool_total", 8))
+        self.airframe_pool_max = max(0, self.airframe_pool_total)
         self.ready_pairs_max = int(self.cfg.get("max_ready_pairs", 2))
         self.ready_pairs = self.ready_pairs_max
         self.cruise_speed_kts = float(self.cfg.get("cruise_speed_kts", 420))
@@ -297,11 +314,13 @@ class HermesCAP:
     def readiness(self, now: Optional[float] = None) -> Dict[str, Any]:
         t = now or time.time()
         cd_left = max(0, int(self.scramble_cooldown_s - (t - self.last_scramble)))
+        deck_left = max(0, int(getattr(self, 'min_launch_interval_s', 0) - (t - self.last_scramble)))
         return {
             "available": (self.ready_pairs >= 1 and self.airframe_pool_total >= 2 and cd_left == 0),
             "ready_pairs": self.ready_pairs,
             "airframes": self.airframe_pool_total,
             "cooldown_s": cd_left,
+            "launch_interval_left_s": deck_left,
             "station_radius_nm": float(self.cfg.get("station_radius_nm", 5))
         }
 
@@ -310,7 +329,8 @@ class HermesCAP:
                             origin_xy: Optional[Tuple[float, float]] = None,
                             origin_cell: Optional[str] = None,
                             mission_kind: str = "cap",
-                            loadout: str = "aim9") -> Dict[str, Any]:
+                            loadout: str = "aim9",
+                            follow: Optional[str] = None) -> Dict[str, Any]:
         t = now or time.time()
         if (t - self.last_scramble) < self.min_launch_interval_s:
             return {"ok": False, "message": "Deck cycle in progress"}
@@ -332,6 +352,7 @@ class HermesCAP:
                        origin_xy=origin_xy, origin_cell=origin_cell,
                        kind=mission_kind,
                        loadout=loadout,
+                       follow=follow,
                        intercept_speed_kts=self.intercept_speed_kts if mission_kind == 'intercept' else None,
                        intercept_target_kts=self.intercept_target_kts if mission_kind == 'intercept' else None,
                        intercept_deck_cycle_s=self.intercept_deck_cycle_s if mission_kind == 'intercept' else None)
@@ -342,12 +363,15 @@ class HermesCAP:
         self.last_scramble = t
         self._ensure_meta_record(m.id)
         self.set_permission(m.id, False, now=t)
-        # Respect a minimum launch deck cycle of 12 seconds; keep queued until tick promotes to 'airborne'
+        # Promote immediately: eliminate deck wait between button press and launch
+        m.deck_cycle_s = 0
+        m.status = 'airborne'
         try:
-            m.deck_cycle_s = max(int(m.deck_cycle_s), 12)
+            m.ts['eta_onstation'] = t + m.outbound_s
         except Exception:
-            m.deck_cycle_s = 12
-        return {"ok": True, "message": f"Hermes: CAP pair launching to {target_cell}", "mission": m.to_dict()}
+            m.ts['eta_onstation'] = t + 1.0
+        dest = target_cell if not follow else f"follow:{follow}"
+        return {"ok": True, "message": f"Hermes: CAP pair launching to {dest}", "mission": m.to_dict()}
 
     def tick(self, now: Optional[float] = None) -> None:
         t = now or time.time()
@@ -389,6 +413,8 @@ class HermesCAP:
                     m.status = "complete"
                     m.ts["complete"] = t
                     self.ready_pairs = min(self.ready_pairs + 1, self.ready_pairs_max)
+                    if self.airframe_pool_max:
+                        self.airframe_pool_total = min(self.airframe_pool_total + 2, self.airframe_pool_max)
                     self._drop_meta(m.id)
 
         if len(self.missions) > 12:
@@ -538,7 +564,7 @@ class HermesCAP:
         return {"readiness": r, "missions": missions}
 
     # ---------- retask helpers
-    def convert_to_cap(self, mission_id: int, target_cell: str, *, minutes: Optional[float] = None, now: Optional[float] = None) -> Dict[str, Any]:
+    def convert_to_cap(self, mission_id: int, target_cell: str, *, minutes: Optional[float] = None, now: Optional[float] = None, follow: Optional[str] = None) -> Dict[str, Any]:
         """Retask an airborne/onstation mission to hold CAP at target_cell.
 
         Rules:
@@ -561,6 +587,11 @@ class HermesCAP:
             m.target_cell = str(target_cell)
         except Exception:
             pass
+        # Optional: set dynamic follow mode
+        try:
+            m.follow = str(follow) if follow else None
+        except Exception:
+            m.follow = None
         # Set CAP status/timers
         m.status = 'onstation'
         m.ts['onstation'] = t

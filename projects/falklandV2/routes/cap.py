@@ -186,7 +186,14 @@ def cap_request():
         if tid is None:
             tid = L['RADAR'].priority_id
         tgt = next((c for c in L['RADAR'].contacts if int(getattr(c, 'id', -1)) == int(tid)), None) if tid is not None else None
-        if tgt is None:
+        # Fallback: accept a grid cell from client when target object no longer exists locally
+        fallback_cell = None
+        try:
+            cs = data.get('cell')
+            fallback_cell = str(cs).strip().upper() if cs else None
+        except Exception:
+            fallback_cell = None
+        if tgt is None and not fallback_cell:
             return jsonify({"ok": False, "error": "no locked/selected target"}), 400
         st = L['ENG'].public_state() if hasattr(L['ENG'], "public_state") else {}
         own_x, own_y = L['radar_xy_from_state'](st)
@@ -201,13 +208,20 @@ def cap_request():
         else:
             hx, hy = own_x, own_y
             hermes_cell = L['ship_cell_from_state'](st)
-        dx = float(getattr(tgt, 'x', 0.0)) - float(hx)
-        dy = float(getattr(tgt, 'y', 0.0)) - float(hy)
-        rng_nm = (dx*dx + dy*dy) ** 0.5
-        try:
-            cell = L['world_to_cell'](float(getattr(tgt, 'x', 0.0)), float(getattr(tgt, 'y', 0.0)))
-        except Exception:
-            cell = "K13"
+        if tgt is not None:
+            dx = float(getattr(tgt, 'x', 0.0)) - float(hx)
+            dy = float(getattr(tgt, 'y', 0.0)) - float(hy)
+            rng_nm = (dx*dx + dy*dy) ** 0.5
+            try:
+                cell = L['world_to_cell'](float(getattr(tgt, 'x', 0.0)), float(getattr(tgt, 'y', 0.0)))
+            except Exception:
+                cell = "K13"
+        else:
+            # Use provided fallback cell
+            tx, ty = L['cell_to_world'](fallback_cell)
+            dx, dy = float(tx) - float(hx), float(ty) - float(hy)
+            rng_nm = (dx*dx + dy*dy) ** 0.5
+            cell = fallback_cell
         # Policy: If an airborne pair can reach the primary before the target is within 5 nm of own ship,
         # vector that pair; otherwise, launch a fresh pair (if available).
         # -- Compute time window until target is 5 nm from ship (closing speed toward ship)
@@ -246,8 +260,7 @@ def cap_request():
                     mid = int(m.get('id'))
                     ts = m.get('timestamps') or {}
                     launch = float(ts.get('launch', now))
-                    deck = float(getattr(L['CAP'], 'cfg', {}).get('deck_cycle_per_pair_s', 180))
-                    outb = float(getattr(L['CAP'], 'cruise_speed_kts', 420.0))
+                    deck = float(m.get('deck_cycle_s', getattr(L['CAP'], 'cfg', {}).get('deck_cycle_per_pair_s', 180)))
                     outb = float(m.get('outbound_s', m.get('inbound_s', 600)) or 600)
                     prog = 0.0
                     try:
@@ -277,11 +290,17 @@ def cap_request():
                 except Exception:
                     return (own_x, own_y)
 
-            # Evaluate airborne missions
+            # Evaluate airborne or on-station missions (both can be re-tasked quickly)
             for m in missions:
                 try:
-                    if str(m.get('status','')) != 'airborne':
+                    status_key = str(m.get('status', '')).lower()
+                    if status_key not in ('airborne', 'onstation'):
                         continue
+                    try:
+                        if int(m.get('missiles_left', 0)) <= 0:
+                            continue
+                    except Exception:
+                        pass
                     try:
                         if desired_loadout and str(m.get('loadout','aim9')).lower() != desired_loadout:
                             continue
@@ -289,7 +308,14 @@ def cap_request():
                         pass
                     cx, cy = _mission_pos(m)
                     dist_nm = ((float(getattr(tgt,'x',0.0)) - cx)**2 + (float(getattr(tgt,'y',0.0)) - cy)**2) ** 0.5
-                    spd = float(getattr(L['CAP'], 'cruise_speed_kts', 420.0) or 420.0)
+                    mission_kind = str(m.get('kind', '')).lower()
+                    if mission_kind == 'intercept':
+                        spd_val = m.get('intercept_speed_kts')
+                        if spd_val is None:
+                            spd_val = getattr(L['CAP'], 'intercept_speed_kts', getattr(L['CAP'], 'cruise_speed_kts', 420.0))
+                    else:
+                        spd_val = m.get('cruise_speed_kts', getattr(L['CAP'], 'cruise_speed_kts', 420.0))
+                    spd = float(spd_val or 420.0)
                     eta_h = dist_nm / max(1.0, spd)
                     if eta_h <= t_window_h:
                         can_vector = True
@@ -308,18 +334,35 @@ def cap_request():
                 for m in getattr(L['CAP'], 'missions', []) or []:
                     if int(getattr(m,'id',-1)) == int(chosen_mid):
                         # estimate current pos again for remaining time
-                        snap_m = {'id': chosen_mid, 'target_cell': getattr(m,'target_cell',''),
-                                  'timestamps': getattr(m,'ts',{}), 'outbound_s': getattr(m,'outbound_s',600)}
+                        snap_m = {
+                            'id': chosen_mid,
+                            'target_cell': getattr(m,'target_cell',''),
+                            'timestamps': getattr(m,'ts',{}),
+                            'outbound_s': getattr(m,'outbound_s',600),
+                            'deck_cycle_s': getattr(m, 'deck_cycle_s', getattr(L['CAP'], 'cfg', {}).get('deck_cycle_per_pair_s', 180)),
+                            'intercept_speed_kts': getattr(m, 'intercept_speed_kts', getattr(L['CAP'], 'intercept_speed_kts', getattr(L['CAP'], 'cruise_speed_kts', 420.0))),
+                            'cruise_speed_kts': getattr(m, 'cruise_speed_kts', getattr(L['CAP'], 'cruise_speed_kts', 420.0)),
+                            'kind': getattr(m, 'kind', 'cap'),
+                        }
                         cx, cy = _mission_pos(snap_m)
                         dist_nm = ((tx - cx)**2 + (ty - cy)**2) ** 0.5
-                        base_spd = float(getattr(L['CAP'], 'cruise_speed_kts', 420.0) or 420.0)
-                        dash_spd = float(getattr(L['CAP'], 'intercept_speed_kts', base_spd))
+                        base_spd = float(getattr(m, 'cruise_speed_kts', getattr(L['CAP'], 'cruise_speed_kts', 420.0)) or 420.0)
+                        dash_spd = float(getattr(m, 'intercept_speed_kts', getattr(L['CAP'], 'intercept_speed_kts', base_spd)) or base_spd)
                         spd = dash_spd if getattr(m, 'kind', 'cap') == 'intercept' else base_spd
                         eta_s = int(max(1.0, (dist_nm / max(1.0, spd)) * 3600.0))
                         setattr(m, 'target_cell', cell)
                         try:
+                            # Retask to intercept: leave onstation, go airborne with new ETA
                             m.ts['eta_onstation'] = time.time() + eta_s  # type: ignore[attr-defined]
                             m.ts['vector'] = True  # mark retarget for UI snapshot
+                            # Ensure mission re-enters transit
+                            try:
+                                if str(getattr(m, 'status', '')) == 'onstation':
+                                    m.ts.pop('onstation', None)
+                                    m.ts['etd_rtb'] = None
+                                setattr(m, 'status', 'airborne')
+                            except Exception:
+                                setattr(m, 'status', 'airborne')
                         except Exception:
                             pass
                         break
@@ -327,8 +370,9 @@ def cap_request():
                 pass
             try:
                 meta = L['CAP_META'].get(chosen_mid) or {}
-                meta['target_id'] = int(getattr(tgt, 'id', 0) or 0)
-                meta['target_name'] = getattr(tgt, 'name', '')
+                if tgt is not None:
+                    meta['target_id'] = int(getattr(tgt, 'id', 0) or 0)
+                    meta['target_name'] = getattr(tgt, 'name', '')
                 meta['target_cell'] = cell
                 meta['asked'] = False
                 meta['authorized'] = False
@@ -399,6 +443,8 @@ def cap_request():
                     meta['target_id'] = int(getattr(tgt, 'id', 0) or 0)
                     meta['target_name'] = getattr(tgt, 'name', '')
                     meta['target_cell'] = L['world_to_cell'](float(getattr(tgt, 'x', 0.0)), float(getattr(tgt, 'y', 0.0)))
+                else:
+                    meta['target_cell'] = cell
                 meta.setdefault('asked', False)
                 meta.setdefault('authorized', False)
                 meta.setdefault('last_request_ts', 0.0)
@@ -466,6 +512,12 @@ def cap_launch_to():
             loadout = str((data.get('loadout') or 'aim9')).lower()
         except Exception:
             loadout = 'aim9'
+        follow = None
+        try:
+            f = data.get('follow')
+            follow = str(f).lower() if f else None
+        except Exception:
+            follow = None
         res = L['CAP'].request_cap_to_cell(
             cell,
             distance_nm=float(rng_nm),
@@ -474,6 +526,7 @@ def cap_launch_to():
             origin_xy=(hx, hy),
             origin_cell=hermes_cell,
             loadout=loadout,
+            follow=follow,
         )
         status = 200 if res.get("ok") else 400
         payload = {"ok": bool(res.get("ok")), "message": res.get("message"), "mission": res.get("mission")}
@@ -506,7 +559,7 @@ def cap_launch_to():
         L['record_flight']({"route": route, "method": request.method, "status": status,
                            "duration_ms": int((time.time()-t0)*1000),
                            "request": {"cell": cell, "range_nm": round(rng_nm, 2)}, "response": payload})
-    return jsonify(payload), status
+        return jsonify(payload), status
     except Exception as e:
         logging.exception("/cap/launch_to error: %s", e)
         payload = {"ok": False, "error": str(e)}
@@ -535,9 +588,15 @@ def cap_convert_to_cap():
             mid = 0
         cell = str(data.get('cell') or '').strip().upper()
         minutes = data.get('minutes')
+        follow = None
+        try:
+            f = data.get('follow')
+            follow = str(f).lower() if f else None
+        except Exception:
+            follow = None
         if mid <= 0 or not cell:
             return jsonify({"ok": False, "error": "missing mission_id or cell"}), 400
-        res = L['CAP'].convert_to_cap(mid, cell, minutes=(float(minutes) if minutes is not None else None))
+        res = L['CAP'].convert_to_cap(mid, cell, minutes=(float(minutes) if minutes is not None else None), follow=follow)
         status = 200 if res.get('ok') else 400
         payload = {"ok": bool(res.get('ok')), "message": res.get('message'), "mission": res.get('mission')}
         L['record_flight']({"route": route, "method": request.method, "status": status,
@@ -646,11 +705,18 @@ def cap_vector():
         spd = dash_spd if getattr(mission, 'kind', 'cap') == 'intercept' else base_spd
         eta_s = int(max(1.0, (dist_nm / max(1.0, spd)) * 3600.0))
 
-        # Retarget in place
+        # Retarget in place: ensure mission transitions back to airborne with new ETA
         setattr(mission, 'target_cell', cell)
         try:
             mission.ts['eta_onstation'] = time.time() + eta_s  # type: ignore[attr-defined]
             mission.ts['vector'] = True
+            try:
+                if str(getattr(mission, 'status', '')) == 'onstation':
+                    mission.ts.pop('onstation', None)
+                    mission.ts['etd_rtb'] = None
+                setattr(mission, 'status', 'airborne')
+            except Exception:
+                setattr(mission, 'status', 'airborne')
         except Exception:
             pass
 
