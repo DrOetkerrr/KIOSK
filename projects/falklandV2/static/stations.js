@@ -3,6 +3,40 @@ const $$ = (sel)=>document.querySelectorAll(sel);
 const text = (el, s)=>{ if(el) el.textContent = s; };
 const fmt = (v, d)=> (v===undefined||v===null||Number.isNaN(Number(v))) ? '—' : Number(v).toFixed(d||0);
 
+function formatHermesOrderSummary(payload){
+  try{
+    if(!payload || payload.ok === false) return null;
+  }catch(_){
+    return null;
+  }
+  const pieces=[];
+  try{
+    if(payload.bearing!==undefined && payload.bearing!==null){
+      const bearing = Math.round(Number(payload.bearing));
+      if(Number.isFinite(bearing)) pieces.push(`BRG ${bearing}°`);
+    }
+  }catch(_){ }
+  try{
+    if(payload.range_nm!==undefined && payload.range_nm!==null){
+      const rng = Number(payload.range_nm);
+      if(Number.isFinite(rng)) pieces.push(`RNG ${rng.toFixed(1)} nm`);
+    }
+  }catch(_){ }
+  try{
+    if(payload.recommend_hdg!==undefined && payload.recommend_hdg!==null){
+      const hdg = Math.round(Number(payload.recommend_hdg));
+      if(Number.isFinite(hdg)) pieces.push(`HDG ${hdg}°`);
+    }
+  }catch(_){ }
+  try{
+    if(payload.standoff_nm!==undefined && payload.standoff_nm!==null){
+      const standoff = Number(payload.standoff_nm);
+      if(Number.isFinite(standoff)) pieces.push(`STAND OFF ${standoff.toFixed(1)} nm`);
+    }
+  }catch(_){ }
+  return pieces.length ? pieces.join(', ') : 'Order acknowledged';
+}
+
 let ST = {
   active: 'NAV',
   test: false,
@@ -233,7 +267,7 @@ function renderNAV(j){
   }
   table.appendChild(tbody); p.appendChild(table);
 
-  const hint=document.createElement('div'); hint.className='nav-button-hint'; hint.textContent='(BUTTON)'; p.appendChild(hint);
+  const hint=document.createElement('div'); hint.className='nav-button-hint'; hint.textContent='Orders move Hermes by one grid cell at a time.'; p.appendChild(hint);
 
   const controlsWrap=document.createElement('div'); controlsWrap.className='nav-controls';
   const controlsTable=document.createElement('table'); controlsTable.className='nav-control-table';
@@ -291,23 +325,48 @@ function renderNAV(j){
   controlsTable.appendChild(ctrlBody); controlsWrap.appendChild(controlsTable); p.appendChild(controlsWrap);
 
   // Hermes controls moved from SYS: Close In / Stand Off
-  const hrow=document.createElement('div'); hrow.className='row section';
-  const hIn=document.createElement('button'); hIn.className='btn'; hIn.textContent='Hermes: Close In';
-  const hOff=document.createElement('button'); hOff.className='btn'; hOff.textContent='Hermes: Stand Off';
-  const hMsg=document.createElement('span'); hMsg.className='mono muted'; hMsg.style.marginLeft='6px';
-  hIn.onclick=async function(){
-    try{ const r=await fetch('/nav/hermes/close_in'); const j=await r.json();
-      if(j&&j.ok){ hMsg.textContent=`BRG ${j.bearing}°, RNG ${j.range_nm} nm, REC HDG ${j.recommend_hdg}°`; }
-      else{ hMsg.textContent='ERR'; }
-    }catch(e){ hMsg.textContent='ERR'; }
-  };
-  hOff.onclick=async function(){
-    try{ const r=await fetch('/nav/hermes/stand_off'); const j=await r.json();
-      if(j&&j.ok){ hMsg.textContent=`BRG ${j.bearing}°, RNG ${j.range_nm} nm, STAND OFF ${j.standoff_nm} nm`; }
-      else{ hMsg.textContent='ERR'; }
-    }catch(e){ hMsg.textContent='ERR'; }
-  };
-  hrow.appendChild(hIn); hrow.appendChild(hOff); hrow.appendChild(hMsg); p.appendChild(hrow);
+  const hermesRow=document.createElement('div'); hermesRow.className='row section';
+  const hermesLabel=document.createElement('span'); hermesLabel.textContent='Hermes movement:'; hermesLabel.style.marginRight='8px';
+  const moveCloserBtn=document.createElement('button'); moveCloserBtn.className='btn'; moveCloserBtn.textContent='MOVE CLOSER';
+  const moveAwayBtn=document.createElement('button'); moveAwayBtn.className='btn'; moveAwayBtn.textContent='MOVE AWAY'; moveAwayBtn.style.marginLeft='6px';
+  const hermesMsg=document.createElement('span'); hermesMsg.className='mono muted'; hermesMsg.style.marginLeft='6px';
+  async function adjustHermes(mode){
+    const path = mode==='in'? '/nav/hermes/close_in' : '/nav/hermes/stand_off';
+    hermesMsg.className='mono muted';
+    hermesMsg.textContent = mode==='in' ? 'Ordering Hermes to move closer…' : 'Ordering Hermes to move out…';
+    try{
+      const res=await fetch(path);
+      const data=await res.json();
+      if(data && data.ok){
+        const summary = formatHermesOrderSummary(data);
+        const note = (data && typeof data.message==='string') ? data.message.trim() : '';
+        if(summary && note){
+          hermesMsg.textContent = `${summary} — ${note}`;
+          hermesMsg.className='mono warn';
+        }else if(note){
+          hermesMsg.textContent = note;
+          hermesMsg.className='mono warn';
+        }else{
+          hermesMsg.textContent = summary || 'Order acknowledged';
+          hermesMsg.className='mono ok';
+        }
+        await poll().catch(()=>{});
+      }else{
+        hermesMsg.textContent = (data && data.error)? String(data.error) : 'Command failed';
+        hermesMsg.className='mono err';
+      }
+    }catch(_){
+      hermesMsg.textContent='Command failed';
+      hermesMsg.className='mono err';
+    }
+  }
+  moveCloserBtn.onclick=function(){ adjustHermes('in'); };
+  moveAwayBtn.onclick=function(){ adjustHermes('out'); };
+  hermesRow.appendChild(hermesLabel);
+  hermesRow.appendChild(moveCloserBtn);
+  hermesRow.appendChild(moveAwayBtn);
+  hermesRow.appendChild(hermesMsg);
+  p.appendChild(hermesRow);
 }
 
 function colorTag(kind){ const s=document.createElement('span'); s.className='tag '+(kind==='Friendly'?'green': kind==='Hostile'?'red':'grey'); s.textContent=kind||'—'; return s; }
@@ -722,400 +781,690 @@ function renderWPN(j){
   tbl.appendChild(tb); p.appendChild(tbl);
 }
 
+
 function renderRADIO(j){
-  const p=$('#station-panel'); p.innerHTML='';
+  const p=$('#station-panel');
+  try{
+    const ae=document.activeElement;
+    if(ae && ['mission-loadout','mission-type','mission-target','mission-cap-cell'].includes(ae.id)){
+      return;
+    }
+  }catch(_){ }
+  p.innerHTML='';
   addStationControls(p,'RADIO');
   const commsStatus = engSystemStatus(j,'COMMS');
   if(commsStatus && commsStatus.toLowerCase()!=='ok'){
     renderStationOffline(p,'SYSTEM OFFLINE','RADIO');
     return;
   }
-  const fleet = Array.isArray(j.ownfleet)? j.ownfleet : [];
-  const flagship = fleet.find(u=>String(u.name||'').toLowerCase().includes('hermes'))
-                  || fleet.find(u=>String(u.id||'')!=='own') || null;
-  const lockedId = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id): null;
-  const primaryContact = (lockedId!=null && Array.isArray(j.contacts))? j.contacts.find(c=>Number(c.id)===lockedId): null;
 
-  const table=document.createElement('table'); table.className='comms-table';
-  const head=document.createElement('tr');
-  ['Flagship','Grid','Spd','Course'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; head.appendChild(th); });
-  table.appendChild(head);
-  const data=document.createElement('tr');
-  const flagshipName = flagship? String(flagship.name||'—'): '—';
-  const flagshipCell = flagship? String(flagship.cell||'—'): '—';
-  const flagshipSpd = flagship && flagship.speed!=null? fmt(flagship.speed,0): '—';
-  const flagshipCourse = flagship && flagship.heading!=null? fmt(flagship.heading,0): '—';
-  [flagshipName, flagshipCell, flagshipSpd, flagshipCourse].forEach(function(val, idx){
+  const fleet = Array.isArray(j.ownfleet)? j.ownfleet : [];
+  const flagship = fleet.find(u=>String(u.name||'').toLowerCase().includes('hermes')) ||
+                   fleet.find(u=>String(u.id||'')!=='own') || null;
+  const flagshipName = flagship ? String(flagship.name||'HMS Hermes') : 'HMS Hermes';
+  const flagshipCell = flagship ? String(flagship.cell||'—') : '—';
+  const flagshipSpd = (flagship && flagship.speed!=null)? fmt(flagship.speed,0) : '—';
+  const flagshipCourse = (flagship && flagship.heading!=null)? fmt(flagship.heading,0) : '—';
+
+  const hermesTable=document.createElement('table'); hermesTable.className='comms-table comms-top-table';
+  const hermesHead=document.createElement('tr');
+  ['Hermes','Grid','Spd','Course','Actions'].forEach(function(label){
+    const th=document.createElement('th'); th.textContent=label; hermesHead.appendChild(th);
+  });
+  hermesTable.appendChild(hermesHead);
+  const hermesRow=document.createElement('tr');
+  [flagshipName,flagshipCell,flagshipSpd,flagshipCourse].forEach(function(val,idx){
     const td=document.createElement('td');
     if(idx>=2) td.className='num';
     td.textContent=val;
-    data.appendChild(td);
+    hermesRow.appendChild(td);
   });
-  table.appendChild(data); p.appendChild(table);
+  const hermesActionTd=document.createElement('td'); hermesActionTd.className='action';
+  const moveCloserBtn=document.createElement('button'); moveCloserBtn.className='btn'; moveCloserBtn.textContent='MOVE CLOSER';
+  const moveAwayBtn=document.createElement('button'); moveAwayBtn.className='btn'; moveAwayBtn.textContent='MOVE AWAY'; moveAwayBtn.style.marginLeft='6px';
+  hermesActionTd.appendChild(moveCloserBtn);
+  hermesActionTd.appendChild(moveAwayBtn);
+  hermesRow.appendChild(hermesActionTd);
+  hermesTable.appendChild(hermesRow);
+  p.appendChild(hermesTable);
 
-  if(!ST.comms) ST.comms = { loadout: 'aim9', capCell: '' };
-  const consoleMsg=document.createElement('div'); consoleMsg.className='comms-msg muted';
-  p.appendChild(consoleMsg);
+  const hermesMsg=document.createElement('div'); hermesMsg.className='comms-msg muted'; hermesMsg.textContent='';
+  p.appendChild(hermesMsg);
 
-  const capHeader=document.createElement('h3'); capHeader.className='comms-subhead'; capHeader.textContent='SHAR menu:'; p.appendChild(capHeader);
-  // Loadout selector
-  const loadoutRow=document.createElement('div'); loadoutRow.className='row section';
-  const loadoutLabel=document.createElement('span'); loadoutLabel.textContent='Loadout:'; loadoutLabel.style.marginRight='8px';
-  const loadoutSelect=document.createElement('select'); loadoutSelect.className='input'; loadoutSelect.style.marginRight='8px';
-  const optA=document.createElement('option'); optA.value='aim9'; optA.textContent='Sidewinder (AIM-9)'; loadoutSelect.appendChild(optA);
-  const optB=document.createElement('option'); optB.value='bombs'; optB.textContent='Bombs (ships)'; loadoutSelect.appendChild(optB);
-  try{ if(ST.comms && ST.comms.loadout){ loadoutSelect.value = String(ST.comms.loadout); } }catch(_){ }
-  loadoutSelect.addEventListener('change', function(){ try{ ST.comms.loadout = String(loadoutSelect.value||'aim9'); localStorage.setItem('comms_loadout', ST.comms.loadout); }catch(_){ } });
-  try{ const saved = localStorage.getItem('comms_loadout'); if(saved){ loadoutSelect.value = saved; ST.comms.loadout = saved; } }catch(_){ }
-  loadoutRow.appendChild(loadoutLabel); loadoutRow.appendChild(loadoutSelect);
-  p.appendChild(loadoutRow);
-  const cap=j.cap || {};
+  function setHermesMsg(text, kind){
+    hermesMsg.textContent = text || '';
+    hermesMsg.className = 'comms-msg ' + (kind || 'muted');
+  }
+  async function adjustHermes(direction){
+    const path = direction==='in'? '/nav/hermes/close_in' : '/nav/hermes/stand_off';
+    setHermesMsg(direction==='in'?'Ordering Hermes to move closer…':'Ordering Hermes to move away…','muted');
+    try{
+      const res=await fetch(path);
+      const data=await res.json();
+      if(data && data.ok){
+        const summary = formatHermesOrderSummary(data);
+        const note = (data && typeof data.message==='string') ? data.message.trim() : '';
+        if(summary && note){
+          setHermesMsg(`${summary} — ${note}`,'warn');
+        }else if(note){
+          setHermesMsg(note,'warn');
+        }else{
+          setHermesMsg(summary || 'Order acknowledged','ok');
+        }
+        await poll().catch(()=>{});
+      }else{
+        setHermesMsg((data && data.error)? String(data.error) : 'Command failed','err');
+      }
+    }catch(_){
+      setHermesMsg('Command failed','err');
+    }
+  }
+  moveCloserBtn.onclick=function(){ adjustHermes('in'); };
+  moveAwayBtn.onclick=function(){ adjustHermes('out'); };
+
+  const lockedId = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id) : null;
+  const primaryContact = (lockedId!=null && Array.isArray(j.contacts))? j.contacts.find(c=>Number(c.id)===lockedId) : null;
+  const cap = j.cap || {};
+  const tasks = Array.isArray(cap.tasks)? cap.tasks : (Array.isArray(cap.missions)? cap.missions : []);
+
+  if(!ST.comms) ST.comms = {};
+  const missionDefaults = { loadout: 'aim9', missionType: 'intercept', target: 'primary', capCell: '' };
+  const missionState = Object.assign({}, missionDefaults, ST.comms.mission || {});
+  try{
+    const savedLoadout = localStorage.getItem('comms_loadout');
+    if(savedLoadout) missionState.loadout = savedLoadout;
+    const savedType = localStorage.getItem('comms_mission_type');
+    if(savedType) missionState.missionType = savedType;
+    const savedTarget = localStorage.getItem('comms_mission_target');
+    if(savedTarget) missionState.target = savedTarget;
+    const savedCell = localStorage.getItem('comms_capCell');
+    if(savedCell) missionState.capCell = savedCell;
+  }catch(_){ }
+  ST.comms.mission = missionState;
+  ST.comms.capCell = missionState.capCell || '';
+
+  const missionHeader=document.createElement('h3'); missionHeader.className='comms-subhead'; missionHeader.textContent='Mission editor'; p.appendChild(missionHeader);
+
+  const missionTable=document.createElement('table'); missionTable.className='comms-table mission-editor';
+  const missionHeadRow=document.createElement('tr');
+  ['Loadout','Mission type','Target','Enter grid','Active mission'].forEach(function(label){
+    const th=document.createElement('th'); th.textContent=label; missionHeadRow.appendChild(th);
+  });
+  missionTable.appendChild(missionHeadRow);
+  const missionBodyRow=document.createElement('tr');
+
+  const loadoutTd=document.createElement('td');
+  const loadoutSelect=document.createElement('select'); loadoutSelect.className='input'; loadoutSelect.id='mission-loadout';
+  [{value:'aim9',label:'Sidewinder'},{value:'bombs',label:'Bombs'}].forEach(function(opt){
+    const option=document.createElement('option'); option.value=opt.value; option.textContent=opt.label; loadoutSelect.appendChild(option);
+  });
+  loadoutSelect.value = missionState.loadout || 'aim9';
+  loadoutTd.appendChild(loadoutSelect);
+  missionBodyRow.appendChild(loadoutTd);
+
+  const typeTd=document.createElement('td');
+  const missionTypeSelect=document.createElement('select'); missionTypeSelect.className='input'; missionTypeSelect.id='mission-type';
+  [{value:'intercept',label:'Intercept'},{value:'cap',label:'CAP'}].forEach(function(opt){
+    const option=document.createElement('option'); option.value=opt.value; option.textContent=opt.label; missionTypeSelect.appendChild(option);
+  });
+  missionTypeSelect.value = missionState.missionType || 'intercept';
+  typeTd.appendChild(missionTypeSelect);
+  missionBodyRow.appendChild(typeTd);
+
+  const targetTd=document.createElement('td');
+  const targetSelect=document.createElement('select'); targetSelect.className='input'; targetSelect.id='mission-target';
+  targetTd.appendChild(targetSelect);
+  missionBodyRow.appendChild(targetTd);
+
+  const cellTd=document.createElement('td');
+  const capCellInput=document.createElement('input'); capCellInput.className='input mono'; capCellInput.id='mission-cap-cell'; capCellInput.placeholder='CAP cell'; capCellInput.maxLength=5;
+  if(missionState.capCell) capCellInput.value = missionState.capCell;
+  cellTd.appendChild(capCellInput);
+  missionBodyRow.appendChild(cellTd);
+
+  const summaryTd=document.createElement('td');
+  const missionSummary=document.createElement('div'); missionSummary.className='mission-summary mono muted';
+  summaryTd.appendChild(missionSummary);
+  missionBodyRow.appendChild(summaryTd);
+
+  missionTable.appendChild(missionBodyRow);
+  p.appendChild(missionTable);
+
+  const activeMissionCard=document.createElement('div'); activeMissionCard.className='active-mission-card';
+  const activeMissionLabel=document.createElement('span'); activeMissionLabel.className='active-mission-label'; activeMissionLabel.textContent='Active mission';
+  const activeMissionValue=document.createElement('span'); activeMissionValue.className='active-mission-value mono muted'; activeMissionValue.textContent='—';
+  activeMissionCard.appendChild(activeMissionLabel);
+  activeMissionCard.appendChild(activeMissionValue);
+  p.appendChild(activeMissionCard);
+
+  const hermesHeader=document.createElement('h3'); hermesHeader.className='comms-subhead'; hermesHeader.textContent='HERMES'; p.appendChild(hermesHeader);
   const sharSummary=document.createElement('div'); sharSummary.className='shar-summary';
+
   const readyPairs = (cap.readiness && typeof cap.readiness==='object')? cap.readiness.ready_pairs : (cap.pairs ?? cap.ready_pairs);
   const airframes = (cap.readiness && typeof cap.readiness==='object')? cap.readiness.airframes : (cap.airframes ?? cap.airframe_pool_total);
   const cooldownRaw = (cap.readiness && typeof cap.readiness==='object')? cap.readiness.cooldown_s : (cap.cooldown_s ?? 0);
-  const deckLeftRaw = (cap.readiness && typeof cap.readiness==='object')? (cap.readiness.launch_interval_left_s ?? 0) : 0;
-  const readyPairsNum = Number(readyPairs ?? 0);
-  const airframesNum = Number(airframes ?? 0);
+  const readyPairsNum = Number(readyPairs || 0);
+  const airframesNum = Number(airframes || 0);
   const hasCooldown = Number(cooldownRaw || 0) > 0;
+  const sidewindersCount = Number(cap.sidewinders!=null ? cap.sidewinders : (cap.ammo!=null ? cap.ammo : 0));
+  const committedCount = (function(){
+    if(cap && cap.committed!=null) return Number(cap.committed);
+    return Array.isArray(tasks)? tasks.length : 0;
+  })();
+
   const readyTag=document.createElement('span');
-  readyTag.className='shar-ready ' + ((readyPairsNum > 0 && airframesNum >= 2 && !hasCooldown)?'ok':'err');
-  readyTag.textContent=(readyPairsNum > 0 && airframesNum >= 2 && !hasCooldown)? 'READY':'STANDBY';
+  readyTag.className='shar-ready ' + ((readyPairsNum > 0 && airframesNum >= 2 && !hasCooldown)? 'ok':'err');
+  readyTag.textContent = (readyPairsNum > 0 && airframesNum >= 2 && !hasCooldown)? 'READY':'STANDBY';
   sharSummary.appendChild(readyTag);
   const summaryItems=[
     `pairs: ${readyPairsNum}`,
     `airframes: ${airframesNum}`,
-    `cooldown: ${hasCooldown ? Math.max(0, Number(cooldownRaw)).toFixed(0)+'s' : '—'}`,
-    `deck: ${Math.max(0, Number(deckLeftRaw||0)).toFixed(0)}s`,
-    `committed: ${cap.committed ?? (cap.tasks? cap.tasks.length : 0)}`
+    `sidewinders: ${sidewindersCount}`,
+    `cooldown: ${hasCooldown ? fmtDuration(cooldownRaw) : '0s'}`,
+    `committed: ${committedCount}`
   ];
-  summaryItems.forEach(function(txt, idx){
-    const span=document.createElement('span'); span.className='badge'; span.textContent=txt;
-    if(idx===0 && readyPairsNum<=0) span.classList.add('warn');
-    if(idx===1 && airframesNum<2) span.classList.add('warn');
-    if(idx===2 && hasCooldown) span.classList.add('warn');
-    if(idx===3 && Number(deckLeftRaw||0)>0) span.classList.add('warn');
-    sharSummary.appendChild(span);
+  summaryItems.forEach(function(text){
+    const item=document.createElement('span'); item.textContent=text; sharSummary.appendChild(item);
   });
   p.appendChild(sharSummary);
 
-  const launchTable=document.createElement('table'); launchTable.className='comms-launch-table';
-  const launchHead=document.createElement('tr');
-  ['Flight','Callsign / Cell','Grid','Action'].forEach(function(label){ const th=document.createElement('th'); th.textContent=label; launchHead.appendChild(th); });
-  launchTable.appendChild(launchHead);
+  const actionsTable=document.createElement('table'); actionsTable.className='comms-launch-table';
+  const actionsHead=document.createElement('tr');
+  ['Action','Controls'].forEach(function(label){
+    const th=document.createElement('th'); th.textContent=label; actionsHead.appendChild(th);
+  });
+  actionsTable.appendChild(actionsHead);
 
-  const capRow=document.createElement('tr');
-  const capFlight=document.createElement('td'); capFlight.textContent='CAP'; capRow.appendChild(capFlight);
-  const capCellTd=document.createElement('td');
-  const capCellInput=document.createElement('input'); capCellInput.className='input mono'; capCellInput.placeholder='Cell'; capCellInput.style.width='90px'; if(ST.comms && ST.comms.capCell){ capCellInput.value = ST.comms.capCell; } capCellTd.appendChild(capCellInput); capRow.appendChild(capCellTd);
-  const capGridTd=document.createElement('td'); capGridTd.textContent='—'; capRow.appendChild(capGridTd);
-  const capActionTd=document.createElement('td'); capActionTd.className='num';
-  const capLaunchBtn=document.createElement('button'); capLaunchBtn.className='btn'; capLaunchBtn.textContent='LAUNCH';
-  // Follow Hermes small toggle
-  const followWrap=document.createElement('label'); followWrap.style.marginLeft='8px'; followWrap.style.fontSize='0.9em';
-  const followChk=document.createElement('input'); followChk.type='checkbox'; followChk.style.marginRight='6px';
-  followWrap.appendChild(followChk); followWrap.appendChild(document.createTextNode('Follow Hermes'));
-  capActionTd.appendChild(capLaunchBtn); capActionTd.appendChild(followWrap); capRow.appendChild(capActionTd);
-  launchTable.appendChild(capRow);
+  const harrierRow=document.createElement('tr');
+  const harrierLabel=document.createElement('td'); harrierLabel.textContent='Launch Harrier flight'; harrierRow.appendChild(harrierLabel);
+  const harrierControls=document.createElement('td'); harrierControls.className='num';
+  const launchBtn=document.createElement('button'); launchBtn.className='btn'; launchBtn.textContent='LAUNCH';
+  const reassignBtn=document.createElement('button'); reassignBtn.className='btn'; reassignBtn.textContent='REASSIGN'; reassignBtn.style.marginLeft='6px';
+  harrierControls.appendChild(launchBtn); harrierControls.appendChild(reassignBtn);
+  harrierRow.appendChild(harrierControls);
+  actionsTable.appendChild(harrierRow);
 
-  const interceptRow=document.createElement('tr');
-  const interceptFlight=document.createElement('td'); interceptFlight.textContent='INTERCEPT'; interceptRow.appendChild(interceptFlight);
-  const interceptCall=document.createElement('td'); interceptCall.textContent = primaryContact ? `ID ${String(primaryContact.id).padStart(2,'0')}` : '—'; interceptRow.appendChild(interceptCall);
-  const interceptGrid=document.createElement('td'); interceptGrid.textContent = primaryContact? String(primaryContact.cell||'—'):'—'; interceptRow.appendChild(interceptGrid);
-  const interceptAction=document.createElement('td'); interceptAction.className='num';
-  const interceptBtn=document.createElement('button'); interceptBtn.className='btn'; interceptBtn.textContent='LAUNCH';
-  if(!primaryContact) interceptBtn.disabled = true;
-  interceptAction.appendChild(interceptBtn); interceptRow.appendChild(interceptAction);
-  launchTable.appendChild(interceptRow);
+  const seaRow=document.createElement('tr');
+  const seaLabel=document.createElement('td'); seaLabel.textContent='Launch Sea King'; seaRow.appendChild(seaLabel);
+  const seaControls=document.createElement('td'); seaControls.className='num';
+  const resupplyBtn=document.createElement('button'); resupplyBtn.className='btn'; seaControls.appendChild(resupplyBtn);
+  seaRow.appendChild(seaControls);
+  actionsTable.appendChild(seaRow);
+  p.appendChild(actionsTable);
 
-  // RESUPPLY (Sea King)
-  const resRow=document.createElement('tr');
-  const resFlight=document.createElement('td'); resFlight.textContent='RESUPPLY'; resRow.appendChild(resFlight);
-  const resCall=document.createElement('td'); resCall.textContent='Sea King'; resRow.appendChild(resCall);
-  const resGrid=document.createElement('td');
-  let left = 0; try { left = Number((j.resupply && j.resupply.left_s) || 0); } catch(_) { left = 0; }
-  resGrid.textContent = (j.resupply && j.resupply.active) ? `${Math.max(0,left)}s` : '—';
-  resRow.appendChild(resGrid);
-  const resAct=document.createElement('td'); resAct.className='num';
-  const resBtn=document.createElement('button'); resBtn.className='btn'; resBtn.textContent = (j.resupply && j.resupply.active)? 'ENROUTE' : 'LAUNCH';
-  if(j.resupply && j.resupply.active) resBtn.disabled = true;
-  resAct.appendChild(resBtn); resRow.appendChild(resAct);
-  launchTable.appendChild(resRow);
-  p.appendChild(launchTable);
+  const statusMsg=document.createElement('div'); statusMsg.className='comms-msg muted'; statusMsg.textContent=''; p.appendChild(statusMsg);
 
-  const capMsg=document.createElement('div'); capMsg.className='comms-msg muted'; p.appendChild(capMsg);
+  const commitHeader=document.createElement('h3'); commitHeader.className='comms-subhead'; commitHeader.textContent='Active flights'; p.appendChild(commitHeader);
+  const commitTable=document.createElement('table'); commitTable.className='comms-commit-table';
+  const commitHead=document.createElement('tr');
+  ['Flight','Status','POS','Target','RNG','TOT','TOS','Engage','RTB'].forEach(function(label){
+    const th=document.createElement('th'); th.textContent=label; commitHead.appendChild(th);
+  });
+  commitTable.appendChild(commitHead);
 
-  function _normalizeCell(s){
-    try{ let t=String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,''); if(!t) return ''; const m=t.match(/^([A-Z]+)([0-9]+)$/); return m? (m[1]+m[2]) : ''; }catch(_){ return ''; }
+  function setStatus(text, kind){
+    statusMsg.textContent = text || '';
+    statusMsg.className = 'comms-msg ' + (kind || 'muted');
   }
-  capCellInput.addEventListener('input', function(){ try{ ST.comms.capCell = String(capCellInput.value||''); localStorage.setItem('comms_capCell', ST.comms.capCell); }catch(_){ } });
-  try{ const savedCell = localStorage.getItem('comms_capCell'); if(savedCell && !capCellInput.value){ capCellInput.value = savedCell; ST.comms.capCell = savedCell; } }catch(_){ }
-  // Press Enter in the cell field to launch
-  capCellInput.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); try{ capLaunchBtn.click(); }catch(_){ } } });
 
-  capLaunchBtn.onclick=async function(){
-    const cellRaw = (capCellInput.value||'');
-    const cellNorm = _normalizeCell(cellRaw);
-    // When following Hermes, we can omit a cell
-    if(!followChk.checked && !cellNorm){ capMsg.textContent='Enter CAP grid cell'; capMsg.className='comms-msg err'; return; }
-    capMsg.textContent='Requesting CAP...'; capMsg.className='comms-msg muted';
-    try{
-      let body={cell: cellNorm, station_minutes: 20, radius_nm: 5, loadout: String(loadoutSelect.value||ST.comms.loadout||'aim9')};
-      if(followChk.checked){
-        body.follow = 'hermes';
-        // Use flagship cell as initial destination if none typed
-        if(!body.cell){ try{ body.cell = flagshipCell || ''; }catch(_){ body.cell=''; } }
-      }
-      capLaunchBtn.disabled = true;
-      const res=await fetch('/cap/launch_to',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-      const data=await res.json();
-      if(data && data.ok){
-        try{
-          const ms = (data.mission && data.mission.timestamps && Number(data.mission.timestamps.eta_onstation)) || null;
-          const now = Math.floor(Date.now()/1000);
-          const tot = (ms && (ms>now)) ? (ms-now) : null;
-          capMsg.textContent = (data.message || 'CAP launching') + (tot!=null? ` — TOT ~${tot}s` : '');
-        }catch(_){ capMsg.textContent=data.message || 'CAP launching'; }
-        capMsg.className='comms-msg ok';
-        try{ ST.comms.capCell = ''; localStorage.setItem('comms_capCell',''); }catch(_){ }
-        capCellInput.value='';
-        await poll().catch(()=>{});
-      }else{
-        capMsg.textContent=data && data.message ? String(data.message) : (data && data.error ? String(data.error) : 'CAP request failed');
-        capMsg.className='comms-msg err';
-      }
-    }catch(e){
-      capMsg.textContent='CAP request failed'; capMsg.className='comms-msg err';
-    } finally { capLaunchBtn.disabled = false; }
-  };
+  function fmtDuration(sec){
+    if(sec===undefined || sec===null) return '—';
+    const n = Number(sec);
+    if(!Number.isFinite(n)) return '—';
+    if(n <= 0) return '0s';
+    if(n < 120) return `${Math.round(n)}s`;
+    if(n < 3600) return `${Math.round(n / 60)} min`;
+    return `${Math.round(n / 3600)} hr`;
+  }
 
-  interceptBtn.onclick=async function(){
-    if(!primaryContact){ capMsg.textContent='No locked target.'; capMsg.className='comms-msg err'; return; }
-    capMsg.textContent='Vectoring intercept...'; capMsg.className='comms-msg muted';
+  function normalizeCell(val){
     try{
-      const body = { id: primaryContact.id, loadout: String(loadoutSelect.value||ST.comms.loadout||'aim9') };
-      try{ if(primaryContact.cell) body.cell = String(primaryContact.cell); }catch(_){ }
-      const res=await fetch('/cap/request',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-      const data=await res.json();
-      if(data && data.ok){
-        capMsg.textContent=data.message || 'Intercept pair launching';
-        capMsg.className='comms-msg ok';
-        await poll().catch(()=>{});
-      }else{
-        capMsg.textContent=data && data.message ? String(data.message) : (data && data.error ? String(data.error) : 'Intercept request failed');
-        capMsg.className='comms-msg err';
-      }
-    }catch(e){
-      capMsg.textContent='Intercept request failed'; capMsg.className='comms-msg err';
+      const raw=String(val||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+      const match=raw.match(/^([A-Z]+)([0-9]+)$/);
+      return match ? match[1]+match[2] : '';
+    }catch(_){
+      return '';
     }
-  };
+  }
 
-  // Add CAP HERE / CAP HERMES buttons for airborne missions
-  const capHereRow=document.createElement('div'); capHereRow.className='row section';
-  const capHereBtn=document.createElement('button'); capHereBtn.className='btn'; capHereBtn.textContent='CAP HERE (AIRBORNE)';
-  const capHermesBtn=document.createElement('button'); capHermesBtn.className='btn'; capHermesBtn.textContent='CAP HERMES'; capHermesBtn.style.marginLeft='8px';
-  capHereBtn.title = 'Retask an airborne SHAR to hold CAP at the cell';
-  capHermesBtn.title = 'Retask an airborne SHAR to hold CAP centered on Hermes (follows)';
-  capHereBtn.onclick=async function(){
-    const cell = (capCellInput.value||'').trim().toUpperCase();
-    if(!cell){ capMsg.textContent='Enter CAP grid cell'; capMsg.className='comms-msg err'; return; }
-    // Pick last airborne mission from table
-    const tasks = Array.isArray(cap.tasks)? cap.tasks : (Array.isArray(cap.missions)? cap.missions : []);
-    const airborne = tasks.filter(t=>String(t.status||'').toLowerCase()==='airborne');
-    if(!airborne.length){ capMsg.textContent='No airborne SHAR'; capMsg.className='comms-msg err'; return; }
-    const m = airborne[airborne.length-1];
-    const mid = (m.id!=null)? m.id : (m.n!=null? m.n : null);
-    if(mid==null){ capMsg.textContent='Unknown mission id'; capMsg.className='comms-msg err'; return; }
-    capMsg.textContent='Retasking to CAP…'; capMsg.className='comms-msg muted';
-    try{
-      const res=await fetch('/cap/convert_to_cap',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: mid, cell})});
-      const data=await res.json();
-      if(data && data.ok){ capMsg.textContent=data.message || 'Holding CAP'; capMsg.className='comms-msg ok'; await poll().catch(()=>{}); }
-      else { capMsg.textContent=(data&&data.error)?String(data.error):'Retask failed'; capMsg.className='comms-msg err'; }
-    }catch(_){ capMsg.textContent='Retask failed'; capMsg.className='comms-msg err'; }
-  };
-  capHermesBtn.onclick=async function(){
-    // Pick last airborne mission from table
-    const tasks = Array.isArray(cap.tasks)? cap.tasks : (Array.isArray(cap.missions)? cap.missions : []);
-    const airborne = tasks.filter(t=>String(t.status||'').toLowerCase()==='airborne');
-    if(!airborne.length){ capMsg.textContent='No airborne SHAR'; capMsg.className='comms-msg err'; return; }
-    const m = airborne[airborne.length-1];
-    const mid = (m.id!=null)? m.id : (m.n!=null? m.n : null);
-    if(mid==null){ capMsg.textContent='Unknown mission id'; capMsg.className='comms-msg err'; return; }
-    capMsg.textContent='Retasking to CAP Hermes…'; capMsg.className='comms-msg muted';
-    try{
-      const body = { mission_id: mid, cell: (flagshipCell||''), follow: 'hermes' };
-      const res=await fetch('/cap/convert_to_cap',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-      const data=await res.json();
-      if(data && data.ok){ capMsg.textContent=data.message || 'Holding CAP (Hermes)'; capMsg.className='comms-msg ok'; await poll().catch(()=>{}); }
-      else { capMsg.textContent=(data&&data.error)?String(data.error):'Retask failed'; capMsg.className='comms-msg err'; }
-    }catch(_){ capMsg.textContent='Retask failed'; capMsg.className='comms-msg err'; }
-  };
-  capHereRow.appendChild(capHereBtn); capHereRow.appendChild(capHermesBtn); p.appendChild(capHereRow);
+  function currentMissionConfig(){
+    const rawCell = (capCellInput.value || '').trim().toUpperCase();
+    return {
+      loadout: loadoutSelect.value || 'aim9',
+      missionType: missionTypeSelect.value || 'intercept',
+      target: targetSelect.value || 'primary',
+      capCell: rawCell,
+      capCellNorm: normalizeCell(rawCell),
+    };
+  }
 
-  resBtn.onclick=async function(){
-    if(resBtn.disabled){ capMsg.textContent='Resupply already en route'; capMsg.className='comms-msg muted'; return; }
-    capMsg.textContent='Launching Sea King…'; capMsg.className='comms-msg muted';
+  let missionValid=false;
+
+  function updateTargetOptions(){
+    const missionType = missionTypeSelect.value || 'intercept';
+    const desiredTarget = missionState.target || 'primary';
+    const options=[
+      {value:'primary',label:'Locked primary target'},
+      {value:'cap_cell',label:'CAP grid cell'},
+      {value:'hermes',label:'Hermes (Defend)'}
+    ];
+    targetSelect.innerHTML='';
+    options.forEach(function(opt){
+      if(missionType==='intercept' && opt.value!=='primary') return;
+      const option=document.createElement('option'); option.value=opt.value; option.textContent=opt.label; targetSelect.appendChild(option);
+    });
+    if(missionType==='intercept'){
+      missionState.target = 'primary';
+      targetSelect.value = 'primary';
+      capCellInput.disabled = true;
+    }else{
+      if(options.every(opt=>opt.value!==desiredTarget) || desiredTarget==='primary'){
+        missionState.target = 'cap_cell';
+      }
+      targetSelect.value = missionState.target;
+      capCellInput.disabled = missionState.target !== 'cap_cell';
+    }
+    saveMissionState();
+  }
+
+  function missionSummaryText(){
+    const cfg = currentMissionConfig();
+    const pieces=[];
+    const loadoutLabel = cfg.loadout === 'bombs' ? 'Bombs' : 'Sidewinder';
+    pieces.push(cfg.missionType === 'intercept' ? 'Intercept' : 'CAP');
+    if(loadoutLabel) pieces.push(loadoutLabel);
+    if(cfg.missionType === 'intercept'){
+      if(primaryContact){
+        const name = String(primaryContact.name || '').trim();
+        const cell = String(primaryContact.cell || '').trim();
+        if(name && cell) pieces.push(`${name} @ ${cell}`);
+        else if(name) pieces.push(name);
+        else if(cell) pieces.push(`Target ${cell}`);
+        else pieces.push('Primary target');
+      }else{
+        pieces.push('No primary target locked');
+      }
+    }else{
+      if(cfg.target === 'hermes'){
+        const hermesLabel = (flagshipCell && flagshipCell !== '—') ? `Protect Hermes (${flagshipCell})` : 'Protect Hermes';
+        pieces.push(hermesLabel);
+      }else{
+        const cellLabel = cfg.capCellNorm || cfg.capCell;
+        pieces.push(cellLabel ? `CAP ${cellLabel}` : 'CAP cell needed');
+      }
+      pieces.push('5 nm diameter circle');
+      pieces.push('10 min station');
+    }
+    return pieces.join(' • ');
+  }
+
+  function updateMissionSummary(){
+    const summaryText = missionSummaryText();
+    const displayText = summaryText || '—';
+    missionSummary.textContent = displayText;
+    activeMissionValue.textContent = displayText;
+    const cfg = currentMissionConfig();
+    let valid;
+    if(cfg.missionType === 'intercept'){
+      valid = !!primaryContact;
+    }else if(cfg.target === 'hermes'){
+      valid = Boolean(flagshipCell && flagshipCell !== '—');
+    }else{
+      valid = !!cfg.capCellNorm;
+    }
+    missionValid = Boolean(valid);
+    if(displayText === '—'){
+      missionSummary.className = 'mission-summary mono muted';
+      activeMissionValue.className = 'active-mission-value mono muted';
+    }else{
+      missionSummary.className = 'mission-summary mono ' + (missionValid? 'ok':'err');
+      activeMissionValue.className = 'active-mission-value mono ' + (missionValid? 'ok':'err');
+    }
+    if(!ST.comms) ST.comms = {};
+    ST.comms.activeMissionSummary = summaryText || '';
+    ST.comms.activeMissionValid = missionValid;
+    ST.comms.activeMission = Object.assign({}, cfg);
+    return missionValid;
+  }
+
+  function saveMissionState(){
+    const cfg = currentMissionConfig();
+    missionState.loadout = cfg.loadout;
+    missionState.missionType = cfg.missionType;
+    missionState.target = cfg.target;
+    missionState.capCell = cfg.capCell;
+    ST.comms.mission = missionState;
+    ST.comms.capCell = missionState.capCell || '';
+    ST.comms.activeMission = Object.assign({}, cfg);
+    try{
+      localStorage.setItem('comms_loadout', cfg.loadout);
+      localStorage.setItem('comms_mission_type', cfg.missionType);
+      localStorage.setItem('comms_mission_target', cfg.target);
+      localStorage.setItem('comms_capCell', cfg.capCell || '');
+    }catch(_){ }
+  }
+
+  function canRetaskStatus(status){
+    const key=String(status||'').toLowerCase();
+    return !['rtb','recovering','complete'].includes(key);
+  }
+
+  function updateButtonStates(){
+    const canLaunch = missionValid && readyPairsNum > 0 && airframesNum >= 2 && !hasCooldown;
+    launchBtn.disabled = !canLaunch;
+    const sharAvailable = tasks.some(function(t){
+      if(!t) return false;
+      if(t.kind && String(t.kind).toLowerCase()==='resupply') return false;
+      return canRetaskStatus(t.status);
+    });
+    reassignBtn.disabled = !missionValid || !sharAvailable;
+    const resupply = j.resupply || {};
+    resupplyBtn.disabled = Boolean(resupply && resupply.active);
+    resupplyBtn.textContent = (resupply && resupply.active)? 'EN ROUTE' : 'LAUNCH';
+  }
+
+  function buildMissionDescriptor(){
+    const cfg = currentMissionConfig();
+    if(cfg.missionType==='intercept'){
+      if(!primaryContact) return {ok:false, error:'No locked target.'};
+      return {ok:true, data:{missionType:'intercept', loadout: cfg.loadout, target:'primary', primaryContact}};
+    }
+    if(cfg.target==='hermes'){
+      if(!flagshipCell || flagshipCell==='—') return {ok:false, error:'Hermes position unknown.'};
+      return {ok:true, data:{missionType:'cap', loadout: cfg.loadout, target:'hermes', cell:flagshipCell, follow:'hermes'}};
+    }
+    if(!cfg.capCellNorm) return {ok:false, error:'Enter CAP grid cell.'};
+    return {ok:true, data:{missionType:'cap', loadout: cfg.loadout, target:'cap_cell', cell: cfg.capCellNorm}};
+  }
+
+  loadoutSelect.addEventListener('change', function(){
+    saveMissionState();
+    updateMissionSummary();
+    updateButtonStates();
+  });
+  missionTypeSelect.addEventListener('change', function(){
+    updateTargetOptions();
+    updateMissionSummary();
+    updateButtonStates();
+  });
+  targetSelect.addEventListener('change', function(){
+    capCellInput.disabled = targetSelect.value !== 'cap_cell';
+    saveMissionState();
+    updateMissionSummary();
+    updateButtonStates();
+  });
+  capCellInput.addEventListener('input', function(){
+    try{
+      const raw = capCellInput.value || '';
+      const upper = raw.toUpperCase();
+      if(raw !== upper){
+        const pos = capCellInput.selectionStart;
+        capCellInput.value = upper;
+        if(pos!=null){ capCellInput.setSelectionRange(pos,pos); }
+      }
+    }catch(_){ }
+    saveMissionState();
+    updateMissionSummary();
+    updateButtonStates();
+  });
+  capCellInput.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); try{ launchBtn.click(); }catch(_){ } } });
+
+  updateTargetOptions();
+  updateMissionSummary();
+
+  async function launchHarrier(){
+    const descriptor = buildMissionDescriptor();
+    if(!descriptor.ok){
+      setStatus(descriptor.error, 'err');
+      return;
+    }
+    const mission = descriptor.data;
+    const summaryLabel = (ST.comms && ST.comms.activeMissionSummary) ? ST.comms.activeMissionSummary : missionSummaryText();
+    setStatus('Processing launch order…','muted');
+    launchBtn.disabled = true;
+    try{
+      if(mission.missionType==='intercept'){
+        const body={ id: mission.primaryContact.id, loadout: mission.loadout };
+        if(mission.primaryContact.cell) body.cell = String(mission.primaryContact.cell);
+        const res=await fetch('/cap/request',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+        const data=await res.json();
+        if(data && data.ok){
+          setStatus((data.message && String(data.message)) || summaryLabel || 'Intercept pair launching','ok');
+          await poll().catch(()=>{});
+        }else{
+          setStatus((data && (data.message || data.error))? String(data.message || data.error) : 'Intercept request failed','err');
+        }
+      }else{
+        const payload={ cell: mission.cell, station_minutes: 10, radius_nm: 2.5, loadout: mission.loadout };
+        if(mission.follow==='hermes') payload.follow='hermes';
+        const res=await fetch('/cap/launch_to',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+        const data=await res.json();
+        if(data && data.ok){
+          const msg = (data.message && String(data.message)) || (summaryLabel || (mission.follow==='hermes'? 'CAP launching to defend Hermes' : `CAP launching to ${mission.cell}`));
+          setStatus(msg,'ok');
+          await poll().catch(()=>{});
+        }else{
+          setStatus((data && (data.message || data.error))? String(data.message || data.error) : 'CAP request failed','err');
+        }
+      }
+    }catch(_){
+      setStatus('Launch request failed','err');
+    }finally{
+      launchBtn.disabled = false;
+      updateButtonStates();
+    }
+  }
+
+  async function reassignHarrier(){
+    const descriptor = buildMissionDescriptor();
+    if(!descriptor.ok){
+      setStatus(descriptor.error,'err');
+      return;
+    }
+    const mission = descriptor.data;
+    const summaryLabel = (ST.comms && ST.comms.activeMissionSummary) ? ST.comms.activeMissionSummary : missionSummaryText();
+    const eligible = tasks.filter(function(t){
+      if(!t) return false;
+      if(t.kind && String(t.kind).toLowerCase()==='resupply') return false;
+      return canRetaskStatus(t.status);
+    });
+    if(!eligible.length){
+      setStatus('No airborne SHAR flights available.','err');
+      return;
+    }
+    setStatus('Retasking flights…','muted');
+    reassignBtn.disabled = true;
+    try{
+      for(const t of eligible){
+        const missionId = t.id!=null ? t.id : t.n;
+        if(!missionId) continue;
+        let res;
+        if(mission.missionType==='intercept'){
+          res = await fetch('/cap/vector',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: missionId})});
+        }else{
+          const payload={ mission_id: missionId, cell: mission.cell, minutes: 10 };
+          if(mission.follow==='hermes') payload.follow='hermes';
+          res = await fetch('/cap/convert_to_cap',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+        }
+        const data=await res.json();
+        if(!data || !data.ok){
+          setStatus((data && (data.message || data.error))? String(data.message || data.error) : 'Retask failed','err');
+          reassignBtn.disabled = false;
+          return;
+        }
+      }
+      if(summaryLabel && summaryLabel !== '—'){
+        setStatus(`Flights retasked to ${summaryLabel}`,'ok');
+      }else{
+        setStatus('Flights retasked','ok');
+      }
+      await poll().catch(()=>{});
+    }catch(_){
+      setStatus('Retask failed','err');
+    }finally{
+      reassignBtn.disabled = false;
+      updateButtonStates();
+    }
+  }
+
+  async function launchSeaKing(){
+    const resupply = j.resupply || {};
+    if(resupply && resupply.active){
+      setStatus('Sea King already en route','muted');
+      return;
+    }
+    setStatus('Launching Sea King…','muted');
+    resupplyBtn.disabled = true;
     try{
       const res=await fetch('/resupply/launch',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
       const data=await res.json();
-      if(data && data.ok){ capMsg.textContent='Resupply on its way'; capMsg.className='comms-msg ok'; await poll().catch(()=>{}); }
-      else { capMsg.textContent=(data&&data.error)?String(data.error):'Resupply failed'; capMsg.className='comms-msg err'; }
-    }catch(_){ capMsg.textContent='Resupply failed'; capMsg.className='comms-msg err'; }
-  };
-
-  const commitHeader=document.createElement('h3'); commitHeader.className='comms-subhead'; commitHeader.textContent='SHAR commit status:'; p.appendChild(commitHeader);
-  const commitTable=document.createElement('table'); commitTable.className='comms-commit-table';
-  const commitHead=document.createElement('tr');
-  const commitCols=[
-    {label:'Flight'},
-    {label:'Status'},
-    {label:'Pos'},
-    {label:'Target'},
-    {label:'Range', className:'num'},
-    {label:'TOT', className:'num'},
-    {label:'TOS', className:'num'},
-    {label:'Vec', className:'action'},
-    {label:'Engage', className:'action'},
-    {label:'RTB', className:'action'}
-  ];
-  commitCols.forEach(function(col){
-    const th=document.createElement('th');
-    th.textContent=col.label;
-    if(col.className) th.className = col.className;
-    commitHead.appendChild(th);
-  });
-  commitTable.appendChild(commitHead);
-  const tasks = Array.isArray(cap.tasks)? cap.tasks : (Array.isArray(cap.missions)? cap.missions : []);
-  function fmtDuration(sec){
-    if(sec===undefined || sec===null) return '—';
-    const s = Number(sec);
-    if(!Number.isFinite(s)) return '—';
-    if(s < 120) return `${Math.round(s)}s`;
-    if(s < 3600) return `${Math.round(s/60)} min`;
-    return `${Math.round(s/3600)} hr`;
-  }
-  if(!tasks.length){
-    const tr=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=10; td.textContent='No active missions'; tr.appendChild(td); commitTable.appendChild(tr);
-  }else{
-    tasks.forEach(function(t){
-      const tr=document.createElement('tr');
-      const flightTd=document.createElement('td'); flightTd.textContent = t.n!=null ? `SHAR ${t.n}` : 'SHAR —'; tr.appendChild(flightTd);
-      const statusTd=document.createElement('td'); statusTd.textContent=String(t.status||'—').toUpperCase(); tr.appendChild(statusTd);
-      const statusKeyGlobal = String(t.status||'').toLowerCase();
-      const posLabel = String(t.origin_cell || t.cur_cell || '—').trim() || '—';
-      const posTd=document.createElement('td'); posTd.textContent=posLabel || '—'; tr.appendChild(posTd);
-      const tgtTd=document.createElement('td');
-      const tgtLabel = (function(){
-        const name = (t.target_name || '').toString();
-        const cell = (t.target_cell || '').toString();
-        const label = (t.target_label || '').toString();
-        if(label) return label;
-        if(name && cell && cell !== '—') return `${name} @ ${cell}`;
-        if(name) return name;
-        if(cell) return cell;
-        return '—';
-      })();
-      tgtTd.textContent = tgtLabel || '—';
-      tr.appendChild(tgtTd);
-      const rngTd=document.createElement('td'); rngTd.className='num'; rngTd.textContent = (t.range_nm!=null && Number.isFinite(Number(t.range_nm)))? `${fmt(t.range_nm,1)} nm`:'—'; tr.appendChild(rngTd);
-      function durationLabel(sec, status){
-        if(sec===undefined || sec===null) return '—';
-        const n=Number(sec);
-        if(!Number.isFinite(n) || n <= 0) return status==='onstation' ? 'ON STN' : '—';
-        return fmtDuration(n);
-      }
-      const totTd=document.createElement('td'); totTd.className='num'; totTd.textContent=durationLabel(t.tot_s, t.status); tr.appendChild(totTd);
-      const tosTd=document.createElement('td'); tosTd.className='num'; tosTd.textContent=durationLabel(t.tos_s, t.status); tr.appendChild(tosTd);
-      const vecTd=document.createElement('td'); vecTd.className='action';
-      const vecBtn=document.createElement('button'); vecBtn.className='btn'; vecBtn.textContent='VECTOR';
-      if(['rtb','recovering','complete'].includes(statusKeyGlobal)) vecBtn.disabled = true;
-      vecBtn.onclick = async function(){
-        // Vector this mission to the current primary target
-        try{
-          const st = window._status || {};
-          const locked = (st.radar && st.radar.locked_id!=null) ? st.radar.locked_id : (st.top_threat_id||null);
-          if(locked==null){ capMsg.textContent='No locked target.'; capMsg.className='comms-msg err'; return; }
-          capMsg.textContent='Vectoring…'; capMsg.className='comms-msg muted';
-          const res = await fetch('/cap/vector',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: t.n})});
-          const data = await res.json();
-          if(data && data.ok){ capMsg.textContent=data.message||'Vectoring'; capMsg.className='comms-msg ok'; await poll().catch(()=>{}); }
-          else { capMsg.textContent=(data&&data.error)?String(data.error):'Vector failed'; capMsg.className='comms-msg err'; }
-        }catch(_){ capMsg.textContent='Vector failed'; capMsg.className='comms-msg err'; }
-      };
-      // Add CAP@ retask per mission (convert to CAP at input cell)
-      const capAtBtn=document.createElement('button'); capAtBtn.className='btn'; capAtBtn.textContent='CAP@'; capAtBtn.style.marginLeft='6px';
-      if(['rtb','recovering','complete'].includes(statusKeyGlobal)) capAtBtn.disabled = true;
-      capAtBtn.title = 'Retask this flight to CAP at the cell';
-      capAtBtn.onclick = async function(){
-        const cellRaw = (capCellInput && capCellInput.value) ? String(capCellInput.value) : '';
-        const cell = (function(){ try{ let s=String(cellRaw||'').toUpperCase().replace(/[^A-Z0-9]/g,''); const m=s.match(/^([A-Z]+)([0-9]+)$/); return m? (m[1]+m[2]) : ''; }catch(_){ return ''; } })();
-        if(!cell){ capMsg.textContent='Enter CAP grid cell'; capMsg.className='comms-msg err'; return; }
-        capMsg.textContent='Retasking to CAP…'; capMsg.className='comms-msg muted';
-        try{
-          const res = await fetch('/cap/convert_to_cap',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: t.n, cell})});
-          const data = await res.json();
-          if(data && data.ok){ capMsg.textContent=data.message||'Holding CAP'; capMsg.className='comms-msg ok'; await poll().catch(()=>{}); }
-          else { capMsg.textContent=(data&&data.error)?String(data.error):'Retask failed'; capMsg.className='comms-msg err'; }
-        }catch(_){ capMsg.textContent='Retask failed'; capMsg.className='comms-msg err'; }
-      };
-      vecTd.appendChild(vecBtn); vecTd.appendChild(capAtBtn); tr.appendChild(vecTd);
-      const permTd=document.createElement('td'); permTd.className='action';
-      const missionId = (t.id!=null)? t.id : (t.n!=null? t.n : null);
-      const perm = (t.permission && typeof t.permission==='object')? t.permission : {};
-      if(perm.required){
-        if(perm.authorized){
-          permTd.textContent='CLEARED'; permTd.classList.add('ok');
-        }else{
-          const engageBtn=document.createElement('button'); engageBtn.className='btn'; engageBtn.textContent='ENGAGE';
-          if(missionId==null){ engageBtn.disabled=true; }
-          engageBtn.onclick = async function(){
-            if(missionId==null){ capMsg.textContent='Unknown mission id'; capMsg.className='comms-msg err'; return; }
-            capMsg.textContent='Authorizing…'; capMsg.className='comms-msg muted';
-            try{
-              const res=await fetch('/cap/authorize',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: missionId, authorize: true})});
-              const data=await res.json();
-              if(data && data.ok){
-                capMsg.textContent='Engagement authorized'; capMsg.className='comms-msg ok';
-                await poll().catch(()=>{});
-              }else{
-                capMsg.textContent=(data && data.error)? String(data.error) : 'Authorization failed'; capMsg.className='comms-msg err';
-              }
-            }catch(_){ capMsg.textContent='Authorization failed'; capMsg.className='comms-msg err'; }
-          };
-          permTd.appendChild(engageBtn);
-        }
+      if(data && data.ok){
+        setStatus('Resupply helicopter launched','ok');
+        await poll().catch(()=>{});
       }else{
-        permTd.textContent='—';
+        setStatus((data && data.error)? String(data.error) : 'Resupply failed','err');
       }
-      tr.appendChild(permTd);
-      const rtbTd=document.createElement('td'); rtbTd.className='action';
-      const rtbBtn=document.createElement('button'); rtbBtn.className='btn'; rtbBtn.textContent='RTB';
-      if(missionId==null || ['rtb','recovering','complete'].includes(statusKeyGlobal)) rtbBtn.disabled=true;
-      rtbBtn.onclick = async function(){
-        if(missionId==null){ capMsg.textContent='Unknown mission id'; capMsg.className='comms-msg err'; return; }
-        capMsg.textContent='Ordering RTB…'; capMsg.className='comms-msg muted';
+    }catch(_){
+      setStatus('Resupply failed','err');
+    }finally{
+      updateButtonStates();
+    }
+  }
+
+  launchBtn.onclick=launchHarrier;
+  reassignBtn.onclick=reassignHarrier;
+  resupplyBtn.onclick=launchSeaKing;
+
+  function targetDescription(t){
+    if(!t) return '—';
+    const follow = (t.follow || (t.permission && t.permission.follow)) ? String(t.follow || t.permission.follow) : null;
+    if(follow && follow.toLowerCase()==='hermes') return 'Hermes (Defend)';
+    if(t.target_label) return String(t.target_label);
+    const name = String(t.target_name || '').trim();
+    const cell = String(t.target_cell || '').trim();
+    if(String(t.kind || '').toLowerCase()==='cap'){
+      if(cell) return `CAP ${cell}`;
+    }
+    if(name && cell) return `${name} @ ${cell}`;
+    if(name) return name;
+    if(cell) return cell;
+    return '—';
+  }
+
+  function addSharRow(t){
+    const tr=document.createElement('tr');
+    const missionId = t && (t.id!=null ? t.id : t.n);
+    const statusKey = String(t && t.status || '').toLowerCase();
+    const flightTd=document.createElement('td'); flightTd.textContent = missionId ? `SHAR ${missionId}` : 'SHAR'; tr.appendChild(flightTd);
+    const statusTd=document.createElement('td'); statusTd.textContent = String(t.status || '—').toUpperCase(); tr.appendChild(statusTd);
+    const posTd=document.createElement('td'); posTd.textContent = String(t.cur_cell || t.origin_cell || '—'); tr.appendChild(posTd);
+    const tgtTd=document.createElement('td'); tgtTd.textContent = targetDescription(t); tr.appendChild(tgtTd);
+    const rngTd=document.createElement('td'); rngTd.className='num';
+    rngTd.textContent = (t.range_nm!=null && Number.isFinite(Number(t.range_nm)))? `${fmt(t.range_nm,1)} nm` : '—';
+    tr.appendChild(rngTd);
+    const totTd=document.createElement('td'); totTd.className='num';
+    totTd.textContent = t.tot_s!=null ? fmtDuration(t.tot_s) : (statusKey==='onstation' ? 'ON STN' : '—');
+    tr.appendChild(totTd);
+    const tosTd=document.createElement('td'); tosTd.className='num';
+    tosTd.textContent = t.tos_s!=null ? fmtDuration(t.tos_s) : '—';
+    tr.appendChild(tosTd);
+
+    const permTd=document.createElement('td'); permTd.className='action';
+    const perm = (t && t.permission && typeof t.permission==='object')? t.permission : {};
+    if(perm.required){
+      const authorized = Boolean(perm.authorized);
+      const engageBtn=document.createElement('button'); engageBtn.className='btn'; engageBtn.textContent = authorized ? 'HOLD FIRE' : 'ENGAGE';
+      engageBtn.onclick = async function(){
+        if(!missionId){ setStatus('Unknown mission id','err'); return; }
+        engageBtn.disabled = true;
+        setStatus(authorized? 'Revoking engagement…':'Authorizing engagement…','muted');
         try{
-          const res=await fetch('/cap/rtb',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: missionId})});
+          const res=await fetch('/cap/authorize',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: missionId, authorize: !authorized})});
           const data=await res.json();
           if(data && data.ok){
-            capMsg.textContent=data.message || `SHAR ${missionId} RTB`; capMsg.className='comms-msg ok';
-            rtbBtn.disabled = true;
+            setStatus(!authorized ? 'Engagement authorized' : 'Holding fire', 'ok');
             await poll().catch(()=>{});
           }else{
-            capMsg.textContent=(data && (data.message || data.error)) ? String(data.message || data.error) : 'RTB order failed';
-            capMsg.className='comms-msg err';
+            setStatus((data && data.error)? String(data.error) : 'Authorization failed','err');
           }
-        }catch(_){ capMsg.textContent='RTB order failed'; capMsg.className='comms-msg err'; }
+        }catch(_){
+          setStatus('Authorization failed','err');
+        }finally{
+          engageBtn.disabled = false;
+        }
       };
-      rtbTd.appendChild(rtbBtn);
-      tr.appendChild(rtbTd);
-      commitTable.appendChild(tr);
-    });
-  }
-  p.appendChild(commitTable);
-}
+      permTd.appendChild(engageBtn);
+    }else{
+      permTd.textContent='—';
+    }
+    tr.appendChild(permTd);
 
+    const rtbTd=document.createElement('td'); rtbTd.className='action';
+    const rtbBtn=document.createElement('button'); rtbBtn.className='btn'; rtbBtn.textContent='RTB';
+    if(!missionId || ['rtb','recovering','complete'].includes(statusKey)) rtbBtn.disabled=true;
+    rtbBtn.onclick = async function(){
+      if(!missionId){ setStatus('Unknown mission id','err'); return; }
+      setStatus('Ordering RTB…','muted');
+      rtbBtn.disabled = true;
+      try{
+        const res=await fetch('/cap/rtb',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: missionId})});
+        const data=await res.json();
+        if(data && data.ok){
+          setStatus(data.message || `SHAR ${missionId} RTB`, 'ok');
+          await poll().catch(()=>{});
+        }else{
+          setStatus((data && (data.message || data.error))? String(data.message || data.error) : 'RTB order failed','err');
+          rtbBtn.disabled = false;
+        }
+      }catch(_){
+        setStatus('RTB order failed','err');
+        rtbBtn.disabled = false;
+      }
+    };
+    rtbTd.appendChild(rtbBtn);
+    tr.appendChild(rtbTd);
+    commitTable.appendChild(tr);
+  }
+
+  const sharTasks = tasks.filter(function(t){
+    if(!t) return false;
+    if(t.kind && String(t.kind).toLowerCase()==='resupply') return false;
+    return true;
+  });
+
+  if(sharTasks.length){
+    sharTasks.forEach(addSharRow);
+  }else{
+    const tr=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=9; td.textContent='No active SHAR flights'; tr.appendChild(td); commitTable.appendChild(tr);
+  }
+
+  const resupply = j.resupply || {};
+  if(resupply && resupply.active){
+    const tr=document.createElement('tr'); tr.className='resupply-row';
+    const cols=[
+      'Sea King',
+      String(resupply.stage || 'ACTIVE').toUpperCase(),
+      String(resupply.cell || resupply.pos || '—'),
+      'Sheffield (Resupply)',
+      (resupply.range_nm!=null && Number.isFinite(Number(resupply.range_nm)))? `${fmt(resupply.range_nm,1)} nm` : '—',
+      '—',
+      resupply.left_s!=null ? fmtDuration(resupply.left_s) : '—',
+      '—',
+      '—'
+    ];
+    cols.forEach(function(text, idx){
+      const td=document.createElement('td');
+      if(idx>=4 && idx<=6) td.className='num';
+      td.textContent=text;
+      tr.appendChild(td);
+    });
+    commitTable.appendChild(tr);
+  }
+
+  p.appendChild(commitTable);
+
+  updateButtonStates();
+}
 function renderENG(j){
   const p=$('#station-panel'); p.innerHTML='';
   addStationControls(p,'ENG');

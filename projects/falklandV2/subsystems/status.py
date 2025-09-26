@@ -50,6 +50,13 @@ def build() -> Dict[str, Any]:
         "capabilities": _capabilities(),
     }
 
+    try:
+        mission_snap = wd.RUNTIME.mission_snapshot()
+        if mission_snap:
+            payload['mission'] = mission_snap
+    except Exception:
+        pass
+
     # State snapshot (robust against minimal engines)
     if hasattr(wd.ENG, "public_state"):
         try:

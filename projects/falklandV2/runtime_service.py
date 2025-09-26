@@ -21,6 +21,7 @@ from projects.falklandV2.radar import Radar, WORLD_N
 from projects.falklandV2.subsystems.hermes_cap import HermesCAP
 from projects.falklandV2.subsystems import webcore as core
 from projects.falklandV2.subsystems import ui_snapshot as ui_snap
+from projects.falklandV2.subsystems.mission import MissionController
 from projects.falklandV2.engine_adapter import contact_to_ui
 
 
@@ -98,6 +99,9 @@ class GameRuntime:
         self.engine: Engine = self._create_engine()
         self.cap: Optional[HermesCAP] = self._create_cap()
         self.radar: Radar = self._create_radar()
+        now = time.time()
+        self.mission: MissionController = MissionController(self.data_dir, now=now)
+        self._last_radar_tick_ts: float = now
 
     # ---------- creation helpers
     def _read_port(self) -> int:
@@ -195,6 +199,47 @@ class GameRuntime:
             except Exception:
                 pass
 
+    def bind_mission_hooks(
+        self,
+        *,
+        event_hook: Optional[Callable[[str, Optional[Dict[str, Any]]], None]] = None,
+        voice_hook: Optional[Callable[..., None]] = None,
+    ) -> None:
+        try:
+            if self.mission:
+                self.mission.set_hooks(event_hook=event_hook, voice_hook=voice_hook)
+        except Exception:
+            pass
+
+    def _mission_context(self, *, now: Optional[float] = None) -> Dict[str, Any]:
+        ts = now if now is not None else time.time()
+        try:
+            health = self.core._load_health()
+        except Exception:
+            health = {}
+        try:
+            state = self.engine.public_state()
+        except Exception:
+            state = {}
+        return {
+            "now": ts,
+            "health": health,
+            "state": state,
+        }
+
+    def mission_snapshot(self) -> Dict[str, Any]:
+        if not self.mission:
+            return {}
+        with self.state_lock:
+            ctx = self._mission_context()
+            return self.mission.update(ctx, now=ctx["now"])
+
+    def apply_mission_decision(self, decision_id: str, choice: str) -> Dict[str, Any]:
+        if not self.mission:
+            return {"ok": False, "error": "mission_unavailable"}
+        with self.state_lock:
+            return self.mission.register_decision(decision_id, choice)
+
     def reset_engine_and_cap(self) -> None:
         with self.state_lock:
             self.engine = self._create_engine()
@@ -203,6 +248,7 @@ class GameRuntime:
                 self.radar.cap_effects_provider = (lambda: self.cap.current_effects() if self.cap is not None else {"active": False})
             except Exception:
                 pass
+            self._last_radar_tick_ts = time.time()
         self._rebind()
 
     # Convenience pass-throughs for callers that expect functions
@@ -228,6 +274,12 @@ class GameRuntime:
         """
         with self.state_lock:
             contacts_ui, radar_meta = self._radar_snapshot()
+            mission_block: Dict[str, Any] = {}
+            try:
+                mission_ctx = self._mission_context()
+                mission_block = self.mission.update(mission_ctx, now=mission_ctx["now"]) if self.mission else {}
+            except Exception:
+                mission_block = {}
             try:
                 paused = False
                 convoy = None
@@ -238,6 +290,10 @@ class GameRuntime:
                     radar_block = {}
                 radar_block.update(radar_meta)
                 snap['radar'] = radar_block
+                if mission_block:
+                    snap['mission'] = mission_block
+                else:
+                    snap['mission'] = snap.get('mission') or {}
                 return snap
             except Exception:
                 hud = "—"
@@ -259,6 +315,8 @@ class GameRuntime:
         contacts_ui: List[Dict[str, Any]] = []
         radar_meta: Dict[str, Any] = {}
         try:
+            now = time.time()
+            self._advance_radar(now=now)
             own_xy = self._own_xy()
             contacts = list(getattr(self.radar, 'contacts', []))
             contacts_ui = [contact_to_ui(c, own_xy) for c in contacts]
@@ -296,6 +354,32 @@ class GameRuntime:
         except Exception:
             contacts_ui = []
         return contacts_ui, radar_meta
+
+    def _advance_radar(self, *, now: Optional[float] = None) -> None:
+        if not hasattr(self, 'radar') or self.radar is None:
+            return
+        try:
+            ts = now if now is not None else time.time()
+            last = getattr(self, '_last_radar_tick_ts', None)
+            if last is None:
+                self._last_radar_tick_ts = ts
+                return
+            dt_total = max(0.0, float(ts) - float(last))
+            if dt_total <= 0.0:
+                return
+            own_x, own_y = self._own_xy()
+            # Advance in bounded steps so spawn math matches live loop expectations.
+            remaining = dt_total
+            while remaining > 0.0:
+                step = min(1.0, remaining)
+                try:
+                    self.radar.tick(step, own_x, own_y)
+                except Exception:
+                    break
+                remaining -= step
+            self._last_radar_tick_ts = ts
+        except Exception:
+            self._last_radar_tick_ts = now if now is not None else time.time()
 
     def radar_scan(self) -> Dict[str, Any]:
         ox, oy = self._own_xy()

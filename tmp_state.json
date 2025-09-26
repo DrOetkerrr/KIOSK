@@ -1,0 +1,19 @@
+{
+  "systems": {
+    "radar": {
+      "online": true,
+      "degraded": false
+    }
+  },
+  "ship": {
+    "col": 50,
+    "row": 50,
+    "heading": 270.0,
+    "speed": 15.0,
+    "max_speed": 32.0
+  },
+  "ship_position": {
+    "col_f": 49.998958333333334,
+    "row_f": 50.0
+  }
+}

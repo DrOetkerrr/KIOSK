@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 import math
 import logging
+from typing import Any, Dict
+
 from flask import Blueprint, jsonify, request
 
 bp = Blueprint("cap", __name__)
@@ -14,9 +16,60 @@ def _lazy():
         CAP, CAP_META, RADAR, ENG, CONVOY,
         voice_emit, officer_say, record_flight, record_event,
         radar_xy_from_state, world_to_cell, cell_to_world,
-        stamp_cap_launch, ship_cell_from_state
+        stamp_cap_launch, ship_cell_from_state, TARGET_CLASS_BY_NAME
     )
     return locals()
+
+
+def _contact_class_for_cap(contact: Any, mapping: Dict[str, Any] | None = None) -> str | None:
+    if contact is None:
+        return None
+    try:
+        meta = getattr(contact, 'meta', {}) or {}
+        if isinstance(meta, dict):
+            cap_meta = meta.get('cap') or {}
+            cls = cap_meta.get('class') if isinstance(cap_meta, dict) else None
+            if not cls:
+                cls = meta.get('class') or meta.get('type')
+            if cls:
+                return str(cls).title()
+    except Exception:
+        pass
+    try:
+        cls = getattr(contact, 'class', None)
+        if cls:
+            return str(cls).title()
+    except Exception:
+        pass
+    try:
+        cls = getattr(contact, 'type', None)
+        if cls:
+            return str(cls).title()
+    except Exception:
+        pass
+    try:
+        name = getattr(contact, 'name', None)
+        if name and isinstance(mapping, dict):
+            cls = mapping.get(str(name))
+            if cls:
+                return str(cls).title()
+    except Exception:
+        pass
+    return None
+
+
+def _normalize_loadout(value: Any) -> str:
+    if not value:
+        return ''
+    v = str(value).strip().lower()
+    if v in ('aim9', 'aim-9', 'sidewinder', 'missile'):
+        return 'aim9'
+    if v in ('bomb', 'bombs', 'mk82', 'iron'):
+        return 'bombs'
+    if v == 'auto':
+        return ''
+    return ''
+
 
 
 @bp.get("/cap/roe")
@@ -34,10 +87,6 @@ def cap_authorize():
     L = _lazy(); t0 = time.time(); route = "/cap/authorize"
     try:
         data = request.get_json(silent=True) or {}
-        try:
-            desired_loadout = str((data.get('loadout') or 'aim9')).lower()
-        except Exception:
-            desired_loadout = 'aim9'
         mid = int(data.get('id', 0))
         auth = bool(data.get('authorize', True))
         if mid <= 0 or mid not in L['CAP_META']:
@@ -186,6 +235,22 @@ def cap_request():
         if tid is None:
             tid = L['RADAR'].priority_id
         tgt = next((c for c in L['RADAR'].contacts if int(getattr(c, 'id', -1)) == int(tid)), None) if tid is not None else None
+        target_class = _contact_class_for_cap(tgt, L.get('TARGET_CLASS_BY_NAME'))
+        requested_loadout = _normalize_loadout(data.get('loadout'))
+        SURFACE_CLASSES = {'Ship', 'Surface', 'Carrier', 'Escort', 'Landing Craft', 'Merchant', 'Convoy'}
+        AIR_CLASSES = {'Aircraft', 'Helicopter', 'Missile', 'Bomber', 'Fighter'}
+        auto_default = 'aim9'
+        if target_class and target_class in SURFACE_CLASSES:
+            auto_default = 'bombs'
+        loadout = requested_loadout or auto_default
+        loadout_adjusted = None
+        if loadout == 'bombs' and target_class and target_class in AIR_CLASSES:
+            loadout_adjusted = {'from': requested_loadout or 'bombs', 'to': 'aim9', 'reason': 'air_target', 'target_class': target_class}
+            loadout = 'aim9'
+        elif loadout == 'aim9' and target_class and target_class in SURFACE_CLASSES and not requested_loadout:
+            loadout_adjusted = {'from': 'auto', 'to': 'bombs', 'reason': 'surface_target', 'target_class': target_class}
+            loadout = 'bombs'
+        desired_loadout = loadout
         # Fallback: accept a grid cell from client when target object no longer exists locally
         fallback_cell = None
         try:
@@ -382,7 +447,7 @@ def cap_request():
                 L['CAP'].set_permission(chosen_mid, False)
             except Exception:
                 pass
-            payload = {"ok": True, "message": f"Vectoring airborne pair to {cell}", "mission": {"id": chosen_mid, "target_cell": cell}}
+            payload = {"ok": True, "message": f"Vectoring airborne pair to {cell}", "mission": {"id": chosen_mid, "target_cell": cell}, "loadout": desired_loadout}
             try:
                 L['voice_emit']('pilot.vector', {'cell': cell}, fallback='Vectoring to %s.' % (cell,), role='Pilot')
             except Exception:
@@ -400,14 +465,10 @@ def cap_request():
                 pass
             L['record_flight']({"route": route, "method": request.method, "status": 200,
                                "duration_ms": int((time.time()-t0)*1000),
-                               "request": {"id": tid, "cell": cell, "range_nm": round(rng_nm, 2), "vector": True}, "response": payload})
+                               "request": {"id": tid, "cell": cell, "range_nm": round(rng_nm, 2), "vector": True, "loadout": desired_loadout}, "response": payload})
             return jsonify(payload)
 
         # Fallback: launch a fresh pair (honour optional loadout)
-        try:
-            loadout = str((data.get('loadout') or 'aim9')).lower()
-        except Exception:
-            loadout = 'aim9'
         res = L['CAP'].request_cap_to_cell(
             cell,
             distance_nm=float(rng_nm),
@@ -417,7 +478,19 @@ def cap_request():
             loadout=loadout,
         )
         status = 200 if res.get("ok") else 400
-        payload = {"ok": bool(res.get("ok")), "message": res.get("message"), "mission": res.get("mission")}
+        payload: Dict[str, Any] = {"ok": bool(res.get("ok")), "message": res.get("message"), "mission": res.get("mission"), "loadout": loadout}
+        if loadout_adjusted:
+            payload['loadout_adjusted'] = loadout_adjusted
+            try:
+                L['record_event']('cap.loadout.adjusted', {
+                    'from': loadout_adjusted['from'],
+                    'to': loadout_adjusted['to'],
+                    'reason': loadout_adjusted['reason'],
+                    'target_class': loadout_adjusted.get('target_class'),
+                    'target_id': int(getattr(tgt, 'id', 0) or 0) if tgt is not None else None,
+                })
+            except Exception:
+                pass
         if res.get('ok'):
             try:
                 L['stamp_cap_launch']()
@@ -431,7 +504,10 @@ def cap_request():
             except Exception:
                 pass
             try:
-                L['record_event']('cap.launch', {'cell': cell, 'from': hermes_cell, 'range_nm': round(rng_nm, 2)})
+                event_payload = {'cell': cell, 'from': hermes_cell, 'range_nm': round(rng_nm, 2), 'loadout': loadout}
+                if target_class:
+                    event_payload['target_class'] = target_class
+                L['record_event']('cap.launch', event_payload)
             except Exception:
                 pass
             try:
@@ -455,7 +531,7 @@ def cap_request():
                 pass
         L['record_flight']({"route": route, "method": request.method, "status": status,
                            "duration_ms": int((time.time()-t0)*1000),
-                           "request": {"id": tid, "cell": cell, "range_nm": round(rng_nm, 2)}, "response": payload})
+                           "request": {"id": tid, "cell": cell, "range_nm": round(rng_nm, 2), "loadout": loadout, "target_class": target_class}, "response": payload})
         return jsonify(payload), status
     except Exception as e:
         logging.exception("/cap/request error: %s", e)

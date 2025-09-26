@@ -8,8 +8,8 @@ bp = Blueprint("nav", __name__)
 
 def _lazy():
     from ..webdash import (
-        ENG, ship_cell_from_state, _load_json, DATA_DIR,
-        radar_xy_from_state, board_to_cell, cell_to_world, clamp,
+        ENG, ship_cell_from_state,
+        radar_xy_from_state, cell_to_world, clamp,
         BOARD_N, voice_emit, record_flight, record_event, CONVOY
     )
     from ..engine_adapter import world_to_cell
@@ -45,10 +45,10 @@ def nav_hermes_close_in():
             while j < len(own_cell) and own_cell[j].isalpha():
                 j += 1
             cletters = own_cell[:j] or 'A'; rstr = own_cell[j:] or '1'
-            ci = 0
-            for ch in cletters: ci = ci*26 + (ord(ch)-ord('A')+1)
             ri = int(rstr)
-            hermes_cell = L['board_to_cell'](int(L['clamp'](ri-2,1,L['BOARD_N'])), int(L['clamp'](ci,1,L['BOARD_N'])))
+            adj_row = int(L['clamp'](ri - 2, 1, L['BOARD_N']))
+            col_label = cletters or 'A'
+            hermes_cell = f"{col_label}{adj_row}"
             hx, hy = L['cell_to_world'](hermes_cell)
             dx = hx - float(ox)
             dy = hy - float(oy)
@@ -104,10 +104,10 @@ def nav_hermes_stand_off():
             while j < len(own_cell) and own_cell[j].isalpha():
                 j += 1
             cletters = own_cell[:j] or 'A'; rstr = own_cell[j:] or '1'
-            ci = 0
-            for ch in cletters: ci = ci*26 + (ord(ch)-ord('A')+1)
             ri = int(rstr)
-            hermes_cell = L['board_to_cell'](int(L['clamp'](ri-3,1,L['BOARD_N'])), int(L['clamp'](ci,1,L['BOARD_N'])))
+            adj_row = int(L['clamp'](ri - 3, 1, L['BOARD_N']))
+            col_label = cletters or 'A'
+            hermes_cell = f"{col_label}{adj_row}"
             hx, hy = L['cell_to_world'](hermes_cell)
             dx = hx - float(ox)
             dy = hy - float(oy)

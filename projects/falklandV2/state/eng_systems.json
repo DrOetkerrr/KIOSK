@@ -4,6 +4,7 @@
   "systems": [
     {
       "id": "Navigation",
+      "name": "NAV station",
       "status": "OK",
       "timer_s": 0,
       "team_assigned": false,
@@ -11,6 +12,7 @@
     },
     {
       "id": "Radar",
+      "name": "RDR station",
       "status": "OK",
       "timer_s": 0,
       "team_assigned": false,
@@ -18,6 +20,7 @@
     },
     {
       "id": "FireControl_Weapons",
+      "name": "FCR / Weapons",
       "status": "OK",
       "timer_s": 0,
       "team_assigned": false,
@@ -25,6 +28,7 @@
     },
     {
       "id": "COMMS",
+      "name": "COMMS station",
       "status": "OK",
       "timer_s": 0,
       "team_assigned": false,
@@ -32,6 +36,7 @@
     },
     {
       "id": "Engine_Propulsion",
+      "name": "Engine / Propulsion",
       "status": "OK",
       "timer_s": 0,
       "team_assigned": false,
@@ -39,6 +44,7 @@
     },
     {
       "id": "Rudder_Steering",
+      "name": "Rudder / Steering",
       "status": "OK",
       "timer_s": 0,
       "team_assigned": false,
@@ -46,6 +52,7 @@
     },
     {
       "id": "Hull",
+      "name": "Hull",
       "status": "OK",
       "timer_s": 0,
       "team_assigned": false,

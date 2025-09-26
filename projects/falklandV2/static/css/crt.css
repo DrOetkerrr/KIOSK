@@ -105,6 +105,7 @@ tbody tr td:last-child{border-top-right-radius:6px;border-bottom-right-radius:6p
 .comms-msg{margin-top:6px;font-size:13px;color:var(--muted)}
 .comms-msg.ok{color:var(--accent)}
 .comms-msg.err{color:var(--err)}
+.comms-msg.warn{color:var(--warn)}
 .sys-msg{margin-left:12px;font-size:12px;color:var(--muted)}
 .sys-msg.ok{color:var(--accent)}
 .sys-msg.err{color:var(--err)}
@@ -120,6 +121,18 @@ tbody tr td:last-child{border-top-right-radius:6px;border-bottom-right-radius:6p
 .comms-commit-table th.action{text-align:center}
 .comms-commit-table td.action{text-align:center}
 .comms-commit-table td.action .btn{min-width:78px}
+.comms-top-table{width:100%;border-collapse:separate;border-spacing:0}
+.comms-top-table th,.comms-top-table td{padding:6px 10px;background:rgba(3,18,7,0.85);border:1px solid var(--border)}
+.comms-top-table td.action{text-align:center;white-space:nowrap}
+.active-mission-card{display:flex;justify-content:space-between;align-items:center;margin:8px 0 12px;padding:8px 12px;background:rgba(3,18,7,0.75);border:1px solid var(--border);border-radius:8px;box-shadow:0 0 12px rgba(0,0,0,0.4)}
+.active-mission-label{text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-size:12px}
+.active-mission-value{font-size:13px;color:var(--muted)}
+.active-mission-value.ok{color:var(--accent)}
+.active-mission-value.err{color:var(--err)}
+.mission-summary{min-height:18px}
+.mission-summary.ok{color:var(--accent)}
+.mission-summary.err{color:var(--err)}
+.comms-commit-table tr.resupply-row td{font-style:italic;color:var(--muted)}
 .wpn-primary{background:rgba(3,18,7,0.85);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:16px;box-shadow:0 0 18px rgba(0,0,0,0.6)}
 .wpn-primary-title{text-transform:uppercase;font-size:14px;letter-spacing:2px;color:var(--accent);margin-bottom:8px}
 .wpn-primary-table{width:100%;border-collapse:separate;border-spacing:0 4px;margin-bottom:10px}

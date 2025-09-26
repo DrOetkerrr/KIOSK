@@ -57,6 +57,18 @@ TTS_DIR = STATE_DIR / "tts"; TTS_DIR.mkdir(parents=True, exist_ok=True)
 VOICES_DIR = STATE_DIR / "voices"; VOICES_DIR.mkdir(parents=True, exist_ok=True)
 ENG_SYS_PATH = STATE_DIR / "eng_systems.json"
 
+# Map engineering system identifiers to UI-facing labels so events and logs
+# can present meaningful names even if the persisted state lacks them.
+ENG_SYSTEM_LABELS = {
+    'Navigation': 'NAV station',
+    'Radar': 'RDR station',
+    'FireControl_Weapons': 'FCR / Weapons',
+    'COMMS': 'COMMS station',
+    'Engine_Propulsion': 'Engine / Propulsion',
+    'Rudder_Steering': 'Rudder / Steering',
+    'Hull': 'Hull',
+}
+
 
 # ---- JSON helpers ----
 def _load_json(path: Path, default):
@@ -139,8 +151,10 @@ def _eng_defaults_from_validation() -> Dict[str, Any]:
         for s in (systems or []):
             if not isinstance(s, dict):
                 continue
+            sys_id = str(s.get('id') or '')
             items.append({
-                'id': s.get('id'),
+                'id': sys_id,
+                'name': ENG_SYSTEM_LABELS.get(sys_id, sys_id or 'System'),
                 'status': 'OK',
                 'timer_s': 0,
                 'team_assigned': False,
@@ -156,6 +170,29 @@ def load_eng_sys() -> Dict[str, Any]:
     obj = _load_json(ENG_SYS_PATH, None)
     if not isinstance(obj, dict):
         obj = _eng_defaults_from_validation()
+        try:
+            _save_json(ENG_SYS_PATH, obj)
+        except Exception:
+            pass
+    mutated = False
+    try:
+        systems = obj.get('systems') if isinstance(obj.get('systems'), list) else []
+        for sys in systems or []:
+            try:
+                sys_id = str(sys.get('id') or '')
+                label = sys.get('name') or sys.get('label')
+                if not label:
+                    label = ENG_SYSTEM_LABELS.get(sys_id, sys_id or 'System')
+                    sys['name'] = label
+                    mutated = True
+                elif 'name' not in sys:
+                    sys['name'] = label
+                    mutated = True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    if mutated:
         try:
             _save_json(ENG_SYS_PATH, obj)
         except Exception:
@@ -343,6 +380,11 @@ def stamp_cap_launch(sound_file: str = "SHAR.wav", volume: float = 0.10, fade_s:
 
 # ---- Grid conversion (canonical AA00 on 40×40; captain sub-board 30×30) ----
 WORLD_N = 40
+try:
+    from projects.falklandV2.core.engine import BOARD_N as _BOARD_N  # type: ignore
+except Exception:  # pragma: no cover - fallback when engine is unavailable
+    _BOARD_N = 26
+BOARD_N = int(_BOARD_N)
 from projects.falklandV2.grid.coords import parse_coord as _parse_label, format_coord as _fmt_label, center_subboard
 from projects.falklandV2.grid.mapping import world_to_label as _world_to_label, label_to_world as _label_to_world
 
@@ -1792,45 +1834,52 @@ def engine_thread_run(wd) -> None:
                             except Exception:
                                 pass
                             entry['last'] = now
+                            ammo_key = None
+                            ammo_left = 0
+                            attempt_cap = 1
                             try:
+                                ammo_key = None
+                                ammo_default = 0
+                                attempt_cap = 1
                                 if 'bomb' in weapon_name:
                                     hit_prob = 0.6
-                                    bombs_left = entry.get('bombs_left')
-                                    if bombs_left is None:
-                                        bombs_left = 2
-                                    if bombs_left <= 0:
-                                        att[cid] = entry
-                                        continue
-                                    attempts = min(2, int(bombs_left))
-                                    entry['bombs_left'] = bombs_left
+                                    ammo_key = 'bombs_left'
+                                    ammo_default = 2
+                                    attempt_cap = 2
                                 elif 'missile' in weapon_name:
                                     hit_prob = 0.75
-                                    missiles_left = entry.get('missiles_left')
-                                    if missiles_left is None:
-                                        missiles_left = 1
-                                    if missiles_left <= 0:
-                                        att[cid] = entry
-                                        continue
-                                    attempts = min(1, int(missiles_left))
-                                    entry['missiles_left'] = missiles_left
+                                    ammo_key = 'missiles_left'
+                                    ammo_default = 1
                                 else:
                                     hit_prob = 0.5
-                                    guns_left = entry.get('guns_left')
-                                    if guns_left is None:
-                                        guns_left = 1
-                                    if guns_left <= 0:
-                                        att[cid] = entry
-                                        continue
-                                    attempts = min(1, int(guns_left))
-                                    entry['guns_left'] = guns_left
+                                    ammo_key = 'guns_left'
+                                    ammo_default = 1
+
+                                ammo_left = entry.get(ammo_key) if ammo_key else None
+                                if ammo_left is None:
+                                    ammo_left = ammo_default
+                                ammo_left = int(ammo_left)
+                                if ammo_left <= 0:
+                                    if ammo_key:
+                                        entry[ammo_key] = max(0, ammo_left)
+                                    att[cid] = entry
+                                    continue
+                                attempts = max(1, min(attempt_cap, ammo_left))
+                                if ammo_key:
+                                    entry[ammo_key] = ammo_left
                             except Exception:
                                 hit_prob = 0.5
                                 attempts = 1
+                                ammo_key = None
+                                ammo_left = attempts
 
                             results: list[dict[str, Any]] = []
                             attempts_used = 0
                             system_offlined = False
                             hermes_hit = False
+                            system_name = None
+                            weapon_display = str(meta.get('primary_weapon') or getattr(c, 'primary_weapon', '') or '')
+                            attacker_name = str(getattr(c, 'name', '') or '')
                             for attempt_idx in range(1, attempts+1):
                                 # Announce enemy attack (fire)
                                 try:
@@ -1868,6 +1917,7 @@ def engine_thread_run(wd) -> None:
                                     'attempt': attempt_idx,
                                     'event': 'hit' if hit else 'miss',
                                     'target': target_name_choice,
+                                    'weapon': weapon_display,
                                 }
                                 results.append(result_entry)
                                 attempts_used += 1
@@ -1896,9 +1946,10 @@ def engine_thread_run(wd) -> None:
                                                 s['timer_s'] = 0
                                                 s['last_damaged_ts'] = now
                                                 s['response_deadline_ts'] = now + 120.0
+                                                system_name = str(s.get('name') or s.get('label') or ENG_SYSTEM_LABELS.get(str(s.get('id') or ''), s.get('id') or 'System'))
+                                                s['name'] = system_name
                                                 save_eng_sys(eng)
                                                 system_offlined = True
-                                                system_name = s.get('name', 'System')
                                                 try:
                                                     _record_event_guard(
                                                         wd,
@@ -1922,7 +1973,7 @@ def engine_thread_run(wd) -> None:
                                                         'duration_ms': 0,
                                                         'request': {
                                                             'contact_id': cid,
-                                                            'contact_name': getattr(c, 'name', ''),
+                                                            'contact_name': attacker_name,
                                                             'range_nm': round(target_dist_nm, 2) if target_dist_nm is not None else None,
                                                             'target': target_name_choice,
                                                             'attack_kind': attack_kind,
@@ -1946,6 +1997,30 @@ def engine_thread_run(wd) -> None:
                                         'attack_kind': attack_kind,
                                     }
                                     _record_event_guard(wd, 'enemy.attack.hit', dict(payload), context={'source': 'enemy_attack', 'contact_id': cid})
+                                    try:
+                                        record_flight({
+                                            'route': '/enemy.attack.hit',
+                                            'method': 'INT',
+                                            'status': 200,
+                                            'duration_ms': 0,
+                                            'request': {
+                                                'contact_id': cid,
+                                                'contact_name': attacker_name,
+                                                'attempt': attempt_idx,
+                                                'target': target_name_choice,
+                                                'attack_kind': attack_kind,
+                                                'range_nm': round(target_dist_nm, 2) if target_dist_nm is not None else None,
+                                                'weapon': weapon_display,
+                                            },
+                                            'response': {
+                                                'result': 'hit',
+                                                'system': system_name,
+                                                'system_offlined': bool(system_offlined),
+                                                'hermes_hit': bool(target_name_choice == 'Hermes' and hermes_hit),
+                                            }
+                                        })
+                                    except Exception:
+                                        pass
                                 else:
                                     payload = {
                                         'contact_id': cid,
@@ -1956,6 +2031,27 @@ def engine_thread_run(wd) -> None:
                                         'attack_kind': attack_kind,
                                     }
                                     _record_event_guard(wd, 'enemy.attack.miss', dict(payload), context={'source': 'enemy_attack', 'contact_id': cid})
+                                    try:
+                                        record_flight({
+                                            'route': '/enemy.attack.miss',
+                                            'method': 'INT',
+                                            'status': 200,
+                                            'duration_ms': 0,
+                                            'request': {
+                                                'contact_id': cid,
+                                                'contact_name': attacker_name,
+                                                'attempt': attempt_idx,
+                                                'target': target_name_choice,
+                                                'attack_kind': attack_kind,
+                                                'range_nm': round(target_dist_nm, 2) if target_dist_nm is not None else None,
+                                                'weapon': weapon_display,
+                                            },
+                                            'response': {
+                                                'result': 'miss'
+                                            }
+                                        })
+                                    except Exception:
+                                        pass
 
                             if results:
                                 try:
@@ -1963,6 +2059,13 @@ def engine_thread_run(wd) -> None:
                                         wd.AUDIO_STATE['enemy_bomb'] = {'ts': time.time(), 'events': results}
                                 except Exception:
                                     pass
+                            if ammo_key:
+                                try:
+                                    current = int(entry.get(ammo_key, ammo_left))
+                                except Exception:
+                                    current = ammo_left
+                                entry[ammo_key] = max(0, current - attempts_used)
+                            att[cid] = entry
                             if any(r.get('event') == 'hit' for r in results):
                                 # Global throttle: at most one enemy-hit side effect per 1.5s
                                 try:
@@ -1970,6 +2073,7 @@ def engine_thread_run(wd) -> None:
                                 except Exception:
                                     last = 0.0
                                 if now - last < 1.5:
+                                    ENEMY_HIT_GUARD['last_ts'] = last
                                     continue
                                 ENEMY_HIT_GUARD['last_ts'] = now
                                 if target_name_choice == 'Sheffield' and system_offlined:
@@ -1982,16 +2086,6 @@ def engine_thread_run(wd) -> None:
                                         trigger_alarm('red-alert.wav', message='Hermes hit! Critical damage reported.', role='Bridge', loop=False)
                                     except Exception:
                                         pass
-                            if 'bomb' in weapon_name:
-                                bombs_left = entry.get('bombs_left', 0)
-                                entry['bombs_left'] = max(0, int(bombs_left) - attempts_used)
-                            elif 'missile' in weapon_name:
-                                missiles_left = entry.get('missiles_left', 0)
-                                entry['missiles_left'] = max(0, int(missiles_left) - attempts_used)
-                            else:
-                                guns_left = entry.get('guns_left', 0)
-                                entry['guns_left'] = max(0, int(guns_left) - attempts_used)
-                            att[cid] = entry
                 except Exception:
                     continue
             try:

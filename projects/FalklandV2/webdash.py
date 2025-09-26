@@ -74,6 +74,7 @@ _bp_safe_register('projects.falklandV2.routes.diag')
 _bp_safe_register('projects.falklandV2.routes.flight')
 _bp_safe_register('projects.falklandV2.routes.eng')
 _bp_safe_register('projects.falklandV2.routes.resupply')
+_bp_safe_register('projects.falklandV2.routes.mission')
 
 # --- Fallbacks for critical routes when a blueprint fails to load ---
 def _ensure_cap_fallbacks():
@@ -120,6 +121,52 @@ def _ensure_cap_fallbacks():
                     else:
                         hx, hy = own_x, own_y
                         hermes_cell = ship_cell_from_state(st)
+                    def _contact_class(contact):
+                        if contact is None:
+                            return None
+                        try:
+                            meta = getattr(contact, 'meta', {}) or {}
+                            if isinstance(meta, dict):
+                                cap_meta = meta.get('cap') or {}
+                                cls = cap_meta.get('class') if isinstance(cap_meta, dict) else None
+                                if not cls:
+                                    cls = meta.get('class') or meta.get('type')
+                                if cls:
+                                    return str(cls).title()
+                        except Exception:
+                            pass
+                        try:
+                            cls = getattr(contact, 'class', None)
+                            if cls:
+                                return str(cls).title()
+                        except Exception:
+                            pass
+                        try:
+                            cls = getattr(contact, 'type', None)
+                            if cls:
+                                return str(cls).title()
+                        except Exception:
+                            pass
+                        try:
+                            name = getattr(contact, 'name', None)
+                            if name:
+                                cls = TARGET_CLASS_BY_NAME.get(str(name))
+                                if cls:
+                                    return str(cls).title()
+                        except Exception:
+                            pass
+                        return None
+                    def _normalize_loadout(value):
+                        if not value:
+                            return ''
+                        v = str(value).strip().lower()
+                        if v in ('aim9','aim-9','sidewinder','missile'):
+                            return 'aim9'
+                        if v in ('bomb','bombs','mk82','iron'):
+                            return 'bombs'
+                        if v == 'auto':
+                            return ''
+                        return ''
                     if tgt is not None:
                         dx = float(getattr(tgt,'x',0.0)) - float(hx)
                         dy = float(getattr(tgt,'y',0.0)) - float(hy)
@@ -133,10 +180,18 @@ def _ensure_cap_fallbacks():
                         dx, dy = float(tx) - float(hx), float(ty) - float(hy)
                         rng_nm = (dx*dx + dy*dy) ** 0.5
                         cell = fallback_cell
-                    try:
-                        loadout = str((data.get('loadout') or 'aim9')).lower()
-                    except Exception:
+                    target_class = _contact_class(tgt)
+                    requested_loadout = _normalize_loadout(data.get('loadout'))
+                    surface_classes = {'Ship', 'Surface', 'Carrier', 'Escort', 'Landing Craft', 'Merchant', 'Convoy'}
+                    air_classes = {'Aircraft', 'Helicopter', 'Missile', 'Bomber', 'Fighter'}
+                    auto_default = 'aim9'
+                    if target_class and target_class in surface_classes:
+                        auto_default = 'bombs'
+                    loadout = requested_loadout or auto_default
+                    if loadout == 'bombs' and target_class and target_class in air_classes:
                         loadout = 'aim9'
+                    elif loadout == 'aim9' and target_class and target_class in surface_classes and not requested_loadout:
+                        loadout = 'bombs'
                     res = CAP.request_cap_to_cell(
                         cell,
                         distance_nm=float(rng_nm),
@@ -146,10 +201,10 @@ def _ensure_cap_fallbacks():
                         loadout=loadout,
                     )
                     status = 200 if res.get('ok') else 400
-                    payload = {"ok": bool(res.get('ok')), "message": res.get('message'), "mission": res.get('mission')}
+                    payload = {"ok": bool(res.get('ok')), "message": res.get('message'), "mission": res.get('mission'), "loadout": loadout, "target_class": target_class}
                     try:
                         record_flight({"route": '/cap/request.fallback', "method": request.method, "status": status,
-                                       "duration_ms": 0, "request": {"cell": cell, "range_nm": round(rng_nm,2)}, "response": payload})
+                                       "duration_ms": 0, "request": {"cell": cell, "range_nm": round(rng_nm,2), "loadout": loadout, "target_class": target_class}, "response": payload})
                     except Exception:
                         pass
                     return jsonify(payload), status
@@ -345,6 +400,7 @@ ship_cell_from_state = core.ship_cell_from_state
 radar_xy_from_state = core.radar_xy_from_state
 cell_to_world = core.cell_to_world
 WORLD_N = core.WORLD_N
+BOARD_N = getattr(core, 'BOARD_N', 26)
 try:
     from projects.falklandV2.grid.config import MASTER_COLS as GRID_COLS, MASTER_ROWS as GRID_ROWS
 except Exception:
@@ -530,6 +586,11 @@ if CAP is not None:
         CAP._event_hook = record_event  # type: ignore[attr-defined]
     except Exception:
         pass
+
+try:
+    RUNTIME.bind_mission_hooks(event_hook=record_event, voice_hook=voice_emit)
+except Exception:
+    pass
 
 # NAV and CAP runtime
 DEFENSE_STATE: Dict[str, Any] = {"chaff_until": 0.0, "turn_until": 0.0}

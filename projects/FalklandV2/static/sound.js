@@ -93,6 +93,7 @@
   const unlockOnce = () => {
     unlocked = true;
     startBridge();
+    drainRadioQueue();
     window.removeEventListener("pointerdown", unlockOnce);
     window.removeEventListener("keydown", unlockOnce);
   };
@@ -110,6 +111,8 @@
   let lastStamp = null;
   let lastResult = null;
   let lastRadio = null;
+  const radioQueue = [];
+  let radioBusy = false;
   let lastAlarm = null;
   let alarmAudio = null;
   let lastCapLaunch = null;
@@ -163,6 +166,21 @@
       try{ el.setAttribute('aria-hidden','true'); el.setAttribute('role','presentation'); el.setAttribute('tabindex','-1'); }catch(_){ }
       el.crossOrigin = 'anonymous';
       const src = (ctx && ctx.createMediaElementSource) ? ctx.createMediaElementSource(el) : null;
+      const finishOnce = (() => {
+        let called = false;
+        return () => {
+          if(called) return;
+          called = true;
+          try {
+            if (opts && typeof opts.onDone === 'function') { opts.onDone(); }
+          } catch (_) {}
+        };
+      })();
+      try {
+        el.addEventListener('ended', finishOnce, { once: true });
+        el.addEventListener('error', finishOnce, { once: true });
+        el.addEventListener('abort', finishOnce, { once: true });
+      } catch (_) {}
       if (!ctx || !src) {
         // Fallback: normal playback
         const targetVol = Math.max(0, Math.min(1, Number((opts&&opts.vol)!=null?opts.vol:0.6)));
@@ -184,7 +202,7 @@
         });
         // Completion callback
         try { if (opts && opts.onEndUrl) { el.addEventListener('ended', ()=>{ try{ fetch(String(opts.onEndUrl), { method:'POST' }); }catch(_){ } }); } } catch(_){}
-        el.play().catch(()=>{});
+        el.play().catch(()=>{ finishOnce(); });
         return;
       }
       // Filters: HPF ~300 Hz, LPF ~3400 Hz, light compression, gain
@@ -214,8 +232,50 @@
         }
       });
       try { if (opts && opts.onEndUrl) { el.addEventListener('ended', ()=>{ try{ fetch(String(opts.onEndUrl), { method:'POST' }); }catch(_){ } }); } } catch(_){}
-      el.play().catch(()=>{});
+      el.play().catch(()=>{ finishOnce(); });
     } catch (_) {}
+  }
+
+  function drainRadioQueue(){
+    if(radioBusy) return;
+    if(!radioQueue.length) return;
+    const item = radioQueue.shift();
+    if(!item){
+      drainRadioQueue();
+      return;
+    }
+    if(!unlocked){
+      radioQueue.unshift(item);
+      return;
+    }
+    if(!item.file){
+      drainRadioQueue();
+      return;
+    }
+    if(_muteAllRadio() || roleMuted(item.role)){
+      drainRadioQueue();
+      return;
+    }
+    radioBusy = true;
+    const durationSec = Math.max(1.0, Number(item.duration) || 2.0);
+    const vol = Number.isFinite(Number(item.vol)) ? Math.max(0, Math.min(1, Number(item.vol))) : 0.8;
+    const fadeOut = Math.max(150, Number(item.fadeOutMs) || 250);
+    setDucking(true, durationSec);
+    playRadio(item.file, {
+      vol,
+      fadeOutMs: fadeOut,
+      onEndUrl: item.onEndUrl,
+      onDone: () => {
+        radioBusy = false;
+        maybeRestoreDuck();
+        drainRadioQueue();
+      }
+    });
+  }
+
+  function enqueueRadioMessage(payload){
+    radioQueue.push(payload);
+    drainRadioQueue();
   }
 
   async function pollLaunchAndPlay() {
@@ -251,18 +311,20 @@
       const rs = j?.audio?.radio;
       if (rs) {
         const ts3 = rs.ts || 0;
-        const durMs = Math.max(200, Math.min(8000, Number(rs.dur||1.2)*1000));
+        const durSec = Math.max(1.8, Math.min(8.0, Number(rs.dur || 1.2)));
         if (!lastRadio || lastRadio.ts !== ts3) {
           const roleLabel = String(rs.role || '').trim();
           lastRadio = { ts: ts3, role: roleLabel };
-          if (!_muteAllRadio() && !roleMuted(roleLabel) && unlocked) {
-            if (rs.file) {
-              // Play synthesized voice via radio filter for realism
-              playRadio(rs.file, {vol: 0.8, fadeOutMs: 250});
-              // Duck SFX while radio speaks, then restore
-              setDucking(true, durMs/1000);
-              setTimeout(()=>{ maybeRestoreDuck(); }, durMs + 300);
-            }
+          if (!_muteAllRadio() && !roleMuted(roleLabel) && rs.file) {
+            enqueueRadioMessage({
+              ts: ts3,
+              role: roleLabel,
+              file: rs.file,
+              duration: durSec,
+              vol: Number((rs && rs.vol)!=null ? rs.vol : 0.8),
+              fadeOutMs: Number((rs && rs.fade_ms)!=null ? rs.fade_ms : 250),
+              onEndUrl: rs.on_end_url || null
+            });
           }
         }
       }
