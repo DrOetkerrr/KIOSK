@@ -378,7 +378,8 @@ class MainWindow(QMainWindow):
         # CAP
         cap = j.get('cap') or {}
         if cap:
-            self.cap_ready.setText(f"CAP READY: {'YES' if cap.get('ready') else 'NO'}  pairs {cap.get('pairs',0)}  cooldown {cap.get('cooldown_s',0)}s  committed {cap.get('committed',0)}")
+            committed_air = cap.get('committed_airframes', cap.get('committed', 0))
+            self.cap_ready.setText(f"CAP READY: {'YES' if cap.get('ready') else 'NO'}  pairs {cap.get('pairs',0)}  cooldown {cap.get('cooldown_s',0)}s  committed {committed_air}")
             self._render_cap_tasks(cap.get('tasks') or [])
         # enable intercept only when we have a top threat id
         try:

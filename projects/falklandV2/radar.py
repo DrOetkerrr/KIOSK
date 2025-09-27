@@ -176,13 +176,23 @@ class Contact:
 
     def tick(self, dt_s: float, own_x: float, own_y: float):
         # Guidance: hostiles gently steer towards own ship; missiles fly straight
+        retreat_heading = None
         if self.allegiance == "Hostile" and str(self.meta.get('kind','')) != 'missile':
-            # gentle steering toward own ship
-            desired = math.degrees(math.atan2(own_x - self.x, -(own_y - self.y))) % 360.0
+            if self.meta.get('retreating'):
+                try:
+                    retreat_heading = float(self.meta.get('retreat_heading', self.course_deg))
+                except Exception:
+                    retreat_heading = self.course_deg
+                desired = retreat_heading
+            else:
+                # gentle steering toward own ship
+                desired = math.degrees(math.atan2(own_x - self.x, -(own_y - self.y))) % 360.0
             turn = (desired - self.course_deg + 540) % 360 - 180
             max_turn_per_s = 5.0 / 60.0  # 5°/min
             turn_clamped = clamp(turn, -max_turn_per_s * dt_s, max_turn_per_s * dt_s)
             self.course_deg = (self.course_deg + turn_clamped) % 360.0
+            if retreat_heading is not None:
+                self.meta['retreat_heading'] = retreat_heading
 
         if self.speed_kts > 0:
             nm = (self.speed_kts * HOSTILE_SPEED_SCALE) * (dt_s / 3600.0)
@@ -202,7 +212,7 @@ class Radar:
             "no_spawn_nm": [15.0, 20.0],
             "surprise_nm": 10.0,
             "offboard_max_nm": 40.0,
-            "max_contacts": 10,
+            "max_contacts": 20,
             "close_threat_nm": 3.0,
             "close_alarm_cooldown_s": 30.0,
             # Probability a normal (non-surprise) spawn is Friendly instead of Hostile
@@ -282,6 +292,11 @@ class Radar:
         # priority + alarms
         self._select_priority(own_x, own_y)
         self._check_close_alarm(own_x, own_y)
+        # morale effects: some Argentine aircraft abort when Harriers are close
+        try:
+            self._apply_harrier_deterrence()
+        except Exception:
+            pass
 
         # cap count
         try:
@@ -289,11 +304,14 @@ class Radar:
         except Exception:
             max_contacts = 10
         if len(self.contacts) > max_contacts:
-            # Preserve CAP contacts; trim others
+            # Preserve CAP contacts; trim others but prioritise hostiles over friendlies
             caps = [c for c in self.contacts if bool(getattr(c, 'meta', {}).get('cap_flight'))]
             others = [c for c in self.contacts if not bool(getattr(c, 'meta', {}).get('cap_flight'))]
+            hostiles = [c for c in others if str(getattr(c, 'allegiance', '')).lower() == 'hostile']
+            non_hostiles = [c for c in others if str(getattr(c, 'allegiance', '')).lower() != 'hostile']
+            ordered = hostiles + non_hostiles
             allow = max(0, max_contacts - len(caps))
-            self.contacts = caps + others[:allow]
+            self.contacts = caps + ordered[:allow]
 
     def scan(self, own_x: float, own_y: float):
         # Scans are observational and decoupled from spawns (spawns are time-based in tick)
@@ -610,6 +628,52 @@ class Radar:
             )
             self.contacts.append(c)
             self._cap_contacts[mid] = cid
+
+    def _apply_harrier_deterrence(self) -> None:
+        harriers = [c for c in self.contacts if str(getattr(c, 'allegiance', '')) == 'Friendly' and bool(getattr(c, 'meta', {}).get('cap_flight'))]
+        if not harriers:
+            return
+        now_ts = time.time()
+        for hostile in self.contacts:
+            try:
+                if str(getattr(hostile, 'allegiance', '')) != 'Hostile':
+                    continue
+                if str(getattr(hostile, 'meta', {}).get('kind', '')) == 'missile':
+                    continue
+                meta = getattr(hostile, 'meta', {})
+                # Allow retreating aircraft to stay disengaged without re-rolling
+                if meta.get('retreating'):
+                    continue
+                nearest = None
+                nearest_nm = None
+                for harrier in harriers:
+                    d = nm_distance(hostile.x, hostile.y, harrier.x, harrier.y)
+                    if nearest_nm is None or d < nearest_nm:
+                        nearest_nm = d
+                        nearest = harrier
+                if nearest is None or nearest_nm is None or nearest_nm > 10.0:
+                    continue
+                if self.rng.random() >= 0.30:
+                    continue
+                hx, hy = nearest.x, nearest.y
+                dx = hostile.x - hx
+                dy = hostile.y - hy
+                if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+                    continue
+                retreat_heading = math.degrees(math.atan2(dx, -dy)) % 360.0
+                hostile.course_deg = retreat_heading
+                meta['retreating'] = True
+                meta['retreat_heading'] = retreat_heading
+                meta['retreat_since'] = now_ts
+                hostile.threat = 'low'
+                hostile.meta = meta
+                if self.rec:
+                    try:
+                        self.rec.log('radar.retreat', {'id': hostile.id, 'name': hostile.name, 'range_nm': round(nearest_nm, 2)})
+                    except Exception:
+                        pass
+            except Exception:
+                continue
 
     def set_manual_lock(self, contact_id: Optional[int]) -> None:
         if contact_id is None:

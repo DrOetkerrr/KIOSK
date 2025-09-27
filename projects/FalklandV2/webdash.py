@@ -247,13 +247,18 @@ def _ensure_cap_fallbacks():
                     follow = None
                     try:
                         f = data.get('follow')
-                        follow = str(f).lower() if f else None
+                        follow = str(f).strip().lower() if f else None
                     except Exception:
                         follow = None
                     try:
-                        loadout = str((data.get('loadout') or 'aim9')).lower()
+                        loadout_raw = str((data.get('loadout') or 'aim9')).lower()
                     except Exception:
+                        loadout_raw = 'aim9'
+                    loadout = 'bombs' if loadout_raw in ('bomb', 'bombs') else 'aim9'
+                    loadout_forced = None
+                    if follow == 'hermes' and loadout != 'aim9':
                         loadout = 'aim9'
+                        loadout_forced = 'hermes_follow'
                     res = CAP.request_cap_to_cell(
                         cell,
                         distance_nm=float(rng_nm),
@@ -265,10 +270,14 @@ def _ensure_cap_fallbacks():
                         follow=follow,
                     )
                     status = 200 if res.get('ok') else 400
-                    payload = {"ok": bool(res.get('ok')), "message": res.get('message'), "mission": res.get('mission')}
+                    mission = res.get('mission') or {}
+                    actual_loadout = str(mission.get('loadout') or loadout)
+                    payload = {"ok": bool(res.get('ok')), "message": res.get('message'), "mission": mission, "loadout": actual_loadout}
+                    if loadout_forced and actual_loadout == 'aim9':
+                        payload['loadout_forced'] = loadout_forced
                     try:
                         record_flight({"route": '/cap/launch_to.fallback', "method": request.method, "status": status,
-                                       "duration_ms": 0, "request": {"cell": cell, "range_nm": round(rng_nm,2)}, "response": payload})
+                                       "duration_ms": 0, "request": {"cell": cell, "range_nm": round(rng_nm,2), "loadout": loadout, "follow": follow}, "response": payload})
                     except Exception:
                         pass
                     return jsonify(payload), status
@@ -380,6 +389,11 @@ def _bind_runtime(rt: GameRuntime) -> None:
     if CAP is not None and callable(hook):
         try:
             CAP._event_hook = hook  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    if CAP is not None and hasattr(CAP, 'bind_voice_hook'):
+        try:
+            CAP.bind_voice_hook(voice_emit)  # type: ignore[attr-defined]
         except Exception:
             pass
     # Provide resupply state to radar for Sea King injection
@@ -584,6 +598,11 @@ def record_event(event_id: str, data: Dict[str, Any] | None = None, *, text: str
 if CAP is not None:
     try:
         CAP._event_hook = record_event  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        if hasattr(CAP, 'bind_voice_hook'):
+            CAP.bind_voice_hook(voice_emit)  # type: ignore[attr-defined]
     except Exception:
         pass
 

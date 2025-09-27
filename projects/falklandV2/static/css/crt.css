@@ -47,7 +47,7 @@ body{
 .toggle-btn{text-transform:uppercase;min-width:70px;letter-spacing:1px}
 .toggle-btn.on{background:#11441e;border-color:#1aa357;color:var(--accent)}
 .toggle-btn.pending{background:#3a2c10;border-color:#a67c1a;color:#ffe16a}
-.panel{padding:10px}
+.panel{padding:10px;height:100%;overflow-y:auto;box-sizing:border-box}
 .station-controls{display:flex;justify-content:flex-end;align-items:center;margin-bottom:8px}
 .btn.mute-btn{min-width:90px;font-size:11px;letter-spacing:1px}
 .btn.mute-btn.muted{background:#3a2c10;border-color:#a67c1a;color:#ffe16a}
@@ -70,6 +70,7 @@ tbody tr td:last-child{border-top-right-radius:6px;border-bottom-right-radius:6p
 .section{margin-bottom:10px}
 .input{padding:8px;border-radius:6px;border:1px solid var(--border);background:#020d03;color:var(--accent);box-shadow:inset 0 0 6px rgba(0,0,0,0.7)}
 .input::placeholder{color:rgba(92,255,191,0.4)}
+.input.input-locked{opacity:0.55}
 .badge{padding:3px 8px;border-radius:6px;border:1px solid var(--border);background:#021806;color:var(--accent);text-shadow:0 0 6px rgba(92,255,191,0.35)}
 .tag{display:inline-block;padding:2px 6px;border-radius:6px;background:#031609;border:1px solid var(--border);box-shadow:0 0 10px rgba(0,0,0,0.5)}
 .tag.green{background:#063815;border-color:#1aa357;color:var(--accent)}

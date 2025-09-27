@@ -585,15 +585,20 @@ def cap_launch_to():
         if sm is None: sm = 10
         if rm is None: rm = 10
         try:
-            loadout = str((data.get('loadout') or 'aim9')).lower()
+            loadout_raw = str((data.get('loadout') or 'aim9')).lower()
         except Exception:
-            loadout = 'aim9'
+            loadout_raw = 'aim9'
+        loadout = 'bombs' if loadout_raw in ('bomb', 'bombs') else 'aim9'
         follow = None
         try:
             f = data.get('follow')
-            follow = str(f).lower() if f else None
+            follow = str(f).strip().lower() if f else None
         except Exception:
             follow = None
+        loadout_forced = None
+        if follow == 'hermes' and loadout != 'aim9':
+            loadout = 'aim9'
+            loadout_forced = 'hermes_follow'
         res = L['CAP'].request_cap_to_cell(
             cell,
             distance_nm=float(rng_nm),
@@ -605,7 +610,11 @@ def cap_launch_to():
             follow=follow,
         )
         status = 200 if res.get("ok") else 400
-        payload = {"ok": bool(res.get("ok")), "message": res.get("message"), "mission": res.get("mission")}
+        mission = res.get('mission') or {}
+        actual_loadout = str(mission.get('loadout') or loadout)
+        payload = {"ok": bool(res.get("ok")), "message": res.get("message"), "mission": mission, "loadout": actual_loadout}
+        if loadout_forced and actual_loadout == 'aim9':
+            payload['loadout_forced'] = loadout_forced
         if res.get('ok'):
             try:
                 L['stamp_cap_launch']()
@@ -616,7 +625,7 @@ def cap_launch_to():
             except Exception:
                 pass
             try:
-                L['record_event']('cap.launch', {'cell': cell})
+                L['record_event']('cap.launch', {'cell': cell, 'loadout': actual_loadout, 'follow': follow})
             except Exception:
                 pass
             try:
@@ -634,7 +643,8 @@ def cap_launch_to():
                 pass
         L['record_flight']({"route": route, "method": request.method, "status": status,
                            "duration_ms": int((time.time()-t0)*1000),
-                           "request": {"cell": cell, "range_nm": round(rng_nm, 2)}, "response": payload})
+                           "request": {"cell": cell, "range_nm": round(rng_nm, 2), "loadout": loadout, "follow": follow},
+                           "response": payload})
         return jsonify(payload), status
     except Exception as e:
         logging.exception("/cap/launch_to error: %s", e)

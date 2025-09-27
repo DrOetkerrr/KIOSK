@@ -16,7 +16,8 @@
       "status": "OK",
       "timer_s": 0,
       "team_assigned": false,
-      "last_damaged_ts": 0.0
+      "last_damaged_ts": 0.0,
+      "response_deadline_ts": 0.0
     },
     {
       "id": "FireControl_Weapons",
@@ -24,7 +25,8 @@
       "status": "OK",
       "timer_s": 0,
       "team_assigned": false,
-      "last_damaged_ts": 0.0
+      "last_damaged_ts": 0.0,
+      "response_deadline_ts": 0.0
     },
     {
       "id": "COMMS",

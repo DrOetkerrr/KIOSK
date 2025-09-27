@@ -715,6 +715,9 @@ VOICE_EVENTS_DEFAULT: Dict[str, Dict[str, Any]] = {
     "pilot.intercept.launch": {"role": "Pilot", "intent": "Acknowledge Hermes for intercept", "hint": "Hermes, intercept bogey, vector to {cell}."},
     "pilot.fox2": {"role":"Pilot","intent":"Missile fired","hint":"Fox Two!"},
     "pilot.splash": {"role":"Pilot","intent":"Kill confirm","hint":"Splash one bandit."},
+    "pilot.bombsaway": {"role":"Pilot","intent":"Bomb release","hint":"Bombs away on {target}!"},
+    "pilot.target_hit": {"role":"Pilot","intent":"Bomb impact","hint":"Target {target} hit!"},
+    "pilot.target_miss": {"role":"Pilot","intent":"Bomb impact","hint":"Negative impact, {target} still standing."},
     # Invariant guard: consistency suite — voice event for re-vectoring
     "pilot.vector": {"role":"Pilot","intent":"Vector to new target","hint":"Vectoring to {cell}."},
     "radar.scan.start": {"role":"Radar","intent":"Acknowledge scanning","hint":"Captain, scanning radar."},
@@ -1195,6 +1198,38 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
         snap = wd.CAP.snapshot()
         r = snap.get('readiness') or {}
         missions = list(snap.get('missions') or [])
+        cap_obj = getattr(wd, 'CAP', None)
+        cfg = getattr(cap_obj, 'cfg', {}) if cap_obj is not None else {}
+        try:
+            pair_size = int((cfg.get('default_pair_size') or 2) or 2)
+        except Exception:
+            pair_size = 2
+        if pair_size <= 0:
+            pair_size = 2
+        try:
+            aim9_cfg = ((cfg.get('weapons') or {}).get('aim9') or {})
+        except Exception:
+            aim9_cfg = {}
+        try:
+            missiles_per_pair = int(aim9_cfg.get('missiles_total', 4) or 0)
+        except Exception:
+            missiles_per_pair = 0
+        if missiles_per_pair <= 0:
+            missiles_per_pair = 4 if pair_size <= 2 else pair_size * 2
+        missiles_per_airframe = float(missiles_per_pair) / float(pair_size) if pair_size > 0 else float(missiles_per_pair)
+        try:
+            airframes_available = int(getattr(cap_obj, 'airframe_pool_total', 0) or 0) if cap_obj is not None else 0
+        except Exception:
+            airframes_available = 0
+        sidewinders_pool = max(0.0, missiles_per_airframe * max(0, airframes_available))
+        sidewinders_committed = 0.0
+        sidewinders_inventory = None
+        try:
+            inv = aim9_cfg.get('inventory_total')
+            if inv is not None:
+                sidewinders_inventory = int(inv)
+        except Exception:
+            sidewinders_inventory = None
         try:
             st = wd.ENG.public_state() if hasattr(wd.ENG, 'public_state') else {}
             own_x, own_y = wd.get_own_xy(st)
@@ -1219,6 +1254,10 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
         for m in missions:
             try:
                 mid = int(m.get('id'))
+                status = str(m.get('status') or '')
+                status_lc = status.lower()
+                loadout_value = m.get('loadout')
+                loadout_lower = str(loadout_value or '').lower()
                 meta_rec = meta_all.get(mid) if isinstance(meta_all, dict) else None
                 origin_cell = str(m.get('origin_cell') or (meta_rec or {}).get('origin_cell') or '')
                 target_cell_raw = str((meta_rec or {}).get('target_cell') or m.get('target_cell') or '')
@@ -1270,6 +1309,14 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
                     dx = float(tx) - float(own_x)
                     dy = float(ty) - float(own_y)
                     rng = math.hypot(dx, dy)
+
+                if loadout_lower == 'aim9' and status_lc in ('queued', 'airborne', 'onstation', 'rtb', 'recovering'):
+                    try:
+                        missiles_left_val = float(m.get('missiles_left') or 0)
+                    except Exception:
+                        missiles_left_val = 0.0
+                    if missiles_left_val > 0:
+                        sidewinders_committed += missiles_left_val
 
                 # Predictive helpers relative to CAP station center
                 fox2_eta_s = None
@@ -1338,18 +1385,17 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
                     except Exception:
                         recommendation = None
                 ts = (m.get('timestamps') or {})
-                status = str(m.get('status') or '')
                 tot_s = None
                 try:
                     eta_on = ts.get('eta_onstation')
-                    if isinstance(eta_on, (int, float)) and status in ('queued','airborne'):
+                    if isinstance(eta_on, (int, float)) and status_lc in ('queued','airborne'):
                         tot_s = max(0, int(eta_on - now))
                 except Exception:
                     tot_s = None
                 tos_s = None
                 try:
                     etd_rtb = ts.get('etd_rtb')
-                    if isinstance(etd_rtb, (int, float)) and status == 'onstation':
+                    if isinstance(etd_rtb, (int, float)) and status_lc == 'onstation':
                         tos_s = max(0, int(etd_rtb - now))
                 except Exception:
                     tos_s = None
@@ -1362,7 +1408,7 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
                     target_label = target_cell_disp
                 tasks.append({
                     "n": mid,
-                    "loadout": m.get('loadout'),
+                    "loadout": loadout_value,
                     "follow": m.get('follow'),
                     "cur_cell": pos_cell or '—',
                     "origin_cell": origin_cell or (meta_rec or {}).get('origin_cell') or '',
@@ -1387,9 +1433,44 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
             except Exception:
                 continue
         committed = len([t for t in tasks if t.get('status') in ('queued','airborne','onstation','rtb','recovering')])
-        return {"ready": bool(r.get('available', False)), "pairs": int(r.get('ready_pairs', 0) or 0), "airframes": int(r.get('airframes', 0) or 0), "cooldown_s": int(r.get('cooldown_s', 0) or 0), "committed": int(committed), "tasks": tasks}
+        committed_pairs = int(committed)
+        committed_airframes = int(round(max(0.0, float(committed_pairs) * float(pair_size))))
+        total_sidewinders = max(0.0, sidewinders_pool + sidewinders_committed)
+        if sidewinders_inventory is not None:
+            try:
+                total_sidewinders = min(total_sidewinders, float(sidewinders_inventory))
+            except Exception:
+                pass
+        payload = {
+            "ready": bool(r.get('available', False)),
+            "pairs": int(r.get('ready_pairs', 0) or 0),
+            "airframes": int(r.get('airframes', 0) or 0),
+            "cooldown_s": int(r.get('cooldown_s', 0) or 0),
+            "committed": committed_pairs,
+            "tasks": tasks,
+            "committed_pairs": committed_pairs,
+            "committed_airframes": committed_airframes,
+            "sidewinders_pool": int(round(max(0.0, sidewinders_pool))),
+            "sidewinders_committed": int(round(max(0.0, sidewinders_committed))),
+            "sidewinders": int(round(total_sidewinders)),
+            "pair_size": pair_size,
+        }
+        return payload
     except Exception:
-        return {"ready": False, "pairs": 0, "airframes": 0, "cooldown_s": 0, "committed": 0, "tasks": []}
+        return {
+            "ready": False,
+            "pairs": 0,
+            "airframes": 0,
+            "cooldown_s": 0,
+            "committed": 0,
+            "tasks": [],
+            "committed_pairs": 0,
+            "committed_airframes": 0,
+            "sidewinders_pool": 0,
+            "sidewinders_committed": 0,
+            "sidewinders": 0,
+            "pair_size": 2,
+        }
 
 
 def get_tick_seconds(wd) -> float:
@@ -1747,6 +1828,9 @@ def engine_thread_run(wd) -> None:
                 try:
                     if str(getattr(c,'allegiance','')) != 'Hostile':
                         continue
+                    meta = getattr(c, 'meta', {}) or {}
+                    if meta.get('retreating'):
+                        continue
                     dist_ship_raw = ((c.x-ox)**2 + (c.y-oy)**2) ** 0.5
                     dist_herm_raw = None
                     if herm_x is not None and herm_y is not None:
@@ -1878,8 +1962,10 @@ def engine_thread_run(wd) -> None:
                             system_offlined = False
                             hermes_hit = False
                             system_name = None
-                            weapon_display = str(meta.get('primary_weapon') or getattr(c, 'primary_weapon', '') or '')
-                            attacker_name = str(getattr(c, 'name', '') or '')
+                            weapon_display = str(meta.get('primary_weapon') or getattr(c, 'primary_weapon', '') or '').strip()
+                            if not weapon_display:
+                                weapon_display = attack_kind.title()
+                            attacker_name = str(getattr(c, 'name', '') or '').strip() or 'Hostile'
                             for attempt_idx in range(1, attempts+1):
                                 # Announce enemy attack (fire)
                                 try:
@@ -1888,7 +1974,8 @@ def engine_thread_run(wd) -> None:
                                         'enemy.attack.fire',
                                         {
                                             'contact_id': cid,
-                                            'name': getattr(c, 'name', ''),
+                                            'name': attacker_name,
+                                            'weapon': weapon_display,
                                             'range_nm': round(target_dist_nm, 2) if target_dist_nm is not None else None,
                                             'attempt': attempt_idx,
                                             'target': target_name_choice,
@@ -1899,19 +1986,20 @@ def engine_thread_run(wd) -> None:
                                 except Exception:
                                     pass
                                 # Spawn a transient hostile missile contact so UI shows incoming even if shooter drops
-                                try:
-                                    from ..radar import Contact, WORLD_N  # late import
-                                    ttl = now + 20.0
-                                    meta = {'kind': 'missile', 'ttl_ts': ttl}
-                                    next_id = getattr(wd.RADAR, "_next_id", len(getattr(wd.RADAR,'contacts',[]) or []) + 1)
-                                    mc = Contact(id=int(next_id), name='Incoming weapon', allegiance='Hostile', x=float(getattr(c,'x',ox)), y=float(getattr(c,'y',oy)), course_deg=float(getattr(c,'course_deg',0.0)), speed_kts=450.0, threat='high', meta=meta)
+                                if attack_kind == 'missile':
                                     try:
-                                        wd.RADAR._next_id = int(next_id) + 1  # type: ignore[attr-defined]
+                                        from ..radar import Contact, WORLD_N  # late import
+                                        ttl = now + 20.0
+                                        meta = {'kind': 'missile', 'ttl_ts': ttl}
+                                        next_id = getattr(wd.RADAR, "_next_id", len(getattr(wd.RADAR,'contacts',[]) or []) + 1)
+                                        mc = Contact(id=int(next_id), name='Incoming weapon', allegiance='Hostile', x=float(getattr(c,'x',ox)), y=float(getattr(c,'y',oy)), course_deg=float(getattr(c,'course_deg',0.0)), speed_kts=450.0, threat='high', meta=meta)
+                                        try:
+                                            wd.RADAR._next_id = int(next_id) + 1  # type: ignore[attr-defined]
+                                        except Exception:
+                                            pass
+                                        wd.RADAR.contacts.append(mc)
                                     except Exception:
                                         pass
-                                    wd.RADAR.contacts.append(mc)
-                                except Exception:
-                                    pass
                                 hit = (_rand.random() < hit_prob)
                                 result_entry = {
                                     'attempt': attempt_idx,
@@ -1972,11 +2060,12 @@ def engine_thread_run(wd) -> None:
                                                         'status': 200,
                                                         'duration_ms': 0,
                                                         'request': {
-                                                            'contact_id': cid,
-                                                            'contact_name': attacker_name,
-                                                            'range_nm': round(target_dist_nm, 2) if target_dist_nm is not None else None,
-                                                            'target': target_name_choice,
-                                                            'attack_kind': attack_kind,
+                                            'contact_id': cid,
+                                            'contact_name': attacker_name,
+                                            'range_nm': round(target_dist_nm, 2) if target_dist_nm is not None else None,
+                                            'target': target_name_choice,
+                                            'attack_kind': attack_kind,
+                                            'weapon': weapon_display,
                                                         },
                                                         'response': {
                                                             'system': system_name,
@@ -1990,7 +2079,8 @@ def engine_thread_run(wd) -> None:
                                             pass
                                     payload = {
                                         'contact_id': cid,
-                                        'name': getattr(c, 'name', ''),
+                                        'name': attacker_name,
+                                        'weapon': weapon_display,
                                         'range_nm': round(target_dist_nm, 2) if target_dist_nm is not None else None,
                                         'attempt': attempt_idx,
                                         'target': target_name_choice,
@@ -2024,7 +2114,8 @@ def engine_thread_run(wd) -> None:
                                 else:
                                     payload = {
                                         'contact_id': cid,
-                                        'name': getattr(c, 'name', ''),
+                                        'name': attacker_name,
+                                        'weapon': weapon_display,
                                         'range_nm': round(target_dist_nm, 2) if target_dist_nm is not None else None,
                                         'attempt': attempt_idx,
                                         'target': target_name_choice,

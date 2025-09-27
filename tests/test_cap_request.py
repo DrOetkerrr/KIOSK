@@ -201,6 +201,42 @@ class _StubCAPLaunch(_StubCAP):
         self.last_permission = (mission_id, authorized)
 
 
+class _StubCAPLaunchWithBombs(_StubCAPLaunch):
+    def __init__(self, *, mission_id: int = 4, base_now: float | None = None) -> None:
+        super().__init__(mission_id=mission_id)
+        base = base_now if base_now is not None else time.time()
+        self.bombs_mission = _StubMission(
+            mission_id=99,
+            target_cell="H26",
+            status="airborne",
+            base_now=base,
+            kind="cap",
+            loadout="bombs",
+        )
+        self.bombs_mission.loadout = "bombs"
+        self.missions = [self.bombs_mission]
+
+    def snapshot(self) -> Dict[str, Any]:
+        m = self.bombs_mission
+        return {
+            "missions": [
+                {
+                    "id": m.id,
+                    "status": m.status,
+                    "loadout": m.loadout,
+                    "kind": m.kind,
+                    "missiles_left": m.missiles_left,
+                    "target_cell": m.target_cell,
+                    "timestamps": dict(m.ts),
+                    "outbound_s": m.outbound_s,
+                    "deck_cycle_s": m.deck_cycle_s,
+                    "intercept_speed_kts": m.intercept_speed_kts,
+                    "cruise_speed_kts": m.cruise_speed_kts,
+                }
+            ]
+        }
+
+
 def test_cap_request_launches_new_pair_with_voice(monkeypatch: pytest.MonkeyPatch) -> None:
     from projects.falklandV2.routes import cap
 
@@ -248,6 +284,47 @@ def test_cap_request_launches_new_pair_with_voice(monkeypatch: pytest.MonkeyPatc
     events = [evt for (evt, _payload, _kw) in voice_calls]
     assert 'pilot.intercept.launch' in events
     assert 'pilot.cap.launch' in events
+
+
+def test_cap_request_avoids_vectoring_bomb_loadout(monkeypatch: pytest.MonkeyPatch) -> None:
+    from projects.falklandV2.routes import cap
+
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+
+    base_now = time.time()
+    bombs_stub = _StubCAPLaunchWithBombs(base_now=base_now)
+    target = _Target(id=7, x=12.0, y=0.0, speed_kts=250.0, course_deg=270.0)
+
+    launch_events: List[Dict[str, Any]] = []
+
+    def _record_event(*args: Any, **kwargs: Any) -> None:
+        launch_events.append({"args": args, "kwargs": kwargs})
+
+    lazy_payload = _make_lazy_payload(
+        bombs_stub,
+        bombs_stub.bombs_mission,
+        target,
+        record_event=_record_event,
+        stamp_cap_launch=lambda *a, **k: None,
+    )
+
+    monkeypatch.setattr(cap, "_lazy", lambda: lazy_payload)
+
+    with app.test_request_context("/cap/request", method="POST", json={"id": target.id}):
+        resp = cap.cap_request()
+
+    resp_obj, status = _unwrap_response(resp)
+    assert status == 200
+    data = resp_obj.get_json()
+    assert data["ok"] is True
+    assert data["loadout"] == "aim9"
+
+    assert len(bombs_stub.launch_calls) == 1
+    assert bombs_stub.launch_calls[0]["kwargs"]["loadout"] == "aim9"
+
+    # Ensure no vector call altered the existing bombs mission
+    assert bombs_stub.bombs_mission.target_cell == "H26"
 def _unwrap_response(resp: Any):
     if isinstance(resp, tuple):
         response_obj = resp[0]

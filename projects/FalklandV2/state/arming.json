@@ -6,7 +6,7 @@
   "Sea Dart SAM": {
     "armed": true,
     "arming_until": 0,
-    "cooldown_until": 1758888228.013003
+    "cooldown_until": 1758910361.7100182
   },
   "20mm GAM-BO1 (twin)": {
     "armed": false,
@@ -17,7 +17,13 @@
     "arming_until": 0
   },
   "4.5 inch Mk.8 gun": {
-    "armed": false,
-    "arming_until": 0
+    "armed": true,
+    "arming_until": 0,
+    "cooldown_until": 1758910181.479408
+  },
+  "Corvus chaff": {
+    "armed": true,
+    "arming_until": 0,
+    "cooldown_until": 1758910177.001127
   }
 }

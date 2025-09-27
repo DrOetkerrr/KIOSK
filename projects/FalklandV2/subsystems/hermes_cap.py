@@ -33,6 +33,31 @@ def _interp(x: float, pts: List[Tuple[float, float]]) -> float:
             return _lerp(y0, y1, t)
     return pts[-1][1]
 
+_SURFACE_CLASS_HINTS = {
+    'ship', 'surface', 'carrier', 'escort', 'merchant', 'convoy', 'landing',
+    'frigate', 'destroyer', 'sub', 'submarine', 'boat', 'tanker', 'transport',
+    'freighter', 'hms', 'ara', 'vessel'
+}
+
+def _is_surface_class(label: Any) -> bool:
+    try:
+        value = str(label or '').strip().lower()
+    except Exception:
+        value = ''
+    if not value:
+        return False
+    return any(hint in value for hint in _SURFACE_CLASS_HINTS)
+
+
+def _is_air_class(label: Any) -> bool:
+    try:
+        value = str(label or '').strip().lower()
+    except Exception:
+        value = ''
+    if not value:
+        return True
+    return not _is_surface_class(value)
+
 class CAPMission:
     """State machine: queued -> airborne -> onstation -> rtb -> recovering -> complete."""
     def __init__(self, mission_id: int, target_cell: str, cfg: Dict[str, Any], *, now: float, distance_nm: float,
@@ -188,6 +213,7 @@ class HermesCAP:
         # Runtime hooks
         self._target_resolver = None  # type: ignore
         self._hit_callback = None  # type: ignore
+        self._voice_hook = None  # type: ignore
         # Optional target resolver and hit callback injected by runtime
         self._target_resolver = None  # type: ignore
         self._hit_callback = None  # type: ignore
@@ -205,6 +231,16 @@ class HermesCAP:
 
     def bind_hit_callback(self, fn) -> None:
         self._hit_callback = fn
+
+    def bind_voice_hook(self, fn) -> None:
+        self._voice_hook = fn
+
+    def _pilot_call(self, event_id: str, data: Dict[str, Any] | None = None) -> None:
+        if callable(self._voice_hook):
+            try:
+                self._voice_hook(event_id, data or {})
+            except Exception:
+                pass
 
     # ---------- permission/meta helpers
     def bind_permission_meta(self, meta: Dict[int, Dict[str, Any]]) -> None:
@@ -346,13 +382,23 @@ class HermesCAP:
         if len(active_pairs) >= self.max_pairs_on_task and mission_kind != 'intercept':
             return {"ok": False, "message": "Max CAP stations active"}
 
+        follow_norm = None
+        if isinstance(follow, str):
+            follow_norm = follow.strip().lower()
+            if not follow_norm:
+                follow_norm = None
+
+        loadout_norm = 'bombs' if str(loadout).lower() in ('bomb', 'bombs') else 'aim9'
+        if follow_norm == 'hermes' and loadout_norm != 'aim9':
+            loadout_norm = 'aim9'
+
         m = CAPMission(self._next_id, target_cell, self.cfg, now=t, distance_nm=float(distance_nm),
                        onstation_min=(float(station_minutes) if station_minutes is not None else None),
                        station_radius_nm=(float(radius_nm) if radius_nm is not None else None),
                        origin_xy=origin_xy, origin_cell=origin_cell,
                        kind=mission_kind,
-                       loadout=loadout,
-                       follow=follow,
+                       loadout=loadout_norm,
+                       follow=follow_norm,
                        intercept_speed_kts=self.intercept_speed_kts if mission_kind == 'intercept' else None,
                        intercept_target_kts=self.intercept_target_kts if mission_kind == 'intercept' else None,
                        intercept_deck_cycle_s=self.intercept_deck_cycle_s if mission_kind == 'intercept' else None)
@@ -370,7 +416,7 @@ class HermesCAP:
             m.ts['eta_onstation'] = t + m.outbound_s
         except Exception:
             m.ts['eta_onstation'] = t + 1.0
-        dest = target_cell if not follow else f"follow:{follow}"
+        dest = target_cell if not follow_norm else f"follow:{follow_norm}"
         return {"ok": True, "message": f"Hermes: CAP pair launching to {dest}", "mission": m.to_dict()}
 
     def tick(self, now: Optional[float] = None) -> None:
@@ -464,10 +510,17 @@ class HermesCAP:
 
         load = getattr(m, 'loadout', 'aim9')
         weapon_label = 'AIM-9' if load == 'aim9' else 'Bomb'
+        target_label = target_name or getattr(m, 'target_cell', '') or 'Target'
 
         if load == 'aim9':
-            if target_class and target_class not in ('Aircraft', 'Helicopter'):
-                self._emit_event('cap.engage.denied', {'mission_id': m.id, 'target_id': locked_target_id, 'reason': 'wrong_payload', 'loadout': load})
+            if target_class and not _is_air_class(target_class):
+                self._emit_event('cap.engage.denied', {
+                    'mission_id': m.id,
+                    'target_id': locked_target_id,
+                    'reason': 'wrong_payload',
+                    'loadout': load,
+                    'target_class': target_class,
+                })
                 m.last_engagement_s = t
                 return None
             if not (self.sw_min_nm <= float(distance_nm) <= self.sw_max_nm):
@@ -476,6 +529,7 @@ class HermesCAP:
             hit1 = random.random() < pk
             m.missiles_left = max(0, m.missiles_left - 1)
             self._emit_event('cap.weapon.fire', {'mission_id': m.id, 'weapon': weapon_label, 'shot': 1, 'target_id': locked_target_id, 'range_nm': float(distance_nm)})
+            self._pilot_call('pilot.fox2', {'target': target_label, 'mission_id': m.id, 'shot': 1})
             self._emit_event('cap.weapon.hit' if hit1 else 'cap.weapon.miss', {'mission_id': m.id, 'weapon': weapon_label, 'shot': 1, 'target_id': locked_target_id})
             if hit1 and callable(self._hit_callback):
                 try:
@@ -483,27 +537,39 @@ class HermesCAP:
                 except Exception:
                     pass
             result = {"when": t, "target_id": int(locked_target_id), "range_nm": float(distance_nm), "pk": round(pk, 2), "shots": 1, "hit": hit1}
+            if hit1:
+                self._pilot_call('pilot.splash', {'target': target_label, 'mission_id': m.id})
             if (not hit1) and m.missiles_left > 0:
                 hit2 = random.random() < pk
                 m.missiles_left = max(0, m.missiles_left - 1)
                 result.update({"shots": 2, "hit": hit2, "second_fired": True})
                 self._emit_event('cap.weapon.fire', {'mission_id': m.id, 'weapon': weapon_label, 'shot': 2, 'target_id': locked_target_id, 'range_nm': float(distance_nm)})
+                self._pilot_call('pilot.fox2', {'target': target_label, 'mission_id': m.id, 'shot': 2})
                 self._emit_event('cap.weapon.hit' if hit2 else 'cap.weapon.miss', {'mission_id': m.id, 'weapon': weapon_label, 'shot': 2, 'target_id': locked_target_id})
                 if hit2 and callable(self._hit_callback):
                     try:
                         self._hit_callback(int(locked_target_id), target_name or '', target_class or '')
                     except Exception:
                         pass
+                if hit2:
+                    self._pilot_call('pilot.splash', {'target': target_label, 'mission_id': m.id})
         else:
             # Bombs
-            if target_class and target_class not in ('Ship',):
-                self._emit_event('cap.engage.denied', {'mission_id': m.id, 'target_id': locked_target_id, 'reason': 'wrong_payload', 'loadout': load})
+            if target_class and not _is_surface_class(target_class):
+                self._emit_event('cap.engage.denied', {
+                    'mission_id': m.id,
+                    'target_id': locked_target_id,
+                    'reason': 'wrong_payload',
+                    'loadout': load,
+                    'target_class': target_class,
+                })
                 m.last_engagement_s = t
                 return None
             if float(distance_nm) > 1.0:
                 return None
             m.missiles_left = max(0, m.missiles_left - 1)
             self._emit_event('cap.weapon.fire', {'mission_id': m.id, 'weapon': weapon_label, 'shot': 1, 'target_id': locked_target_id, 'range_nm': float(distance_nm)})
+            self._pilot_call('pilot.bombsaway', {'target': target_label, 'mission_id': m.id})
             self._emit_event('cap.weapon.hit', {'mission_id': m.id, 'weapon': weapon_label, 'shot': 1, 'target_id': locked_target_id})
             if callable(self._hit_callback):
                 try:
@@ -514,6 +580,9 @@ class HermesCAP:
 
         m.last_engagement = result
         m.last_engagement_s = t
+        if load != 'aim9':
+            event_id = 'pilot.target_hit' if result.get('hit') else 'pilot.target_miss'
+            self._pilot_call(event_id, {'target': target_label, 'mission_id': m.id})
         try:
             if int(getattr(m, 'missiles_left', 0) or 0) <= 0:
                 self._emit_event('cap.mission.rtb', {'mission_id': m.id, 'reason': 'winchester'})

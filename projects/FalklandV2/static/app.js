@@ -148,7 +148,7 @@ function renderCAP(cap){
     head.append(
       badge(cap.ready?'READY':'NOT READY', cap.ready?'badge ok':'badge warn'),
       badge(`pairs ${cap.pairs??0}`), badge(`airframes ${cap.airframes??0}`),
-      badge(`cooldown ${cap.cooldown_s??0}s`), badge(`committed ${cap.committed??0}`)
+      badge(`cooldown ${cap.cooldown_s??0}s`), badge(`committed airframes ${cap.committed_airframes ?? cap.committed ?? 0}`)
     );
   }
   if(!body) return;

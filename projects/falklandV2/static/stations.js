@@ -431,7 +431,10 @@ function renderRADAR(j){
   thead.appendChild(trh); tbl.appendChild(thead);
 
   const tb=document.createElement('tbody');
-  const list = contacts.sort(function(a,b){ return (a.range_nm||1e9)-(b.range_nm||1e9); });
+  const list = contacts
+    .slice()
+    .sort(function(a,b){ return (a.range_nm||1e9)-(b.range_nm||1e9); })
+    .slice(0,10);
   const lockContact = async (id)=>{ if(id===undefined||id===null) return; await fetch('/api/command?cmd='+encodeURIComponent(`/radar lock ${id}`)); await poll().catch(()=>{}); };
   list.forEach(function(c, idx){
     const tr=document.createElement('tr');
@@ -946,10 +949,53 @@ function renderRADIO(j){
   const readyPairsNum = Number(readyPairs || 0);
   const airframesNum = Number(airframes || 0);
   const hasCooldown = Number(cooldownRaw || 0) > 0;
-  const sidewindersCount = Number(cap.sidewinders!=null ? cap.sidewinders : (cap.ammo!=null ? cap.ammo : 0));
+  const sidewindersCount = (function(){
+    if(cap && cap.sidewinders!=null){
+      const val = Number(cap.sidewinders);
+      return Number.isFinite(val)? val : 0;
+    }
+    const pool = Number(cap && cap.sidewinders_pool != null ? cap.sidewinders_pool : NaN);
+    const committed = Number(cap && cap.sidewinders_committed != null ? cap.sidewinders_committed : NaN);
+    if(Number.isFinite(pool) || Number.isFinite(committed)){
+      const p = Number.isFinite(pool)? pool : 0;
+      const c = Number.isFinite(committed)? committed : 0;
+      return p + c;
+    }
+    if(Array.isArray(tasks)){
+      return tasks.reduce(function(sum, t){
+        if(!t) return sum;
+        const loadout = String(t.loadout || '').toLowerCase();
+        if(loadout !== 'aim9') return sum;
+        const status = String(t.status || '').toLowerCase();
+        if(!['queued','airborne','onstation','rtb','recovering'].includes(status)) return sum;
+        const left = Number(t.missiles_left != null ? t.missiles_left : 0);
+        return sum + (Number.isFinite(left) ? Math.max(0, left) : 0);
+      }, 0);
+    }
+    return 0;
+  })();
   const committedCount = (function(){
-    if(cap && cap.committed!=null) return Number(cap.committed);
-    return Array.isArray(tasks)? tasks.length : 0;
+    if(cap && cap.committed_airframes!=null){
+      const val = Number(cap.committed_airframes);
+      if(Number.isFinite(val)) return val;
+    }
+    if(cap && cap.committed!=null){
+      const pairs = Number(cap.committed);
+      if(Number.isFinite(pairs)){
+        const basePairSize = Number(cap.pair_size || 2);
+        const size = Number.isFinite(basePairSize) && basePairSize > 0 ? basePairSize : 2;
+        return pairs * size;
+      }
+    }
+    if(Array.isArray(tasks)){
+      const active = tasks.filter(function(t){
+        if(!t) return false;
+        const status = String(t.status || '').toLowerCase();
+        return ['queued','airborne','onstation','rtb','recovering'].includes(status);
+      }).length;
+      return active * 2;
+    }
+    return 0;
   })();
 
   const readyTag=document.createElement('span');
@@ -959,9 +1005,9 @@ function renderRADIO(j){
   const summaryItems=[
     `pairs: ${readyPairsNum}`,
     `airframes: ${airframesNum}`,
-    `sidewinders: ${sidewindersCount}`,
+    `sidewinders: ${Math.max(0, Math.round(sidewindersCount))}`,
     `cooldown: ${hasCooldown ? fmtDuration(cooldownRaw) : '0s'}`,
-    `committed: ${committedCount}`
+    `committed airframes: ${Math.max(0, Math.round(committedCount))}`
   ];
   summaryItems.forEach(function(text){
     const item=document.createElement('span'); item.textContent=text; sharSummary.appendChild(item);
@@ -979,8 +1025,7 @@ function renderRADIO(j){
   const harrierLabel=document.createElement('td'); harrierLabel.textContent='Launch Harrier flight'; harrierRow.appendChild(harrierLabel);
   const harrierControls=document.createElement('td'); harrierControls.className='num';
   const launchBtn=document.createElement('button'); launchBtn.className='btn'; launchBtn.textContent='LAUNCH';
-  const reassignBtn=document.createElement('button'); reassignBtn.className='btn'; reassignBtn.textContent='REASSIGN'; reassignBtn.style.marginLeft='6px';
-  harrierControls.appendChild(launchBtn); harrierControls.appendChild(reassignBtn);
+  harrierControls.appendChild(launchBtn);
   harrierRow.appendChild(harrierControls);
   actionsTable.appendChild(harrierRow);
 
@@ -997,7 +1042,7 @@ function renderRADIO(j){
   const commitHeader=document.createElement('h3'); commitHeader.className='comms-subhead'; commitHeader.textContent='Active flights'; p.appendChild(commitHeader);
   const commitTable=document.createElement('table'); commitTable.className='comms-commit-table';
   const commitHead=document.createElement('tr');
-  ['Flight','Status','POS','Target','RNG','TOT','TOS','Engage','RTB'].forEach(function(label){
+  ['Flight','Status','POS','Target','RNG','TOT','TOS','Engage','Reassign','RTB'].forEach(function(label){
     const th=document.createElement('th'); th.textContent=label; commitHead.appendChild(th);
   });
   commitTable.appendChild(commitHead);
@@ -1027,18 +1072,47 @@ function renderRADIO(j){
     }
   }
 
-  function currentMissionConfig(){
-    const rawCell = (capCellInput.value || '').trim().toUpperCase();
-    return {
-      loadout: loadoutSelect.value || 'aim9',
-      missionType: missionTypeSelect.value || 'intercept',
-      target: targetSelect.value || 'primary',
-      capCell: rawCell,
-      capCellNorm: normalizeCell(rawCell),
-    };
+function currentMissionConfig(){
+  const rawCell = (capCellInput.value || '').trim().toUpperCase();
+  const missionType = missionTypeSelect.value || 'intercept';
+  const targetValue = targetSelect.value || (missionType === 'cap' ? 'cap_cell' : 'primary');
+  const hermesCap = missionType === 'cap' && targetValue === 'hermes';
+  const rawLoadout = hermesCap ? 'aim9' : (loadoutSelect.value || 'aim9');
+  return {
+    loadout: rawLoadout,
+    missionType,
+    target: targetValue,
+    capCell: rawCell,
+    capCellNorm: normalizeCell(rawCell),
+  };
+}
+
+  function enforceHermesDefaults(){
+    const hermesCap = (missionTypeSelect.value === 'cap') && (targetSelect.value === 'hermes');
+    if(hermesCap){
+      if(loadoutSelect.value !== 'aim9') loadoutSelect.value = 'aim9';
+      loadoutSelect.setAttribute('disabled','disabled');
+    }else{
+      loadoutSelect.removeAttribute('disabled');
+    }
   }
 
-  let missionValid=false;
+  function refreshCapCellState(opts){
+    const isCapMission = missionTypeSelect.value === 'cap';
+    const capTarget = targetSelect.value === 'cap_cell';
+    const locked = isCapMission && !capTarget;
+    capCellInput.classList.toggle('input-locked', locked);
+    if(locked){
+      capCellInput.setAttribute('aria-disabled','true');
+    }else{
+      capCellInput.removeAttribute('aria-disabled');
+      if(opts && opts.focus && document.activeElement !== capCellInput){
+        try{ capCellInput.focus({preventScroll:true}); capCellInput.select(); }catch(_){ }
+      }
+    }
+  }
+
+let missionValid=false;
 
   function updateTargetOptions(){
     const missionType = missionTypeSelect.value || 'intercept';
@@ -1053,19 +1127,19 @@ function renderRADIO(j){
       if(missionType==='intercept' && opt.value!=='primary') return;
       const option=document.createElement('option'); option.value=opt.value; option.textContent=opt.label; targetSelect.appendChild(option);
     });
-    if(missionType==='intercept'){
-      missionState.target = 'primary';
-      targetSelect.value = 'primary';
-      capCellInput.disabled = true;
-    }else{
-      if(options.every(opt=>opt.value!==desiredTarget) || desiredTarget==='primary'){
-        missionState.target = 'cap_cell';
-      }
-      targetSelect.value = missionState.target;
-      capCellInput.disabled = missionState.target !== 'cap_cell';
+  if(missionType==='intercept'){
+    missionState.target = 'primary';
+    targetSelect.value = 'primary';
+  }else{
+    if(options.every(opt=>opt.value!==desiredTarget) || desiredTarget==='primary'){
+      missionState.target = 'cap_cell';
     }
-    saveMissionState();
+    targetSelect.value = missionState.target;
   }
+  enforceHermesDefaults();
+  saveMissionState();
+  refreshCapCellState({focus: missionType==='cap' && missionState.target==='cap_cell'});
+}
 
   function missionSummaryText(){
     const cfg = currentMissionConfig();
@@ -1152,12 +1226,6 @@ function renderRADIO(j){
   function updateButtonStates(){
     const canLaunch = missionValid && readyPairsNum > 0 && airframesNum >= 2 && !hasCooldown;
     launchBtn.disabled = !canLaunch;
-    const sharAvailable = tasks.some(function(t){
-      if(!t) return false;
-      if(t.kind && String(t.kind).toLowerCase()==='resupply') return false;
-      return canRetaskStatus(t.status);
-    });
-    reassignBtn.disabled = !missionValid || !sharAvailable;
     const resupply = j.resupply || {};
     resupplyBtn.disabled = Boolean(resupply && resupply.active);
     resupplyBtn.textContent = (resupply && resupply.active)? 'EN ROUTE' : 'LAUNCH';
@@ -1165,13 +1233,13 @@ function renderRADIO(j){
 
   function buildMissionDescriptor(){
     const cfg = currentMissionConfig();
-    if(cfg.missionType==='intercept'){
+   if(cfg.missionType==='intercept'){
       if(!primaryContact) return {ok:false, error:'No locked target.'};
       return {ok:true, data:{missionType:'intercept', loadout: cfg.loadout, target:'primary', primaryContact}};
     }
     if(cfg.target==='hermes'){
       if(!flagshipCell || flagshipCell==='—') return {ok:false, error:'Hermes position unknown.'};
-      return {ok:true, data:{missionType:'cap', loadout: cfg.loadout, target:'hermes', cell:flagshipCell, follow:'hermes'}};
+      return {ok:true, data:{missionType:'cap', loadout: 'aim9', target:'hermes', cell:flagshipCell, follow:'hermes'}};
     }
     if(!cfg.capCellNorm) return {ok:false, error:'Enter CAP grid cell.'};
     return {ok:true, data:{missionType:'cap', loadout: cfg.loadout, target:'cap_cell', cell: cfg.capCellNorm}};
@@ -1188,10 +1256,11 @@ function renderRADIO(j){
     updateButtonStates();
   });
   targetSelect.addEventListener('change', function(){
-    capCellInput.disabled = targetSelect.value !== 'cap_cell';
+    enforceHermesDefaults();
     saveMissionState();
     updateMissionSummary();
     updateButtonStates();
+    refreshCapCellState({focus: missionTypeSelect.value==='cap' && targetSelect.value==='cap_cell'});
   });
   capCellInput.addEventListener('input', function(){
     try{
@@ -1211,6 +1280,7 @@ function renderRADIO(j){
 
   updateTargetOptions();
   updateMissionSummary();
+  refreshCapCellState();
 
   async function launchHarrier(){
     const descriptor = buildMissionDescriptor();
@@ -1255,58 +1325,6 @@ function renderRADIO(j){
     }
   }
 
-  async function reassignHarrier(){
-    const descriptor = buildMissionDescriptor();
-    if(!descriptor.ok){
-      setStatus(descriptor.error,'err');
-      return;
-    }
-    const mission = descriptor.data;
-    const summaryLabel = (ST.comms && ST.comms.activeMissionSummary) ? ST.comms.activeMissionSummary : missionSummaryText();
-    const eligible = tasks.filter(function(t){
-      if(!t) return false;
-      if(t.kind && String(t.kind).toLowerCase()==='resupply') return false;
-      return canRetaskStatus(t.status);
-    });
-    if(!eligible.length){
-      setStatus('No airborne SHAR flights available.','err');
-      return;
-    }
-    setStatus('Retasking flights…','muted');
-    reassignBtn.disabled = true;
-    try{
-      for(const t of eligible){
-        const missionId = t.id!=null ? t.id : t.n;
-        if(!missionId) continue;
-        let res;
-        if(mission.missionType==='intercept'){
-          res = await fetch('/cap/vector',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: missionId})});
-        }else{
-          const payload={ mission_id: missionId, cell: mission.cell, minutes: 10 };
-          if(mission.follow==='hermes') payload.follow='hermes';
-          res = await fetch('/cap/convert_to_cap',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-        }
-        const data=await res.json();
-        if(!data || !data.ok){
-          setStatus((data && (data.message || data.error))? String(data.message || data.error) : 'Retask failed','err');
-          reassignBtn.disabled = false;
-          return;
-        }
-      }
-      if(summaryLabel && summaryLabel !== '—'){
-        setStatus(`Flights retasked to ${summaryLabel}`,'ok');
-      }else{
-        setStatus('Flights retasked','ok');
-      }
-      await poll().catch(()=>{});
-    }catch(_){
-      setStatus('Retask failed','err');
-    }finally{
-      reassignBtn.disabled = false;
-      updateButtonStates();
-    }
-  }
-
   async function launchSeaKing(){
     const resupply = j.resupply || {};
     if(resupply && resupply.active){
@@ -1332,8 +1350,50 @@ function renderRADIO(j){
   }
 
   launchBtn.onclick=launchHarrier;
-  reassignBtn.onclick=reassignHarrier;
   resupplyBtn.onclick=launchSeaKing;
+
+  async function reassignFlight(missionId, triggerBtn){
+    if(!missionId){
+      setStatus('Unknown mission id','err');
+      return;
+    }
+    const descriptor = buildMissionDescriptor();
+    if(!descriptor.ok){
+      setStatus(descriptor.error,'err');
+      return;
+    }
+    const mission = descriptor.data;
+    const summaryLabel = (ST.comms && ST.comms.activeMissionSummary) ? ST.comms.activeMissionSummary : missionSummaryText();
+    const retaskLabel = summaryLabel && summaryLabel !== '—' ? summaryLabel : '';
+    if(triggerBtn) triggerBtn.disabled = true;
+    setStatus(`Retasking SHAR ${missionId}…`,'muted');
+    try{
+      let res;
+      if(mission.missionType==='intercept'){
+        res = await fetch('/cap/vector',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: missionId})});
+      }else{
+        const payload={ mission_id: missionId, cell: mission.cell, minutes: 10 };
+        if(mission.follow==='hermes') payload.follow='hermes';
+        res = await fetch('/cap/convert_to_cap',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+      }
+      const data = await res.json();
+      if(!data || !data.ok){
+        setStatus((data && (data.message || data.error))? String(data.message || data.error) : 'Retask failed','err');
+        return;
+      }
+      if(retaskLabel){
+        setStatus(`SHAR ${missionId} retasked to ${retaskLabel}`,'ok');
+      }else{
+        setStatus(`SHAR ${missionId} retasked`,'ok');
+      }
+      await poll().catch(()=>{});
+    }catch(_){
+      setStatus('Retask failed','err');
+    }finally{
+      if(triggerBtn) triggerBtn.disabled = false;
+      updateButtonStates();
+    }
+  }
 
   function targetDescription(t){
     if(!t) return '—';
@@ -1399,6 +1459,20 @@ function renderRADIO(j){
     }
     tr.appendChild(permTd);
 
+    const reassignTd=document.createElement('td'); reassignTd.className='action';
+    if(missionId && canRetaskStatus(t.status)){
+      const reBtn=document.createElement('button'); reBtn.className='btn'; reBtn.textContent='REASSIGN';
+      reBtn.disabled = !missionValid;
+      reBtn.onclick = function(){
+        if(reBtn.disabled) return;
+        reassignFlight(missionId, reBtn);
+      };
+      reassignTd.appendChild(reBtn);
+    }else{
+      reassignTd.textContent='—';
+    }
+    tr.appendChild(reassignTd);
+
     const rtbTd=document.createElement('td'); rtbTd.className='action';
     const rtbBtn=document.createElement('button'); rtbBtn.className='btn'; rtbBtn.textContent='RTB';
     if(!missionId || ['rtb','recovering','complete'].includes(statusKey)) rtbBtn.disabled=true;
@@ -1435,7 +1509,7 @@ function renderRADIO(j){
   if(sharTasks.length){
     sharTasks.forEach(addSharRow);
   }else{
-    const tr=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=9; td.textContent='No active SHAR flights'; tr.appendChild(td); commitTable.appendChild(tr);
+    const tr=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=10; td.textContent='No active SHAR flights'; tr.appendChild(td); commitTable.appendChild(tr);
   }
 
   const resupply = j.resupply || {};
@@ -1449,6 +1523,7 @@ function renderRADIO(j){
       (resupply.range_nm!=null && Number.isFinite(Number(resupply.range_nm)))? `${fmt(resupply.range_nm,1)} nm` : '—',
       '—',
       resupply.left_s!=null ? fmtDuration(resupply.left_s) : '—',
+      '—',
       '—',
       '—'
     ];
