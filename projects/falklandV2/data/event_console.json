@@ -30,6 +30,8 @@
     {"id": "enemy.attack.miss", "text": "Enemy {name} ({weapon}) missed {target}"},
     {"id": "enemy.surface.hit", "text": "Enemy surface fire from {name} hit {target}"},
     {"id": "enemy.surface.miss", "text": "Enemy surface fire from {name} missed {target}"},
+    {"id": "enemy.surface.flee", "text": "{name} breaking off! Damage critical."},
+    {"id": "enemy.surface.sunk", "text": "{name} sinking beneath the waves!"},
     {"id": "eng.system.offline", "text": "System offline: {system}"},
     {"id": "eng.repair.deployed", "text": "Repair team dispatched to {system}"},
     {"id": "eng.system.timer", "text": "Repair timer {system}: {seconds}s"}

@@ -142,35 +142,41 @@ class GameRuntime:
         try:
             if self.cap is not None:
                 self.cap.bind_target_resolver(lambda cid: next((c for c in radar.contacts if int(getattr(c, 'id', -1)) == int(cid)), None))  # type: ignore[attr-defined]
-                def _cap_hit(cid: int, name: str, klass: str) -> None:
+                def _cap_hit(cid: int, name: str, klass: str, ctx: Optional[Dict[str, Any]] = None) -> None:
                     try:
                         nm = str(name or '')
                         kl = str(klass or '')
                     except Exception:
                         nm = str(name)
                         kl = str(klass)
-                    # Belgrano special: 8 lives; sink at 0
-                    if 'belgrano' in nm.lower():
-                        try:
-                            hl = self.core._load_health()
-                            if 'belgrano_max_lives' not in hl:
-                                hl['belgrano_max_lives'] = 8
-                            if 'belgrano_lives' not in hl:
-                                hl['belgrano_lives'] = hl.get('belgrano_max_lives', 8)
-                            if int(hl.get('belgrano_lives', 0)) > 0:
-                                hl['belgrano_lives'] = max(0, int(hl.get('belgrano_lives', 0)) - 1)
-                                self.core._save_health(hl)
-                            # Remove contact only when lives reach zero
-                            if int(hl.get('belgrano_lives', 0)) <= 0:
-                                radar.contacts = [c for c in radar.contacts if int(getattr(c, 'id', -1)) != int(cid)]
-                        except Exception:
-                            pass
-                    else:
-                        # Remove other targets immediately on hit
-                        try:
-                            radar.contacts = [c for c in radar.contacts if int(getattr(c, 'id', -1)) != int(cid)]
-                        except Exception:
-                            pass
+                    handled = False
+                    sunk = False
+                    try:
+                        from projects.falklandV2 import webdash as wd  # type: ignore
+                    except Exception:
+                        wd = None  # type: ignore
+                    if wd is not None:
+                        loadout = ''
+                        weapon_label = None
+                        if isinstance(ctx, dict):
+                            loadout = str(ctx.get('loadout', '')).lower()
+                            weapon_label = ctx.get('weapon')
+                        if loadout == 'bombs':
+                            weapon = str(weapon_label or 'Bomb')
+                            with wd.STATE_LOCK:
+                                try:
+                                    handled, sunk = self.core.apply_enemy_ship_damage(wd, cid, weapon=weapon, target_name=nm, target_class=kl)
+                                except Exception:
+                                    handled = False
+                    if handled:
+                        if sunk:
+                            return
+                        return
+                    # Fallback: remove contact immediately
+                    try:
+                        radar.contacts = [c for c in radar.contacts if int(getattr(c, 'id', -1)) != int(cid)]
+                    except Exception:
+                        pass
                 self.cap.bind_hit_callback(_cap_hit)  # type: ignore[attr-defined]
         except Exception:
             pass

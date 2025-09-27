@@ -51,7 +51,7 @@ def test_auto_engage_hits_air_target(monkeypatch: pytest.MonkeyPatch) -> None:
     cap.bind_target_resolver(lambda cid: target if cid == 42 else None)
 
     hits: list[tuple[int, str]] = []
-    cap.bind_hit_callback(lambda cid, _name, klass: hits.append((cid, klass)))
+    cap.bind_hit_callback(lambda cid, _name, klass, ctx=None: hits.append((cid, klass)))
 
     monkeypatch.setattr(random, "random", lambda: 0.0)
 

@@ -533,7 +533,8 @@ class HermesCAP:
             self._emit_event('cap.weapon.hit' if hit1 else 'cap.weapon.miss', {'mission_id': m.id, 'weapon': weapon_label, 'shot': 1, 'target_id': locked_target_id})
             if hit1 and callable(self._hit_callback):
                 try:
-                    self._hit_callback(int(locked_target_id), target_name or '', target_class or '')
+                    ctx = {'mission_id': m.id, 'loadout': m.loadout, 'weapon': weapon_label}
+                    self._hit_callback(int(locked_target_id), target_name or '', target_class or '', ctx)
                 except Exception:
                     pass
             result = {"when": t, "target_id": int(locked_target_id), "range_nm": float(distance_nm), "pk": round(pk, 2), "shots": 1, "hit": hit1}
@@ -548,7 +549,8 @@ class HermesCAP:
                 self._emit_event('cap.weapon.hit' if hit2 else 'cap.weapon.miss', {'mission_id': m.id, 'weapon': weapon_label, 'shot': 2, 'target_id': locked_target_id})
                 if hit2 and callable(self._hit_callback):
                     try:
-                        self._hit_callback(int(locked_target_id), target_name or '', target_class or '')
+                        ctx = {'mission_id': m.id, 'loadout': m.loadout, 'weapon': weapon_label}
+                        self._hit_callback(int(locked_target_id), target_name or '', target_class or '', ctx)
                     except Exception:
                         pass
                 if hit2:
@@ -573,7 +575,8 @@ class HermesCAP:
             self._emit_event('cap.weapon.hit', {'mission_id': m.id, 'weapon': weapon_label, 'shot': 1, 'target_id': locked_target_id})
             if callable(self._hit_callback):
                 try:
-                    self._hit_callback(int(locked_target_id), target_name or '', target_class or '')
+                    ctx = {'mission_id': m.id, 'loadout': m.loadout, 'weapon': weapon_label}
+                    self._hit_callback(int(locked_target_id), target_name or '', target_class or '', ctx)
                 except Exception:
                     pass
             result = {"when": t, "target_id": int(locked_target_id), "range_nm": float(distance_nm), "pk": 1.0, "shots": 1, "hit": True}

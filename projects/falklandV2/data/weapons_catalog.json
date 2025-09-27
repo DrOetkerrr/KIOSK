@@ -12,7 +12,7 @@
     "class": "SAM",
     "min_nm": 2.0,
     "max_nm": 35.0,
-    "supports": ["Aircraft"],
+    "supports": ["Aircraft", "Ship"],
     "notes": "Long-range area air-defence (Type 42)"
   },
   {

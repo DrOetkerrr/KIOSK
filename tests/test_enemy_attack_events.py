@@ -52,7 +52,8 @@ def test_enemy_non_bomb_does_not_duplicate() -> None:
     assert event_ids == ['enemy.attack.miss']
 
 
-def test_enemy_surface_event_duplicates() -> None:
+@pytest.mark.parametrize("attack_kind", ["attack", "gun"])
+def test_enemy_surface_event_duplicates(attack_kind: str) -> None:
     wd = _StubWD()
     payload = {
         'contact_id': 9,
@@ -60,7 +61,7 @@ def test_enemy_surface_event_duplicates() -> None:
         'name': 'ARA General Belgrano',
         'weapon': '6-inch main battery',
     }
-    webcore._record_enemy_attack_event(wd, 'attack', 'hit', payload, context={'source': 'enemy_attack', 'contact_id': 9})
+    webcore._record_enemy_attack_event(wd, attack_kind, 'hit', payload, context={'source': 'enemy_attack', 'contact_id': 9})
 
     event_ids = [evt for evt, _ in wd.events]
     assert 'enemy.attack.hit' in event_ids

@@ -301,6 +301,139 @@ def _record_event_guard(wd, event_id: str, payload: Dict[str, Any], *, context: 
             pass
 
 
+def _enemy_ship_name(name: str | None, fallback: str, target_name: str | None = None) -> str:
+    if name:
+        return str(name)
+    if target_name:
+        return str(target_name)
+    return fallback
+
+
+def _enemy_ship_trigger_retreat(wd, contact, state: Dict[str, Any]) -> None:
+    try:
+        st = wd.ENG.public_state() if hasattr(wd.ENG, 'public_state') else {}
+        ox, oy = radar_xy_from_state(st)
+    except Exception:
+        ox = oy = 0.0
+    try:
+        dx = float(contact.x) - float(ox)
+        dy = float(contact.y) - float(oy)
+    except Exception:
+        dx = dy = 0.0
+    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+        retreat_heading = (float(getattr(contact, 'course_deg', 0.0)) + 180.0) % 360.0
+    else:
+        retreat_heading = math.degrees(math.atan2(dx, -dy)) % 360.0
+    try:
+        contact.course_deg = retreat_heading
+        contact.threat = 'low'
+    except Exception:
+        pass
+    meta = getattr(contact, 'meta', {}) or {}
+    meta['retreating'] = True
+    meta['retreat_heading'] = retreat_heading
+    meta['retreat_since'] = time.time()
+    contact.meta = meta
+    state['fleeing'] = True
+
+
+def apply_enemy_ship_damage(wd, contact_id: int, *, weapon: str, target_name: str | None = None, target_class: str | None = None) -> tuple[bool, bool]:
+    """Apply damage to hostile surface contacts. Returns (handled, sunk)."""
+    try:
+        cid = int(contact_id)
+    except Exception:
+        return (False, False)
+
+    contact = next((c for c in getattr(wd.RADAR, 'contacts', []) if int(getattr(c, 'id', -1)) == cid), None)
+    if contact is None:
+        return (False, False)
+
+    try:
+        allegiance = str(getattr(contact, 'allegiance', '')).lower()
+    except Exception:
+        allegiance = ''
+    if allegiance != 'hostile':
+        return (False, False)
+
+    klass = str(target_class or '').lower()
+    if not klass:
+        try:
+            meta = getattr(contact, 'meta', {}) or {}
+            klass = str((meta.get('cap') or {}).get('class') or meta.get('class') or '').lower()
+        except Exception:
+            klass = ''
+    if klass != 'ship':
+        return (False, False)
+
+    weapon_l = str(weapon or '').lower()
+    if 'sea dart' in weapon_l or 'seacat' in weapon_l:
+        damage = 1.0
+    elif 'bomb' in weapon_l:
+        damage = 2.0
+    else:
+        return (False, False)
+
+    state = wd.ENEMY_SURFACE_STATE.setdefault(cid, {
+        'name': str(getattr(contact, 'name', f'Ship {cid}')),
+        'hp': 4.0,
+        'max_hp': 4.0,
+        'fleeing': False,
+    })
+
+    # Sync with meta surface info if present
+    meta = getattr(contact, 'meta', {}) or {}
+    surf = meta.get('surface_ship') if isinstance(meta.get('surface_ship'), dict) else {}
+    try:
+        max_hp = float(surf.get('max_hp', state.get('max_hp', 4.0)))
+    except Exception:
+        max_hp = float(state.get('max_hp', 4.0))
+    if max_hp <= 0:
+        max_hp = 4.0
+    state['max_hp'] = max_hp
+    try:
+        current_hp = float(state.get('hp', max_hp))
+    except Exception:
+        current_hp = max_hp
+    current_hp = max(0.0, current_hp - float(damage))
+    state['hp'] = current_hp
+    surf = {**(surf or {}), 'hp': current_hp, 'max_hp': max_hp}
+    meta['surface_ship'] = surf
+    contact.meta = meta
+
+    name = _enemy_ship_name(state.get('name'), f'Ship {cid}', target_name)
+    sunk = False
+
+    if current_hp <= 0.0:
+        sunk = True
+        try:
+            wd.RADAR.contacts = [c for c in wd.RADAR.contacts if int(getattr(c, 'id', -1)) != cid]
+        except Exception:
+            pass
+        wd.ENEMY_SURFACE_STATE.pop(cid, None)
+        try:
+            _record_event_guard(wd, 'enemy.surface.sunk', {'id': cid, 'name': name})
+        except Exception:
+            pass
+        try:
+            record_flight({
+                'route': '/enemy.surface.sunk', 'method': 'INT', 'status': 200, 'duration_ms': 0,
+                'request': {'contact_id': cid, 'weapon': weapon},
+                'response': {'name': name}
+            })
+        except Exception:
+            pass
+        return (True, True)
+
+    # Trigger retreat at 50% or lower once
+    if current_hp <= (max_hp / 2.0) and not state.get('fleeing'):
+        try:
+            _enemy_ship_trigger_retreat(wd, contact, state)
+            _record_event_guard(wd, 'enemy.surface.flee', {'id': cid, 'name': name, 'hp': current_hp, 'max_hp': max_hp})
+        except Exception:
+            pass
+
+    wd.ENEMY_SURFACE_STATE[cid] = state
+    return (True, False)
 def _record_enemy_attack_event(
     wd,
     attack_kind: str,
@@ -323,7 +456,7 @@ def _record_enemy_attack_event(
         }
         bomb_payload = {k: v for k, v in bomb_payload.items() if v not in (None, '')}
         _record_event_guard(wd, f'enemy.bomb.{outcome}', bomb_payload, context=context)
-    elif kind == 'attack':
+    elif kind in ('attack', 'gun'):
         surface_payload = {
             'target': payload.get('target'),
             'name': payload.get('name') or f"Contact #{payload.get('contact_id')}",
@@ -1798,9 +1931,13 @@ def engine_thread_run(wd) -> None:
                                 shot_id=shot_id,
                                 pk=pk,
                             )
-                        # On hit, remove the target from radar contacts
-                        if outcome == 'hit' and tgt_id is not None:
-                            wd.RADAR.contacts = [c for c in wd.RADAR.contacts if int(getattr(c,'id',-1)) != int(tgt_id)]
+                            handled = False
+                            sunk = False
+                            if outcome == 'hit' and tgt_id is not None:
+                                if str(target_class or '').lower() == 'ship':
+                                    handled, sunk = apply_enemy_ship_damage(wd, tgt_id, weapon=weapon, target_name=target_name, target_class=target_class)
+                                if not handled:
+                                    wd.RADAR.contacts = [c for c in wd.RADAR.contacts if int(getattr(c,'id',-1)) != int(tgt_id)]
                         try:
                             ev_id = 'weapon.result.hit' if outcome == 'hit' else ('weapon.result.miss' if outcome == 'miss' else 'weapon.result.no_effect')
                             wd.record_event(ev_id, {

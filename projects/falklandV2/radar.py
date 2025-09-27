@@ -327,7 +327,7 @@ class Radar:
             r_min, r_max = self.cfg["surprise_nm"], 14.0
         else:
             r0, _r1 = self.cfg["no_spawn_nm"]
-            r_min, r_max = float(r0), float(self.cfg["offboard_max_nm"])
+            r_min, r_max = float(r0), float(self.cfg.get("offboard_max_nm", 30.0))
 
         r = self.rng.uniform(r_min, r_max)
         bearing_deg = self.rng.uniform(0.0, 360.0)
@@ -368,16 +368,25 @@ class Radar:
             # Ensure Super Étendard starts at >= 20 nm (never uses 10 nm surprise)
             if name == 'Super Etendard' and r < 20.0:
                 r = max(20.0, r)
+            # Ensure hostile surface ships appear outside radar horizon (>= 20 nm)
+            if klass and str(klass).lower() == 'ship' and r < 20.0:
+                r = max(20.0, self.cfg.get("surface_spawn_min_nm", 20.0))
 
         course_deg = (bearing_deg + 180.0) % 360.0
+        surface_meta: Optional[Dict[str, Any]] = None
+        if str(allegiance).lower() == 'hostile' and str(klass or '').lower() == 'ship':
+            surface_meta = {'hp': 4.0, 'max_hp': 4.0}
+        meta = {
+            "spawn": {"bearing_deg": round(bearing_deg,1), "range_nm": round(r,2), "surprise": surprise, "allegiance": allegiance},
+            "cap": self.catalog.details(name)
+        }
+        if surface_meta is not None:
+            meta['surface_ship'] = surface_meta
         c = Contact(
             id=self._next_id, name=name, allegiance=allegiance,
             x=x, y=y, course_deg=course_deg, speed_kts=float(speed),
             threat=("medium" if allegiance == "Hostile" else "low"),
-            meta={
-                "spawn": {"bearing_deg": round(bearing_deg,1), "range_nm": round(r,2), "surprise": surprise, "allegiance": allegiance},
-                "cap": self.catalog.details(name)
-            }
+            meta=meta
         )
         self._next_id += 1
         # CAP pre-release intercept chance: if active and mapping provides type-specific chance
@@ -419,7 +428,7 @@ class Radar:
                 }
             })
             self.rec.log("radar.contact.new", {
-                "id": c.id, "name": c.name, "allegiance": c.allegiance,
+                "id": c.id, "name": c.name, "allegiance": c.allegiance, "class": klass,
                 "world_xy": [round(c.x,2), round(c.y,2)], "course_deg": c.course_deg,
                 "speed_kts": c.speed_kts * HOSTILE_SPEED_SCALE
             })
@@ -438,14 +447,20 @@ class Radar:
             name, speed, klass = self.catalog.pick_hostile()
             allegiance_norm = 'Hostile'
         course_deg = (float(bearing_deg) + 180.0) % 360.0
+        surface_meta: Optional[Dict[str, Any]] = None
+        if allegiance_norm == 'Hostile' and str(klass or '').lower() == 'ship':
+            surface_meta = {'hp': 4.0, 'max_hp': 4.0}
+        meta = {
+            "spawn": {"bearing_deg": round(float(bearing_deg),1), "range_nm": round(r,2), "surprise": False, "forced": True},
+            "cap": self.catalog.details(name)
+        }
+        if surface_meta is not None:
+            meta['surface_ship'] = surface_meta
         c = Contact(
             id=self._next_id, name=name, allegiance=allegiance_norm,
             x=float(x), y=float(y), course_deg=course_deg, speed_kts=float(speed),
             threat="high" if name in ("Super Etendard", "Mirage III") else "medium",
-            meta={
-                "spawn": {"bearing_deg": round(float(bearing_deg),1), "range_nm": round(r,2), "surprise": False, "forced": True},
-                "cap": self.catalog.details(name)
-            }
+            meta=meta
         )
         self._next_id += 1
         self.contacts.append(c)

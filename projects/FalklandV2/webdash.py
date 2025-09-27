@@ -626,6 +626,7 @@ if CAP is not None:
         pass
 PENDING_EVENTS: list[Dict[str, Any]] = []
 ATTACK_STATE: Dict[int, float] = {}
+ENEMY_SURFACE_STATE: Dict[int, Dict[str, Any]] = {}
 
 # Debug contacts
 DEBUG_CONTACTS = core.DEBUG_CONTACTS
@@ -650,6 +651,7 @@ class _RecorderLike:
                     cid = (data or {}).get('id')
                     name = (data or {}).get('name')
                     speed = (data or {}).get('speed_kts')
+                    cls = str((data or {}).get('class') or '')
                     wx, wy = None, None
                     try:
                         coords = (data or {}).get('world_xy') or []
@@ -668,10 +670,17 @@ class _RecorderLike:
                     record_event('radar.contact.spawn', {
                         'id': cid,
                         'name': name,
-                        'class_name': (data or {}).get('allegiance') or '',
+                        'class_name': cls or (data or {}).get('allegiance') or '',
                         'range_nm': rng,
                         'speed': speed
                     })
+                    try:
+                        if str((data or {}).get('allegiance', '')).lower() == 'hostile' and cls.lower() == 'ship':
+                            sid = int(cid) if cid is not None else None
+                            if sid is not None and sid not in ENEMY_SURFACE_STATE:
+                                ENEMY_SURFACE_STATE[sid] = {'name': str(name or f'Ship {sid}'), 'hp': 4.0, 'max_hp': 4.0, 'fleeing': False}
+                    except Exception:
+                        pass
                 except Exception:
                     pass
             if event == "ship.alarm.threat_close":

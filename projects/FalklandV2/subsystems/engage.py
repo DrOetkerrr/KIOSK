@@ -74,7 +74,9 @@ def weapon_valid_for_target(key: str, target_type: Optional[str]) -> bool:
     k = key.lower()
     if k in ("gun_4_5in", "exocet_mm38"):
         return cls_ == "surface"
-    if k in ("seacat", "oerlikon_20mm", "gam_bo1_20mm"):
+    if k == "seacat":
+        return cls_ in ("air", "surface")
+    if k in ("oerlikon_20mm", "gam_bo1_20mm"):
         return cls_ == "air"
     if k == "corvus_chaff":
         return True
