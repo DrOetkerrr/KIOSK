@@ -301,6 +301,38 @@ def _record_event_guard(wd, event_id: str, payload: Dict[str, Any], *, context: 
             pass
 
 
+def _record_enemy_attack_event(
+    wd,
+    attack_kind: str,
+    outcome: str,
+    payload: Dict[str, Any],
+    *,
+    context: Dict[str, Any] | None = None,
+) -> None:
+    """Record generic and attack-type specific events for enemy outcomes."""
+    _record_event_guard(wd, f'enemy.attack.{outcome}', dict(payload), context=context)
+    try:
+        kind = str(attack_kind or '').lower()
+    except Exception:
+        kind = attack_kind
+    if kind == 'bomb':
+        bomb_payload = {
+            'target': payload.get('target'),
+            'name': payload.get('name'),
+            'weapon': payload.get('weapon'),
+        }
+        bomb_payload = {k: v for k, v in bomb_payload.items() if v not in (None, '')}
+        _record_event_guard(wd, f'enemy.bomb.{outcome}', bomb_payload, context=context)
+    elif kind == 'attack':
+        surface_payload = {
+            'target': payload.get('target'),
+            'name': payload.get('name') or f"Contact #{payload.get('contact_id')}",
+            'weapon': payload.get('weapon'),
+        }
+        surface_payload = {k: v for k, v in surface_payload.items() if v not in (None, '')}
+        _record_event_guard(wd, f'enemy.surface.{outcome}', surface_payload, context=context)
+
+
 def record_radio(kind: str, text: str) -> None:
     try:
         payload = {
@@ -1966,6 +1998,7 @@ def engine_thread_run(wd) -> None:
                             if not weapon_display:
                                 weapon_display = attack_kind.title()
                             attacker_name = str(getattr(c, 'name', '') or '').strip() or 'Hostile'
+                            event_context = {'source': 'enemy_attack', 'contact_id': cid}
                             for attempt_idx in range(1, attempts+1):
                                 # Announce enemy attack (fire)
                                 try:
@@ -1981,7 +2014,7 @@ def engine_thread_run(wd) -> None:
                                             'target': target_name_choice,
                                             'attack_kind': attack_kind,
                                         },
-                                        context={'source': 'enemy_attack', 'contact_id': cid},
+                                        context=event_context,
                                     )
                                 except Exception:
                                     pass
@@ -2086,7 +2119,7 @@ def engine_thread_run(wd) -> None:
                                         'target': target_name_choice,
                                         'attack_kind': attack_kind,
                                     }
-                                    _record_event_guard(wd, 'enemy.attack.hit', dict(payload), context={'source': 'enemy_attack', 'contact_id': cid})
+                                    _record_enemy_attack_event(wd, attack_kind, 'hit', payload, context=event_context)
                                     try:
                                         record_flight({
                                             'route': '/enemy.attack.hit',
@@ -2121,7 +2154,7 @@ def engine_thread_run(wd) -> None:
                                         'target': target_name_choice,
                                         'attack_kind': attack_kind,
                                     }
-                                    _record_event_guard(wd, 'enemy.attack.miss', dict(payload), context={'source': 'enemy_attack', 'contact_id': cid})
+                                    _record_enemy_attack_event(wd, attack_kind, 'miss', payload, context=event_context)
                                     try:
                                         record_flight({
                                             'route': '/enemy.attack.miss',
