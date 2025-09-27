@@ -1416,6 +1416,38 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
             except Exception:
                 continue
 
+        def _as_xy(val: Any) -> tuple[float, float] | None:
+            if isinstance(val, (list, tuple)) and len(val) == 2:
+                try:
+                    return (float(val[0]), float(val[1]))
+                except Exception:
+                    return None
+            return None
+
+        def _cell_to_xy(cell_label: str) -> tuple[float, float] | None:
+            if not cell_label:
+                return None
+            try:
+                return cell_to_world(cell_label)
+            except Exception:
+                return None
+
+        def _xy_to_cell(x_val: float, y_val: float) -> str:
+            try:
+                return cell_for_world(float(y_val), float(x_val))
+            except Exception:
+                return '—'
+
+        def _progress(now_val: float, start: Any, end: Any) -> float | None:
+            try:
+                s = float(start)
+                e = float(end)
+                if e <= s:
+                    return 1.0
+                return max(0.0, min(1.0, (now_val - s) / (e - s)))
+            except Exception:
+                return None
+
         for m in missions:
             try:
                 mid = int(m.get('id'))
@@ -1566,6 +1598,56 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
                     tos_s = None
                 vect = bool(ts.get('vector', False))
                 pos_cell = origin_cell or (meta_rec or {}).get('origin_cell') or ''
+                def _estimated_pos_cell() -> str:
+                    origin_xy = _as_xy(m.get('origin_xy')) or _as_xy((meta_rec or {}).get('origin_xy'))
+                    if not origin_xy and origin_cell:
+                        origin_xy = _cell_to_xy(origin_cell)
+                    target_xy = None
+                    if target_cell:
+                        target_xy = _cell_to_xy(target_cell)
+
+                    if status_lc in ('onstation', 'cap'):
+                        return target_cell_disp if target_cell_disp != '—' else (origin_cell or '—')
+
+                    if status_lc == 'queued':
+                        return origin_cell or (target_cell_disp if target_cell_disp != '—' else '—')
+
+                    if status_lc == 'airborne' and origin_xy and target_xy:
+                        ts_local = (m.get('timestamps') or {})
+                        launch_ts = ts_local.get('launch', ts_local.get('created'))
+                        eta_on = ts_local.get('eta_onstation')
+                        prog = _progress(now, launch_ts, eta_on) if eta_on is not None else None
+                        if prog is None:
+                            prog = 0.0
+                        x = origin_xy[0] + (target_xy[0] - origin_xy[0]) * prog
+                        y = origin_xy[1] + (target_xy[1] - origin_xy[1]) * prog
+                        return _xy_to_cell(x, y)
+
+                    if status_lc == 'rtb' and origin_xy and target_xy:
+                        ts_local = (m.get('timestamps') or {})
+                        start = ts_local.get('rtb', ts_local.get('etd_rtb'))
+                        eta_rec = ts_local.get('eta_recovery')
+                        prog = _progress(now, start, eta_rec) if eta_rec is not None else None
+                        if prog is None:
+                            prog = 0.0
+                        x = target_xy[0] + (origin_xy[0] - target_xy[0]) * prog
+                        y = target_xy[1] + (origin_xy[1] - target_xy[1]) * prog
+                        return _xy_to_cell(x, y)
+
+                    if status_lc in ('recovering', 'complete'):
+                        return origin_cell or (target_cell_disp if target_cell_disp != '—' else '—')
+
+                    if target_xy:
+                        return _xy_to_cell(*target_xy)
+                    if origin_xy:
+                        return _xy_to_cell(*origin_xy)
+                    if target_cell_disp != '—':
+                        return target_cell_disp
+                    if origin_cell:
+                        return origin_cell
+                    return '—'
+
+                pos_cell = _estimated_pos_cell()
                 target_cell_disp = target_cell or '—'
                 if target_name:
                     target_label = f"{target_name} @ {target_cell_disp}" if target_cell_disp != '—' else target_name

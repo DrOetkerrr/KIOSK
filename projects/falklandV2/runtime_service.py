@@ -9,6 +9,7 @@ desktop shell can bind to.
 """
 
 import os
+import sys
 import random
 import threading
 import time
@@ -152,7 +153,9 @@ class GameRuntime:
                     handled = False
                     sunk = False
                     try:
-                        from projects.falklandV2 import webdash as wd  # type: ignore
+                        wd = sys.modules.get('projects.falklandV2.webdash')  # type: ignore
+                        if wd is None:
+                            from projects.falklandV2 import webdash as wd  # type: ignore
                     except Exception:
                         wd = None  # type: ignore
                     if wd is not None:
