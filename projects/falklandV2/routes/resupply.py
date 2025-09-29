@@ -50,11 +50,7 @@ def resupply_launch():
         state['started_ts'] = now
         state['eta_ts'] = now + max(5, int(eta_s))
         state['stage'] = 'enroute'
-        # Hermes confirmation
-        try:
-            L['record_officer']('Pilot', 'Resupply on its way.')
-        except Exception:
-            pass
+        state['ready_announced'] = False
         # Seed origin_cell so radar can place Sea King contact
         try:
             st = L['ENG'].public_state() if hasattr(L['ENG'], 'public_state') else {}
@@ -70,6 +66,13 @@ def resupply_launch():
             else:
                 hermes_cell = L['ship_cell_from_state'](st)
             state['origin_cell'] = hermes_cell
+        except Exception:
+            pass
+        try:
+            L['record_event']('resupply.launch', {
+                'eta_s': int(max(0, state['eta_ts'] - now)),
+                'origin_cell': state.get('origin_cell')
+            })
         except Exception:
             pass
         payload = {"ok": True, "resupply": {"active": True, "eta_s": int(state['eta_ts'] - now)}}
@@ -95,6 +98,7 @@ def resupply_cancel():
         state['stage'] = 'idle'
         state['eta_ts'] = 0.0
         state['started_ts'] = 0.0
+        state['ready_announced'] = False
         payload = {"ok": True, "resupply": dict(state)}
         L['record_flight']({"route": route, "method": request.method, "status": 200,
                            "duration_ms": int((time.time()-t0)*1000),
@@ -138,8 +142,9 @@ def resupply_complete():
         state['stage'] = 'complete'
         state['completed_ts'] = now
         state['eta_ts'] = 0.0
+        state['ready_announced'] = False
         try:
-            L['record_officer']('Pilot', 'Sea King resupply complete.')
+            L['record_event']('resupply.complete', {'completed_ts': now})
         except Exception:
             pass
         payload = {"ok": True, "resupply": dict(state)}

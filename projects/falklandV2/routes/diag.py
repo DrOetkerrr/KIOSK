@@ -6,8 +6,6 @@ import threading
 from flask import Blueprint, jsonify, request
 from flask import current_app
 import os
-import importlib
-
 bp = Blueprint("diag", __name__)
 
 
@@ -19,7 +17,7 @@ def _lazy():
         load_ammo, load_arming, WEAP_CATALOG,
         AMMO_PATH, ARMING_PATH, _save_json,
         AUDIO_STATE, PENDING_EVENTS, RADIO_QUEUE, RADIO_STATE, RADIO_HISTORY, NAV_STATE,
-        SKIRMISH_ACTIVE, DATA_DIR,
+        SKIRMISH_ACTIVE, DATA_DIR, RUNTIME, _reset_runtime_globals,
     )
     return locals()
 
@@ -116,74 +114,23 @@ def reset_runtime():
     """
     L = _lazy()
     try:
-        # 1) Clear ammo/arming to trigger defaults on next load
+        req = request.get_json(silent=True) or {}
+        clear_tts = bool(req.get('clear_tts', False))
         try:
-            L['_save_json'](L['AMMO_PATH'], {})
-            L['_save_json'](L['ARMING_PATH'], {})
-        except Exception:
-            pass
-        # 2) Clear transient queues/state
-        try:
-            L['AUDIO_STATE'].update({
-                "last_launch": None,
-                "last_result": None,
-                "radio": None,
-                "alarm": None,
-                "cap_launch": None,
-                "enemy_bomb": None,
-                "shots_in_flight": []
-            })
+            L['RUNTIME'].reset_state(clear_tts=clear_tts)
         except Exception:
             pass
         try:
-            L['PENDING_EVENTS'].clear()
+            L['_reset_runtime_globals']()
         except Exception:
             pass
+        # Log and return
         try:
-            L['RADIO_QUEUE'].clear()
+            L['record_flight']({"route": "/diag/reset", "method": "POST", "status": 200, "duration_ms": 0,
+                               "request": {'clear_tts': clear_tts}, "response": {"ok": True}})
         except Exception:
             pass
-        try:
-            L['RADIO_HISTORY'].clear()  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        try:
-            L['RADIO_STATE']['busy_until'] = 0.0
-        except Exception:
-            pass
-        try:
-            L['NAV_STATE'].update({"turn_target": None, "turn_hold_since": 0.0})
-        except Exception:
-            pass
-        try:
-            L['SKIRMISH_ACTIVE'].update({"id": None, "started_ts": None})
-        except Exception:
-            pass
-        # 3) Clear radar contacts + priority
-        try:
-            L['RADAR'].contacts = []  # type: ignore[attr-defined]
-            if hasattr(L['RADAR'], 'priority_id'):
-                try:
-                    if hasattr(L['RADAR'], 'clear_manual_lock'):
-                        L['RADAR'].clear_manual_lock()  # type: ignore[attr-defined]
-                    else:
-                        L['RADAR'].priority_id = None  # type: ignore[attr-defined]
-                except Exception:
-                    L['RADAR'].priority_id = None  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        # 4) Rebuild Engine and CAP in the webdash module
-        try:
-            wd = importlib.import_module('projects.falklandV2.webdash')
-            wd.RUNTIME.reset_engine_and_cap()
-        except Exception:
-            pass
-        # 5) Log and return
-        try:
-            L['record_flight']({"route": "/diag/reset", "method": "POST", "status": 200, "duration_ms": 0, "request": {}, "response": {"ok": True}})
-        except Exception:
-            pass
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "clear_tts": clear_tts})
     except Exception as e:
         try:
             L['record_flight']({"route": "/diag/reset", "method": "POST", "status": 500, "duration_ms": 0, "request": {}, "response": {"ok": False, "error": str(e)}})

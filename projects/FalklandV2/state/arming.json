@@ -1,29 +1,8 @@
 {
-  "MM38 Exocet": {
-    "armed": false,
-    "arming_until": 0
-  },
-  "Sea Dart SAM": {
-    "armed": true,
-    "arming_until": 0,
-    "cooldown_until": 1758910361.7100182
-  },
-  "20mm GAM-BO1 (twin)": {
-    "armed": false,
-    "arming_until": 0
-  },
-  "20mm Oerlikon": {
-    "armed": false,
-    "arming_until": 0
-  },
-  "4.5 inch Mk.8 gun": {
-    "armed": true,
-    "arming_until": 0,
-    "cooldown_until": 1758910181.479408
-  },
-  "Corvus chaff": {
-    "armed": true,
-    "arming_until": 0,
-    "cooldown_until": 1758910177.001127
-  }
+  "MM38 Exocet": "Safe",
+  "4.5 inch Mk.8 gun": "Safe",
+  "Sea Dart SAM": "Safe",
+  "20mm Oerlikon": "Safe",
+  "20mm GAM-BO1 (twin)": "Safe",
+  "Corvus chaff": "Safe"
 }

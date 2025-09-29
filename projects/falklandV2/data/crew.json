@@ -1,13 +1,13 @@
 {
   "defaults": {
-    "voice": "piper:en_GB-alba-medium",
+    "voice": "openai:alloy",
     "traits": {"tone": "calm", "style": "clipped", "brevity": true}
   },
   "roles": {
     "Navigation": {
       "name": "Lt. (Nav) Arthur Bell",
       "callsign": "Navigation",
-      "voice": "piper:en_GB-alba-medium",
+      "voice": "openai:verse",
       "traits": {"tone": "precise", "style": "concise"},
       "messages": {
         "steady": "Captain, ship steady on course {hdg}°, speed {spd} knots.",
@@ -17,7 +17,7 @@
     "Weapons": {
       "name": "Lt. (Wpn) Sarah Blake",
       "callsign": "Weapons",
-      "voice": "piper:en_GB-alba-medium",
+      "voice": "openai:coral",
       "traits": {"tone": "cool", "style": "crisp"},
       "messages": {
         "ready": "Captain, {weapon} ready.",
@@ -27,26 +27,26 @@
     "Radar": {
       "name": "PO (Radar) Colin Hart",
       "callsign": "Radar",
-      "voice": "piper:en_GB-alba-medium",
+      "voice": "openai:ash",
       "traits": {"tone": "alert", "style": "short"},
       "messages": {
-        "contact": "Captain, radar contact! {type} bearing {bearing}°, range {range_nm} nm, speed {speed} knots.",
+        "contact": "Captain, radar contact! {type} bearing {bearing}°, range {range_nm} nautical miles",
         "none": "Captain, no contacts on scope.",
         "scanning": "Captain, scanning radar.",
-        "scan_report": "Captain, radar scan complete: {contacts} contact(s), hostiles {hostiles}, friendlies {friendlies}. Top threat {threat} at {range_nm} nm ({threat_level})."
+        "scan_report": "Captain, radar scan complete: {contacts} contact(s), hostiles {hostiles}, friendlies {friendlies}. Top threat {threat} at {range_nm} nautical miles ({threat_level})."
       }
     },
     "Bridge": {
       "name": "Lt. Cmdr. On Watch",
       "callsign": "Bridge",
-      "voice": "piper:en_GB-alba-medium",
+      "voice": "openai:alloy",
       "traits": {"tone": "measured", "style": "clear"},
       "messages": {}
     },
     "Fire Control": {
       "name": "Ensign Jim Hockney",
       "callsign": "Fire Control",
-      "voice": "piper:en_GB-alan-medium",
+      "voice": "openai:sol",
       "traits": {"tone": "calm", "style": "authoritative"},
       "messages": {
         "locked": "Captain, locked: {name}, range {range_nm} nm.",
@@ -58,7 +58,7 @@
     "Engineering": {
       "name": "CPO (Eng) Martin Shaw",
       "callsign": "Engineering",
-      "voice": "piper:en_GB-jenny_dioco-medium",
+      "voice": "openai:sage",
       "traits": {"tone": "measured", "style": "brief"},
       "messages": {
         "damage": "Captain, hit on {system}. Damage control responding.",
@@ -68,7 +68,7 @@
     "Pilot": {
       "name": "Lt. (Air) Flight Lead",
       "callsign": "Pilot",
-      "voice": "piper:en_GB-northern_english_male-medium",
+      "voice": "openai:amber",
       "traits": {"tone": "crisp", "style": "brevity"},
       "messages": {
         "fox2": "Fox Two!",

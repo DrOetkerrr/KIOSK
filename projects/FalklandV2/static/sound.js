@@ -42,30 +42,117 @@
   }
   const DISABLE_BRIDGE = _qsFlag('nobridge') || (function(){ try{ return localStorage.getItem('DISABLE_BRIDGE')==='1'; }catch(_){ return false; } })();
   const IGNORE_MUTE = _qsFlag('nomute');
-  function _muteAllRadio(){ if(IGNORE_MUTE) return false; try{ return localStorage.getItem('MUTE_ALL_RADIO')==='1'; }catch(_){ return false; } }
 
-  function getMuteMap(){
-    try {
-      if (window.__stationMute) return window.__stationMute;
-      const raw = localStorage.getItem('muteRoles');
-      if (raw) return JSON.parse(raw) || {};
-    } catch (_) {}
-    return {};
+  const STATION_CHANNELS = {
+    NAV: 1,
+    RADAR: 2,
+    WPN: 3,
+    RADIO: 4,
+    ENG: 5,
+    LOG: 4,
+    SYS: 4,
+  };
+
+  const ROLE_CHANNELS = {
+    Navigation: 1,
+    Radar: 2,
+    Weapons: 3,
+    'Fire Control': 3,
+    Pilot: 6,
+    Engineering: 5,
+    Bridge: 4,
+    Ensign: 4,
+    Captain: 4,
+    XO: 4,
+  };
+
+  let activeStation = 'NAV';
+  let activeChannel = STATION_CHANNELS[activeStation] || 1;
+  const DEFER_LIMIT = 3;
+  const MAX_QUEUE = 6;
+  const STALE_MS = 6000;
+  const GUARD_STALE_MS = 12000;
+  const RADIO_FADE_MS = 150;
+  const RADIO_BUFFER_CACHE = new Map();
+  const deferredRadio = new Map();
+
+  function _stationChannel(id){
+    try{
+      return STATION_CHANNELS[id] || 4;
+    }catch(_){ return 4; }
   }
 
-  function roleMuted(role){
-    if(!role) return false;
+  function _roleChannel(role){
+    if(!role) return 4;
     try{
-      const u=new URL(window.location.href);
-      const v=(u.searchParams.get('nomute')||'').toLowerCase();
-      if(v==='1'||v==='true'||v==='yes'||v==='on') return false;
-    }catch(_){ }
-    try {
-      const map = getMuteMap();
-      return !!map[String(role)];
-    } catch (_) {
-      return false;
+      const ch = ROLE_CHANNELS[String(role)];
+      return (typeof ch === 'number' && ch >=1 && ch <=6) ? ch : 4;
+    }catch(_){
+      return 4;
     }
+  }
+
+  function _syncActiveStation(){
+    try{
+      const st = window.__activeStation || activeStation;
+      activeStation = st in STATION_CHANNELS ? st : 'NAV';
+      const ch = window.__activeChannel;
+      if(typeof ch === 'number' && ch >=1 && ch <=6){
+        activeChannel = ch;
+      }else{
+        activeChannel = _stationChannel(activeStation);
+      }
+    }catch(_){
+      activeStation = 'NAV';
+      activeChannel = 1;
+    }
+    flushDeferred(activeChannel);
+  }
+
+  _syncActiveStation();
+  try{
+    window.addEventListener('station:changed', function(ev){
+      if(ev && ev.detail){
+        activeStation = ev.detail.station || activeStation;
+        if(typeof ev.detail.channel === 'number'){ activeChannel = ev.detail.channel; }
+        else activeChannel = _stationChannel(activeStation);
+      }else{
+        _syncActiveStation();
+      }
+      flushDeferred(activeChannel);
+    });
+  }catch(_){ }
+
+  function _shouldPlay(channel, guard){
+    if(IGNORE_MUTE) return true;
+    if(guard) return true;
+    if(channel === 6) return true;
+    return channel === activeChannel;
+  }
+
+  function deferRadioItem(channel, payload){
+    if(!channel || channel === activeChannel) return;
+    try{
+      const key = Number(channel);
+      if(!Number.isFinite(key)) return;
+      const existing = deferredRadio.get(key) || [];
+      if(existing.some(it=>it.ts === payload.ts)) return;
+      const copy = Object.assign({}, payload, { enqueueTs: Date.now() });
+      existing.push(copy);
+      while(existing.length > DEFER_LIMIT){ existing.shift(); }
+      deferredRadio.set(key, existing);
+    }catch(_){ }
+  }
+
+  function flushDeferred(channel){
+    try{
+      const key = Number(channel);
+      if(!Number.isFinite(key)) return;
+      const queue = deferredRadio.get(key);
+      if(!queue || !queue.length) return;
+      deferredRadio.delete(key);
+      queue.forEach(enqueueRadioMessage);
+    }catch(_){ }
   }
 
   // ---- Ambient bridge loop (starts on first user gesture) ----
@@ -156,16 +243,75 @@
     return ACtx;
   }
 
+  async function loadRadioBuffer(url, ctx){
+    if(RADIO_BUFFER_CACHE.has(url)) return RADIO_BUFFER_CACHE.get(url);
+    const res = await fetch(url, { cache: 'force-cache' });
+    if(!res.ok) throw new Error('radio fetch failed');
+    const ab = await res.arrayBuffer();
+    const buf = await ctx.decodeAudioData(ab);
+    RADIO_BUFFER_CACHE.set(url, buf);
+    return buf;
+  }
+
   function playRadio(file, opts) {
+    const ctx = ensureCtx();
+    const url = file.startsWith('/') ? file : (BASE + file);
+    const targetVol = Math.max(0, Math.min(1, Number((opts&&opts.vol)!=null?opts.vol:0.6)));
+    const fadeInMs = Math.max(0, Number((opts&&opts.fadeInMs)!=null?opts.fadeInMs:0));
+    const fadeOutMs = Math.max(80, Number((opts&&opts.fadeOutMs)!=null?opts.fadeOutMs:RADIO_FADE_MS));
+
+    if(ctx && ctx.createBufferSource){
+      loadRadioBuffer(url, ctx).then(buffer => {
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        const hpf = ctx.createBiquadFilter(); hpf.type = 'highpass'; hpf.frequency.value = (opts&&opts.hp)||300;
+        const lpf = ctx.createBiquadFilter(); lpf.type = 'lowpass'; lpf.frequency.value = (opts&&opts.lp)||3400;
+        const comp = ctx.createDynamicsCompressor();
+        try { comp.threshold.value = -20; comp.knee.value = 20; comp.ratio.value = 3; comp.attack.value = 0.01; comp.release.value = 0.25; } catch(_){ }
+        const gain = ctx.createGain();
+        const now = ctx.currentTime;
+        gain.gain.setValueAtTime(fadeInMs > 0 ? 0.0001 : targetVol, now);
+        if(fadeInMs > 0){
+          gain.gain.linearRampToValueAtTime(targetVol, now + fadeInMs/1000);
+        }
+        const endTime = now + buffer.duration;
+        const fadeStart = Math.max(now, endTime - (fadeOutMs/1000));
+        gain.gain.setValueAtTime(targetVol, fadeStart);
+        gain.gain.linearRampToValueAtTime(0.0001, endTime);
+
+        const finishOnce = (() => {
+          let called = false;
+          return () => {
+            if(called) return;
+            called = true;
+            try {
+              if (opts && typeof opts.onDone === 'function') { opts.onDone(); }
+            } catch (_) {}
+          };
+        })();
+
+        source.onended = () => {
+          if(opts && opts.onEndUrl){ try{ fetch(String(opts.onEndUrl), { method:'POST' }); }catch(_){ } }
+          finishOnce();
+        };
+
+        source.connect(hpf); hpf.connect(lpf); lpf.connect(comp); comp.connect(gain); gain.connect(ctx.destination);
+        source.start();
+      }).catch(err => {
+        console.warn('[sound] radio buffer load failed', err);
+        playRadioElement(url, targetVol, fadeInMs, fadeOutMs, opts);
+      });
+      return;
+    }
+
+    playRadioElement(url, targetVol, fadeInMs, fadeOutMs, opts);
+  }
+
+  function playRadioElement(url, targetVol, fadeInMs, fadeOutMs, opts){
     try {
-      const ctx = ensureCtx();
-      const url = file.startsWith('/') ? file : (BASE + file);
       const el = new Audio(url);
-      // Accessibility: hide programmatic audio elements from screen readers to prevent
-      // announcements like reading field names (e.g., "text") before playback.
       try{ el.setAttribute('aria-hidden','true'); el.setAttribute('role','presentation'); el.setAttribute('tabindex','-1'); }catch(_){ }
       el.crossOrigin = 'anonymous';
-      const src = (ctx && ctx.createMediaElementSource) ? ctx.createMediaElementSource(el) : null;
       const finishOnce = (() => {
         let called = false;
         return () => {
@@ -176,64 +322,28 @@
           } catch (_) {}
         };
       })();
-      try {
-        el.addEventListener('ended', finishOnce, { once: true });
-        el.addEventListener('error', finishOnce, { once: true });
-        el.addEventListener('abort', finishOnce, { once: true });
-      } catch (_) {}
-      if (!ctx || !src) {
-        // Fallback: normal playback
-        const targetVol = Math.max(0, Math.min(1, Number((opts&&opts.vol)!=null?opts.vol:0.6)));
-        const fadeInMs = Math.max(0, Number((opts&&opts.fadeInMs)!=null?opts.fadeInMs:0));
-        if (fadeInMs > 0) { el.volume = 0.0001; } else { el.volume = targetVol; }
-        // Gentle fade-out
-        el.addEventListener('loadedmetadata', ()=>{
-          const dur = el.duration || 0;
-          const fadeMs = Math.max(100, Number((opts&&opts.fadeOutMs)!=null?opts.fadeOutMs:300));
-          const startMs = Math.max(0, (dur*1000)-fadeMs);
-          setTimeout(()=>{
-            let i=0; const steps=Math.max(4, Math.floor(fadeMs/50)); const v0=el.volume;
-            const id=setInterval(()=>{ i++; el.volume=Math.max(0, v0*(1 - i/steps)); if(i>=steps||el.paused) clearInterval(id); }, 50);
-          }, startMs);
-          if (fadeInMs > 0) {
-            let j=0; const jsteps=Math.max(4, Math.floor(fadeInMs/50));
-            const id2=setInterval(()=>{ j++; const t=j/jsteps; el.volume = Math.max(0, Math.min(targetVol, targetVol*t)); if(j>=jsteps||el.paused) clearInterval(id2); }, 50);
-          }
-        });
-        // Completion callback
-        try { if (opts && opts.onEndUrl) { el.addEventListener('ended', ()=>{ try{ fetch(String(opts.onEndUrl), { method:'POST' }); }catch(_){ } }); } } catch(_){}
-        el.play().catch(()=>{ finishOnce(); });
-        return;
-      }
-      // Filters: HPF ~300 Hz, LPF ~3400 Hz, light compression, gain
-      const hpf = ctx.createBiquadFilter(); hpf.type = 'highpass'; hpf.frequency.value = (opts&&opts.hp)||300;
-      const lpf = ctx.createBiquadFilter(); lpf.type = 'lowpass'; lpf.frequency.value = (opts&&opts.lp)||3400;
-      const comp = ctx.createDynamicsCompressor();
-      try { comp.threshold.value = -20; comp.knee.value = 20; comp.ratio.value = 3; comp.attack.value = 0.01; comp.release.value = 0.25; } catch(_){ }
-      const targetVol = Math.max(0, Math.min(1, Number((opts&&opts.vol)!=null?opts.vol:0.6)));
-      const fadeInMs = Math.max(0, Number((opts&&opts.fadeInMs)!=null?opts.fadeInMs:0));
-      const gain = ctx.createGain(); gain.gain.value = fadeInMs > 0 ? 0.0001 : targetVol;
-      src.connect(hpf); hpf.connect(lpf); lpf.connect(comp); comp.connect(gain); gain.connect(ctx.destination);
-      // Fade-out near end via gain ramp
+      el.addEventListener('ended', finishOnce, { once: true });
+      el.addEventListener('error', finishOnce, { once: true });
+      el.addEventListener('abort', finishOnce, { once: true });
+      if (fadeInMs > 0) { el.volume = 0.0001; } else { el.volume = targetVol; }
       el.addEventListener('loadedmetadata', ()=>{
-        const dur = el.duration || 0; const fadeMs = Math.max(100, Number((opts&&opts.fadeOutMs)!=null?opts.fadeOutMs:300));
-        const startMs = Math.max(0, (dur*1000)-fadeMs);
+        const dur = el.duration || 0;
+        const startMs = Math.max(0, (dur*1000)-fadeOutMs);
         setTimeout(()=>{
-          try{
-            const v0 = gain.gain.value; const steps=Math.max(4, Math.floor(fadeMs/50)); let i=0;
-            const id=setInterval(()=>{ i++; const t=i/steps; gain.gain.value=Math.max(0, v0*(1-t)); if(i>=steps||el.paused) clearInterval(id); }, 50);
-          }catch(_){ }
+          let i=0; const steps=Math.max(4, Math.floor(fadeOutMs/40)); const v0=el.volume;
+          const id=setInterval(()=>{ i++; el.volume=Math.max(0, v0*(1 - i/steps)); if(i>=steps||el.paused) clearInterval(id); }, 40);
         }, startMs);
         if (fadeInMs > 0) {
-          try {
-            let j=0; const jsteps=Math.max(4, Math.floor(fadeInMs/50));
-            const id2=setInterval(()=>{ j++; const t=j/jsteps; gain.gain.value=Math.max(0, targetVol * t); if(j>=jsteps||el.paused) clearInterval(id2); }, 50);
-          } catch(_){}
+          let j=0; const jsteps=Math.max(4, Math.floor(fadeInMs/40));
+          const id2=setInterval(()=>{ j++; const t=j/jsteps; el.volume = Math.max(0, Math.min(targetVol, targetVol*t)); if(j>=jsteps||el.paused) clearInterval(id2); }, 40);
         }
       });
-      try { if (opts && opts.onEndUrl) { el.addEventListener('ended', ()=>{ try{ fetch(String(opts.onEndUrl), { method:'POST' }); }catch(_){ } }); } } catch(_){}
+      if(opts && opts.onEndUrl){ try{ el.addEventListener('ended', ()=>{ try{ fetch(String(opts.onEndUrl), { method:'POST' }); }catch(_){ } }); }catch(_){ } }
       el.play().catch(()=>{ finishOnce(); });
-    } catch (_) {}
+    } catch (err) {
+      console.warn('[sound] radio playback failed', err);
+      try { if (opts && typeof opts.onDone === 'function') { opts.onDone(); } } catch (_) {}
+    }
   }
 
   function drainRadioQueue(){
@@ -252,15 +362,38 @@
       drainRadioQueue();
       return;
     }
-    if(_muteAllRadio() || roleMuted(item.role)){
+    const guard = !!item.guard;
+    let channelId = parseInt(item.channel, 10);
+    if(!Number.isFinite(channelId)) channelId = _roleChannel(item.role);
+    const enq = Number(item.enqueueTs || Date.now());
+    const age = Date.now() - enq;
+    const staleLimit = guard ? GUARD_STALE_MS : STALE_MS;
+    if(age > staleLimit){
+      if(!guard){
+        drainRadioQueue();
+        return;
+      }
+      // guard but too old → drop to keep pace
+      if(age > GUARD_STALE_MS * 2){
+        drainRadioQueue();
+        return;
+      }
+    }
+    if(!_shouldPlay(channelId, guard)){
+      if(!guard){
+        try{
+          const cloned = Object.assign({}, item, { channel: channelId, guard, enqueueTs: enq });
+          deferRadioItem(channelId, cloned);
+        }catch(_){ }
+      }
       drainRadioQueue();
       return;
     }
     radioBusy = true;
-    const durationSec = Math.max(1.0, Number(item.duration) || 2.0);
+    const durationSec = Math.max(0.5, Number(item.duration) || 1.6);
     const vol = Number.isFinite(Number(item.vol)) ? Math.max(0, Math.min(1, Number(item.vol))) : 0.8;
-    const fadeOut = Math.max(150, Number(item.fadeOutMs) || 250);
-    setDucking(true, durationSec);
+    const fadeOut = Math.max(80, Number(item.fadeOutMs) || RADIO_FADE_MS);
+    setDucking(true, Math.max(0.5, durationSec - 0.15));
     playRadio(item.file, {
       vol,
       fadeOutMs: fadeOut,
@@ -274,11 +407,26 @@
   }
 
   function enqueueRadioMessage(payload){
-    radioQueue.push(payload);
+    const entry = Object.assign({}, payload, { enqueueTs: Date.now() });
+    radioQueue.push(entry);
+    if(radioQueue.length > MAX_QUEUE){
+      let removed = false;
+      for(let i=0; i<radioQueue.length; i+=1){
+        if(!radioQueue[i].guard){
+          radioQueue.splice(i,1);
+          removed = true;
+          break;
+        }
+      }
+      if(!removed){
+        radioQueue.shift();
+      }
+    }
     drainRadioQueue();
   }
 
   async function pollLaunchAndPlay() {
+    _syncActiveStation();
     try {
       const r = await fetch("/api/status", { cache: "no-store" });
       const j = await r.json();
@@ -314,17 +462,25 @@
         const durSec = Math.max(1.8, Math.min(8.0, Number(rs.dur || 1.2)));
         if (!lastRadio || lastRadio.ts !== ts3) {
           const roleLabel = String(rs.role || '').trim();
-          lastRadio = { ts: ts3, role: roleLabel };
-          if (!_muteAllRadio() && !roleMuted(roleLabel) && rs.file) {
-            enqueueRadioMessage({
+          let channelId = parseInt(rs.channel, 10);
+          if(!Number.isFinite(channelId)) channelId = _roleChannel(roleLabel);
+          const guardFlag = !!(rs.guard || channelId === 6);
+          lastRadio = { ts: ts3, role: roleLabel, channel: channelId };
+          if (rs.file){
+            const payload = {
               ts: ts3,
               role: roleLabel,
               file: rs.file,
               duration: durSec,
+              channel: channelId,
+              guard: guardFlag,
               vol: Number((rs && rs.vol)!=null ? rs.vol : 0.8),
               fadeOutMs: Number((rs && rs.fade_ms)!=null ? rs.fade_ms : 250),
               onEndUrl: rs.on_end_url || null
-            });
+            };
+            if(_shouldPlay(channelId, guardFlag)) enqueueRadioMessage(payload);
+            else if(!guardFlag) deferRadioItem(channelId, payload);
+            else enqueueRadioMessage(payload);
           }
         }
       }

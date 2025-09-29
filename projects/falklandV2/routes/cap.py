@@ -237,8 +237,11 @@ def cap_request():
         tgt = next((c for c in L['RADAR'].contacts if int(getattr(c, 'id', -1)) == int(tid)), None) if tid is not None else None
         target_class = _contact_class_for_cap(tgt, L.get('TARGET_CLASS_BY_NAME'))
         requested_loadout = _normalize_loadout(data.get('loadout'))
-        SURFACE_CLASSES = {'Ship', 'Surface', 'Carrier', 'Escort', 'Landing Craft', 'Merchant', 'Convoy'}
-        AIR_CLASSES = {'Aircraft', 'Helicopter', 'Missile', 'Bomber', 'Fighter'}
+        SURFACE_CLASSES = {
+            'Ship', 'Surface', 'Carrier', 'Escort', 'Landing Craft', 'Merchant', 'Convoy',
+            'Destroyer', 'Frigate', 'Corvette', 'Patrol Boat', 'Boat', 'Submarine'
+        }
+        AIR_CLASSES = {'Aircraft', 'Helicopter', 'Missile', 'Bomber', 'Fighter', 'Drone'}
         auto_default = 'aim9'
         if target_class and target_class in SURFACE_CLASSES:
             auto_default = 'bombs'

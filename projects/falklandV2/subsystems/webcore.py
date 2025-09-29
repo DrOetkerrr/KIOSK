@@ -773,6 +773,7 @@ def load_arming() -> Dict[str,str]:
             if isinstance(v, dict):
                 armed = bool(v.get('armed', False))
                 until = float(v.get('arming_until', 0) or 0)
+                cooldown = float(v.get('cooldown_until', 0) or 0)
                 if armed:
                     normalized[nm] = 'Armed'
                 elif until > now:
@@ -781,6 +782,13 @@ def load_arming() -> Dict[str,str]:
                     normalized[nm] = 'Armed'; v['armed'] = True; v['arming_until'] = 0; dirty = True
                 else:
                     normalized[nm] = 'Safe'
+                # Clamp stale cooldowns (e.g., persisted far-future timestamps) once the weapon is armed
+                if armed and cooldown > 0:
+                    if cooldown <= now:
+                        v['cooldown_until'] = 0.0; dirty = True
+                    elif cooldown - now > 600:
+                        # Cooldowns longer than 10 minutes are considered stale; reset
+                        v['cooldown_until'] = 0.0; dirty = True
             else:
                 normalized[nm] = _coerce_arming(v)
     except Exception:
@@ -976,7 +984,7 @@ def voice_emit(event_id: str, ctx: Dict[str, Any] | None = None, *, fallback: st
         except Exception:
             txt = templ
         if txt:
-            wd.record_officer(str(r), txt)
+            wd.record_officer(str(r), txt, event_id=str(event_id), event_ctx=ctx or {})
     except Exception:
         pass
 
@@ -1597,6 +1605,7 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
                 except Exception:
                     tos_s = None
                 vect = bool(ts.get('vector', False))
+                target_cell_disp = target_cell or '—'
                 pos_cell = origin_cell or (meta_rec or {}).get('origin_cell') or ''
                 def _estimated_pos_cell() -> str:
                     origin_xy = _as_xy(m.get('origin_xy')) or _as_xy((meta_rec or {}).get('origin_xy'))
@@ -1648,7 +1657,6 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
                     return '—'
 
                 pos_cell = _estimated_pos_cell()
-                target_cell_disp = target_cell or '—'
                 if target_name:
                     target_label = f"{target_name} @ {target_cell_disp}" if target_cell_disp != '—' else target_name
                 else:
@@ -1916,6 +1924,16 @@ def engine_thread_run(wd) -> None:
                     except Exception:
                         pass
                     st['stage'] = 'landing'
+                    st['ready_announced'] = st.get('ready_announced', False)
+                    if not st.get('ready_announced'):
+                        st['ready_announced'] = True
+                        try:
+                            wd.record_event('resupply.ready', {
+                                'origin_cell': st.get('origin_cell'),
+                                'eta_ts': eta,
+                            })
+                        except Exception:
+                            pass
                     st['complete_after_ts'] = now_ts + 15.0  # fallback deadline
                 # Fallback completion if UI didn’t notify after audio end
                 if str(st.get('stage') or '') == 'landing':
@@ -1938,8 +1956,27 @@ def engine_thread_run(wd) -> None:
                         st['stage'] = 'complete'
                         st['completed_ts'] = now_ts
                         st['eta_ts'] = 0.0
+                        st['ready_announced'] = False
                         try:
-                            wd.record_officer('Pilot', 'Sea King resupply complete.')
+                            wd.record_event('resupply.complete', {'completed_ts': now_ts})
+                        except Exception:
+                            pass
+                        try:
+                            cap_obj = getattr(wd, 'CAP', None)
+                            if cap_obj is not None:
+                                cfg_weapons = cap_obj.cfg.setdefault('weapons', {})
+                                aim9_cfg = cfg_weapons.setdefault('aim9', {})
+                                default_pair = int(aim9_cfg.get('missiles_total', 8) or 8)
+                                aim9_cfg['inventory_total'] = int(aim9_cfg.get('inventory_total', 40) or 40)
+                                for mission in list(getattr(cap_obj, 'missions', []) or []):
+                                    try:
+                                        if getattr(mission, 'loadout', 'aim9') != 'aim9':
+                                            continue
+                                        if getattr(mission, 'status', '') in ('airborne', 'onstation'):
+                                            continue
+                                        mission.missiles_left = getattr(mission, 'missiles_total', default_pair)
+                                    except Exception:
+                                        continue
                         except Exception:
                             pass
         except Exception:
@@ -2039,7 +2076,41 @@ def engine_thread_run(wd) -> None:
                             })
                         except Exception:
                             pass
-                    # ignore arming_ready (load_arming handles it)
+                    elif kind == 'arming_ready':
+                        weapon = str(ev.get('weapon') or '')
+                        if weapon:
+                            try:
+                                raw = wd._load_json(wd.ARMING_PATH, {})
+                                if isinstance(raw, dict):
+                                    rec = raw.get(weapon)
+                                    if isinstance(rec, dict):
+                                        rec['armed'] = True
+                                        rec['arming_until'] = 0.0
+                                        raw[weapon] = rec
+                                        wd._save_json(wd.ARMING_PATH, raw)
+                            except Exception:
+                                pass
+                            try:
+                                wd.record_event('weapon.reload.complete', {'name': weapon, 'source': 'arming'})
+                            except Exception:
+                                pass
+                    elif kind == 'weapon_reload_ready':
+                        weapon = str(ev.get('weapon') or '')
+                        if weapon:
+                            try:
+                                raw = wd._load_json(wd.ARMING_PATH, {})
+                                if isinstance(raw, dict):
+                                    rec = raw.get(weapon)
+                                    if isinstance(rec, dict):
+                                        rec['cooldown_until'] = 0.0
+                                        raw[weapon] = rec
+                                        wd._save_json(wd.ARMING_PATH, raw)
+                            except Exception:
+                                pass
+                            try:
+                                wd.record_event('weapon.reload.complete', {'name': weapon, 'source': 'reload'})
+                            except Exception:
+                                pass
                 finally:
                     try:
                         wd.PENDING_EVENTS.remove(ev)
@@ -2268,6 +2339,15 @@ def engine_thread_run(wd) -> None:
                                                 hlth['hermes_lives'] = max(0, int(hlth.get('hermes_lives', 1)) - 1)
                                                 _save_health(hlth)
                                                 hermes_hit = True
+                                                try:
+                                                    if int(hlth.get('hermes_lives', 0)) <= 0 and not wd.AUDIO_FLAGS.get('hermes_out_announced'):
+                                                        wd.AUDIO_FLAGS['hermes_out_announced'] = True
+                                                        wd.record_event('eng.hermes.outofaction', {
+                                                            'weapon': weapon_display,
+                                                            'when': now,
+                                                        })
+                                                except Exception:
+                                                    pass
                                         except Exception:
                                             pass
                                     else:
@@ -2327,6 +2407,12 @@ def engine_thread_run(wd) -> None:
                                                     })
                                                 except Exception:
                                                     pass
+                                        except Exception:
+                                            pass
+                                        try:
+                                            if int(hlth.get('lives', 0)) <= 0 and not wd.AUDIO_FLAGS.get('abandon_ship_announced'):
+                                                wd.AUDIO_FLAGS['abandon_ship_announced'] = True
+                                                wd.record_event('eng.abandon_ship', {'when': now})
                                         except Exception:
                                             pass
                                     payload = {

@@ -14,30 +14,9 @@
       <div class="meta mono"><span id="hud-ship">Ship —</span><span id="hud-hdg">hdg —°</span><span id="hud-spd">spd — kn</span></div>
     </div>
 
-    <div id="mission-card" class="mission-card mission-hidden">
-      <div class="mission-head">
-        <div id="mission-title" class="mission-title">Mission —</div>
-        <div id="mission-status" class="mission-status badge">Inactive</div>
-      </div>
-      <div class="mission-meta mono">
-        <span id="mission-elapsed">Elapsed —</span>
-        <span id="mission-timeleft" class="muted">No mission timer</span>
-      </div>
-      <div id="mission-desc" class="mission-desc muted"></div>
-      <div id="mission-outcome" class="mission-outcome"></div>
-      <div id="mission-decision" class="mission-decision"></div>
-      <div id="mission-alert" class="mission-alert muted"></div>
-    </div>
-
-    <div class="window">
-      <div id="station-panel" class="panel"></div>
-    </div>
-
     <div class="toolbar">
       <button class="btn" data-st="NAV">NAV</button>
       <button class="btn" data-st="RADAR">RADAR</button>
-      <button class="btn ptt-btn" id="ptt-btn" title="Push-To-Talk (Weapons)">PTT</button>
-      <button class="btn" id="radio-mute-btn" title="Toggle all radio audio">RADIO ON</button>
       <button class="btn" data-st="WPN">WPN</button>
       <button class="btn" data-st="RADIO">COMMS</button>
       <button class="btn" data-st="ENG">ENG</button>
@@ -45,9 +24,10 @@
       <button class="btn" data-st="SYS">SYS</button>
     </div>
 
-    <div class="event-box">
-      <h3 class="event-title">Event Console</h3>
-      <div id="event-log" class="event-log mono"></div>
+    <div id="station-switches" class="station-switches"></div>
+
+    <div class="window">
+      <div id="station-panel" class="panel"></div>
     </div>
 
   </div>

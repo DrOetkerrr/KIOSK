@@ -185,13 +185,57 @@ function renderCAP(cap){
   });
 }
 
+const ROLE_CHANNELS = {
+  Navigation: 1,
+  Radar: 2,
+  Weapons: 3,
+  'Fire Control': 3,
+  Pilot: 6,
+  Engineering: 5,
+  Bridge: 4,
+  Ensign: 4,
+  Captain: 4,
+  XO: 4,
+};
+
+function _resolveChannel(role, channel){
+  let ch = Number.parseInt(channel, 10);
+  if(Number.isFinite(ch) && ch>=1 && ch<=6) return ch;
+  const fallback = ROLE_CHANNELS[String(role)||''];
+  return (typeof fallback === 'number' && fallback>=1 && fallback<=6) ? fallback : 4;
+}
+
+function _activeChannel(){
+  try{
+    const ch = Number(window.__activeChannel);
+    if(Number.isFinite(ch) && ch>=1 && ch<=6) return ch;
+  }catch(_){ }
+  return 1;
+}
+
 function renderRadio(lines){
-  const out=$('#radio-list');
+  const out=$('#radio-list'); if(!out) return;
   out.innerHTML='';
-  (lines||[]).slice(-10).forEach(l=>{
+  const activeCh = _activeChannel();
+  const filtered = [];
+  (lines||[]).forEach(l=>{
+    const role = l.role || '';
+    const channelId = _resolveChannel(role, l.channel);
+    const guard = !!(l.guard || channelId === 6);
+    if(guard || channelId === activeCh){
+      filtered.push({ ts: l.ts, role, text: l.text, channel: channelId, guard });
+    }
+  });
+  filtered.slice(-10).forEach(l=>{
     const row=document.createElement('div'); row.className='row';
-    row.append(badge(l.ts||'--:--:--','badge muted'), badge(l.role||'OFF','badge'),
-               Object.assign(document.createElement('div'),{textContent:l.text||''}));
+    const chLabel = l.guard ? 'GUARD' : `CH ${l.channel}`;
+    const chClass = l.guard ? 'badge channel guard' : 'badge channel';
+    row.append(
+      badge(l.ts||'--:--:--','badge muted'),
+      badge(chLabel, chClass),
+      badge(l.role||'OFF','badge'),
+      Object.assign(document.createElement('div'),{textContent:l.text||''})
+    );
     out.appendChild(row);
   });
 }
@@ -220,6 +264,7 @@ function renderRadar(arr){
 
 function appendConsole(s){
   const c=$('#console');
+  if(!c) return;
   const line=document.createElement('div'); line.textContent=String(s||'');
   c.appendChild(line);
   c.scrollTop = c.scrollHeight;

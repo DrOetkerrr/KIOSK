@@ -13,6 +13,7 @@ import sys
 import random
 import threading
 import time
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -258,6 +259,68 @@ class GameRuntime:
             except Exception:
                 pass
             self._last_radar_tick_ts = time.time()
+        self._rebind()
+
+    def reset_state(self, *, clear_tts: bool = False) -> None:
+        """Restore persistent state (ammo, arming, health, missions, etc.) to defaults.
+
+        Also rebuilds engine/CAP/radar instances and clears cached audio state.
+        """
+        with self.state_lock:
+            try:
+                core.save_ammo(dict(core.WEAP_DEFAULT_AMMO))
+            except Exception:
+                pass
+            try:
+                core.save_arming(dict(core.WEAP_DEFAULT_ARMING))
+            except Exception:
+                pass
+            try:
+                core.reset_damage_state()
+            except Exception:
+                pass
+            try:
+                core._save_json(self.skirmishes_path, [])
+            except Exception:
+                pass
+            try:
+                core._save_json(self.roadmap_path, {})
+            except Exception:
+                pass
+            try:
+                core._save_json(self.state_dir / 'runtime.json', {})
+            except Exception:
+                pass
+            if clear_tts:
+                try:
+                    for entry in self.tts_dir.iterdir():
+                        if entry.is_file() or entry.is_symlink():
+                            entry.unlink(missing_ok=True)
+                        elif entry.is_dir():
+                            shutil.rmtree(entry, ignore_errors=True)
+                except Exception:
+                    pass
+
+            # Reset audio state cache
+            core.AUDIO_STATE.clear()
+            core.AUDIO_STATE.update({
+                "last_launch": None,
+                "last_result": None,
+                "radio": None,
+                "alarm": None,
+                "cap_launch": None,
+                "enemy_bomb": None,
+                "shots_in_flight": [],
+            })
+            self.audio_state = core.AUDIO_STATE
+
+            # Rebuild runtime components
+            self.engine = self._create_engine()
+            self.cap = self._create_cap()
+            self.radar = self._create_radar()
+            now = time.time()
+            self.mission = MissionController(self.data_dir, now=now)
+            self._last_radar_tick_ts = now
         self._rebind()
 
     # Convenience pass-throughs for callers that expect functions

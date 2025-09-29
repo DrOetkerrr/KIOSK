@@ -45,69 +45,776 @@ let ST = {
   events: [],
   eventHistory: [],
   eventKeys: { launch: null, result: null, cap: null },
-  muteRoles: {}
+  power: {}
 };
 
-const STATION_ROLE_MAP = {
-  NAV: ['Navigation'],
-  RADAR: ['Radar'],
-  WPN: ['Weapons', 'Fire Control'],
-  RADIO: ['Pilot'],
-  ENG: ['Engineering'],
-  LOG: [],
-  SYS: ['Ensign']
+const STATION_KEYS = ['NAV','RADAR','WPN','RADIO','ENG'];
+const STATION_LABELS = { NAV: 'NAV', RADAR: 'RDR', WPN: 'WPN', RADIO: 'COMMS', ENG: 'ENG' };
+const VOICE_DEVICE_STORAGE_KEY = 'voice_device_id';
+
+function stationLabel(key){
+  return STATION_LABELS[key] || key;
+}
+const POWER_STORAGE_KEY = 'station_power';
+
+function loadStationPower(){
+  if(!ST.power || typeof ST.power !== 'object') ST.power = {};
+  let saved = {};
+  try{
+    const raw = localStorage.getItem(POWER_STORAGE_KEY);
+    if(raw){
+      const parsed = JSON.parse(raw);
+      if(parsed && typeof parsed === 'object' && !Array.isArray(parsed)) saved = parsed;
+    }
+  }catch(_){ saved = {}; }
+  STATION_KEYS.forEach(function(key){
+    if(typeof saved[key] === 'boolean') ST.power[key] = saved[key];
+    else if(typeof ST.power[key] !== 'boolean') ST.power[key] = true;
+  });
+  saveStationPower();
+}
+
+function saveStationPower(){
+  try{ localStorage.setItem(POWER_STORAGE_KEY, JSON.stringify(ST.power)); }catch(_){ }
+}
+
+function isStationPowered(key){
+  if(!ST.power || typeof ST.power !== 'object') return true;
+  if(!Object.prototype.hasOwnProperty.call(ST.power, key)) return true;
+  return ST.power[key] !== false;
+}
+
+function setStationPower(key, enabled){
+  if(!ST.power || typeof ST.power !== 'object') ST.power = {};
+  ST.power[key] = !!enabled;
+  saveStationPower();
+  if(!enabled && Voice.activeStation === key){
+    Voice.stop();
+  }
+  renderStationSwitches();
+  updateToolbarPowerClasses();
+  if((ST.active || 'NAV') === key){
+    render(window._status || {});
+  }
+}
+
+const Voice = {
+  supported: false,
+  recognition: null,
+  activeStation: null,
+  listening: false,
+  mode: 'webspeech',
+  processing: false,
+  deviceId: null,
+  devices: [],
+  deviceSelect: null,
+  stream: null,
+  _enumerating: false,
+  _hasDevicePermission: false,
+  recorder: null,
+  recorderMime: 'audio/webm',
+  recordChunks: [],
+  recordStopTimer: null,
+  pendingStation: null,
+  init(){
+    this.mode = 'webspeech';
+    this.processing = false;
+    this.recorder = null;
+    this.recordChunks = [];
+    this.pendingStation = null;
+    this._loadStoredDevice();
+    if(navigator.mediaDevices && navigator.mediaDevices.enumerateDevices){
+      const media = navigator.mediaDevices;
+      try{
+        media.addEventListener('devicechange', () => { this._refreshDeviceList(); });
+      }catch(_){
+        try{ media.ondevicechange = () => { this._refreshDeviceList(); }; }catch(__){}
+      }
+      this._refreshDeviceList();
+    }
+    this.supported = false;
+    try{
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if(SR){
+        this.recognition = new SR();
+        this.recognition.lang = 'en-US';
+        this.recognition.interimResults = false;
+        this.recognition.maxAlternatives = 1;
+        this.recognition.onresult = (ev) => {
+          if(!this.listening) return;
+          try{
+            const res = ev.results && ev.results[0] && ev.results[0][0];
+            const transcript = res ? String(res.transcript || '').trim() : '';
+            if(transcript){
+              pushEvent('voice', `Heard: ${transcript}`);
+              this.handleTranscript(transcript);
+            }
+          }catch(err){ console.warn('[voice] result error', err); }
+        };
+        this.recognition.onerror = (ev) => {
+          console.warn('[voice] error', ev && ev.error);
+          pushEvent('voice', `Voice error: ${(ev && ev.error) || 'unknown'}`);
+          this.stop();
+        };
+        this.recognition.onend = () => {
+          if(this.listening){
+            try{ this.recognition.start(); }
+            catch(err){ console.warn('[voice] restart failed', err); this.stop(); }
+          }
+        };
+        this.mode = 'webspeech';
+        this.supported = true;
+      }
+    }catch(err){
+      console.warn('[voice] init failed', err);
+      this.supported = false;
+    }
+    if(!this.supported){
+      if(typeof MediaRecorder !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.getUserMedia){
+        this.mode = 'recorder';
+        this.supported = true;
+      }
+    }
+    this.updateButtons();
+  },
+  _loadStoredDevice(){
+    try{
+      const saved = localStorage.getItem(VOICE_DEVICE_STORAGE_KEY);
+      if(saved){ this.deviceId = saved; }
+    }catch(_){ this.deviceId = this.deviceId || null; }
+  },
+  _storeDevice(id){
+    try{
+      if(id){ localStorage.setItem(VOICE_DEVICE_STORAGE_KEY, id); }
+      else{ localStorage.removeItem(VOICE_DEVICE_STORAGE_KEY); }
+    }catch(_){ }
+  },
+  async _refreshDeviceList(){
+    if(this._enumerating) return;
+    if(!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    this._enumerating = true;
+    try{
+      const list = await navigator.mediaDevices.enumerateDevices();
+      const inputs = Array.isArray(list) ? list.filter((d)=>d && d.kind === 'audioinput') : [];
+      this.devices = inputs;
+      if(this.deviceId && !inputs.some((d)=>d.deviceId === this.deviceId)){
+        this.deviceId = null;
+      }
+      if(!this.deviceId && inputs.length){
+        const preferred = inputs.find((d)=>d.deviceId && d.deviceId !== 'communications') || inputs[0];
+        this.deviceId = preferred ? preferred.deviceId : null;
+        if(this.deviceId){ this._storeDevice(this.deviceId); }
+      }
+      this._syncDeviceSelect();
+    }catch(err){
+      console.warn('[voice] enumerate devices failed', err);
+    }finally{
+      this._enumerating = false;
+      this.updateButtons();
+    }
+  },
+  _deviceLabel(device, index){
+    if(!device) return `Mic ${index+1}`;
+    if(device.label){ return device.label; }
+    if(device.deviceId === 'default'){ return 'System default'; }
+    if(device.deviceId === 'communications'){ return 'Communications mic'; }
+    return `Mic ${index+1}`;
+  },
+  _syncDeviceSelect(){
+    const select = this.deviceSelect;
+    if(!select) return;
+    while(select.firstChild){ select.removeChild(select.firstChild); }
+    if(!this.devices.length){
+      const opt = document.createElement('option');
+      opt.value = '';
+      const canRequest = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+      opt.textContent = canRequest ? 'Allow microphone access…' : 'No microphone available';
+      select.appendChild(opt);
+      select.disabled = true;
+      return;
+    }
+    this.devices.forEach((dev, idx)=>{
+      const opt = document.createElement('option');
+      opt.value = dev.deviceId || '';
+      opt.textContent = this._deviceLabel(dev, idx);
+      select.appendChild(opt);
+    });
+    const wanted = this.deviceId && this.devices.some((d)=>d.deviceId === this.deviceId)
+      ? this.deviceId
+      : (this.devices[0] ? this.devices[0].deviceId : '');
+    if(wanted){ select.value = wanted; }
+    else { select.selectedIndex = 0; }
+    select.disabled = false;
+  },
+  attachDeviceSelect(select){
+    this.deviceSelect = select;
+    this._syncDeviceSelect();
+  },
+  setDevice(id){
+    const newId = id ? String(id) : '';
+    if(newId === (this.deviceId || '')) return;
+    const wasListening = this.listening;
+    const station = this.activeStation;
+    if(wasListening && station){
+      this.stop();
+    }
+    this.deviceId = newId || null;
+    this._storeDevice(this.deviceId);
+    this._syncDeviceSelect();
+    if(wasListening && station){
+      this.start(station).catch((err)=>{ console.warn('[voice] restart failed after device change', err); });
+    }
+  },
+  async _openStream(){
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return null;
+    this.releaseStream();
+    const constraint = this.deviceId ? { deviceId: { exact: this.deviceId } } : true;
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: constraint, video: false });
+      this.stream = stream;
+      this._hasDevicePermission = true;
+      this._refreshDeviceList();
+      return stream;
+    }catch(err){
+      console.warn('[voice] preferred mic failed', err);
+      if(this.deviceId){
+        try{
+          const fallback = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          this.stream = fallback;
+          this._hasDevicePermission = true;
+          this.deviceId = null;
+          this._storeDevice(null);
+          pushEvent('voice', 'Falling back to system microphone');
+          this._refreshDeviceList();
+          return fallback;
+        }catch(ex){
+          console.warn('[voice] fallback mic failed', ex);
+        }
+      }
+      throw err;
+    }
+  },
+  releaseStream(){
+    if(!this.stream) return;
+    try{
+      this.stream.getTracks().forEach((track)=>{ try{ track.stop(); }catch(_){ } });
+    }catch(_){ }
+    this.stream = null;
+  },
+  toggle(station){
+    if(!this.supported){
+      pushEvent('voice', 'Voice commands not supported in this browser');
+      return;
+    }
+    if(this.processing){
+      pushEvent('voice', 'Voice command processing – please wait');
+      return;
+    }
+    if(!isStationPowered(station)){
+      pushEvent('voice', `${stationLabel(station)} is powered off`);
+      return;
+    }
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      pushEvent('voice', 'Microphone access unavailable');
+      return;
+    }
+    if(this.listening && this.activeStation === station){
+      this.stop();
+    }else{
+      this.start(station).catch((err)=>{
+        console.warn('[voice] start error', err);
+        pushEvent('voice', 'Unable to start voice mode');
+      });
+    }
+  },
+  async start(station){
+    if(!this.supported || this.processing) return;
+    if(this.listening && this.activeStation === station) return;
+    if(this.listening){
+      this.stop();
+    }
+    this.activeStation = station;
+    this.pendingStation = station;
+    try{
+      await this._openStream();
+    }catch(err){
+      console.warn('[voice] microphone unavailable', err);
+      this.activeStation = null;
+      this.pendingStation = null;
+      this.updateButtons();
+      throw err;
+    }
+    try{
+      if(this.mode === 'recorder'){
+        this._startRecorder();
+      }else if(this.recognition){
+        this.recognition.start();
+      }else{
+        throw new Error('Voice mode unavailable');
+      }
+    }catch(err){
+      if(this.mode !== 'recorder'){
+        this.releaseStream();
+      }
+      this.activeStation = null;
+      this.pendingStation = null;
+      this.listening = false;
+      console.warn('[voice] start failed', err);
+      throw err;
+    }
+    this.listening = true;
+    const suffix = this.mode === 'recorder' ? ' (auto-stop after 8s)' : '';
+    pushEvent('voice', `Listening on ${stationLabel(station)}${suffix}`);
+    this.updateButtons();
+  },
+  stop(){
+    const station = this.activeStation || this.pendingStation;
+    if(this.listening){
+      if(this.mode === 'recorder'){
+        this.processing = true;
+        this._stopRecorder();
+      }else if(this.recognition){
+        try{ this.recognition.abort(); }catch(_){ }
+      }
+      pushEvent('voice', 'Voice listening stopped');
+    }
+    this.listening = false;
+    this.activeStation = null;
+    if(this.mode !== 'recorder'){
+      this.releaseStream();
+    }
+    this.pendingStation = station;
+    this.updateButtons();
+  },
+  updateButtons(){
+    const hasMic = Array.isArray(this.devices) && this.devices.length > 0;
+    const canRequest = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    $$('.voice-btn').forEach((btn)=>{
+      const st = btn.dataset ? btn.dataset.station : null;
+      const powered = st ? isStationPowered(st) : true;
+      const listening = powered && this.listening && this.activeStation === st;
+      btn.classList.toggle('listening', listening);
+      if(!this.supported){
+        btn.textContent = 'VOICE N/A';
+        btn.disabled = true;
+        btn.classList.remove('listening');
+      }else if(!powered){
+        btn.textContent = 'VOICE OFF';
+        btn.disabled = true;
+        btn.classList.remove('listening');
+      }else if(!hasMic && !canRequest){
+        btn.textContent = 'MIC N/A';
+        btn.disabled = true;
+        btn.classList.remove('listening');
+      }else{
+        btn.disabled = false;
+        btn.textContent = listening ? 'STOP VOICE' : 'VOICE MODE';
+      }
+    });
+  },
+  handleTranscript(text){
+    const cleaned = String(text || '').trim().toLowerCase();
+    if(!cleaned) return;
+    if(['stop listening','cancel listening','end voice'].includes(cleaned)){
+      this.stop();
+      return;
+    }
+    const station = this.activeStation;
+    if(!station){
+      pushEvent('voice', 'No station active for voice command');
+      return;
+    }
+    const handlers = VOICE_COMMANDS[station] || [];
+    for(const entry of handlers){
+      const match = cleaned.match(entry.pattern);
+      if(match){
+        try{
+          entry.action(match);
+        }catch(err){
+          console.warn('[voice] handler error', err);
+          pushEvent('voice', 'Command failed');
+        }
+        return;
+      }
+    }
+    pushEvent('voice', `Unrecognized command: ${text}`);
+  }
 };
 
-try {
-  const savedMute = localStorage.getItem('muteRoles');
-  if (savedMute) {
-    ST.muteRoles = JSON.parse(savedMute) || {};
+async function voiceFetch(url, body){
+  try{
+    const resp = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const data = await resp.json().catch(()=>({}));
+    if(resp.ok && data && data.ok !== false){
+      return { ok: true, data };
+    }
+    return { ok: false, data };
+  }catch(err){
+    console.warn('[voice] fetch error', err);
+    return { ok: false, data: null };
   }
-} catch (_) {
-  ST.muteRoles = {};
-}
-if (!ST.muteRoles || typeof ST.muteRoles !== 'object') ST.muteRoles = {};
-window.__stationMute = ST.muteRoles;
-
-function _isRoleMuted(role){
-  try { return !!(ST.muteRoles || {})[role]; } catch(_) { return false; }
 }
 
-function _setRoleMuted(role, muted){
-  if (!ST.muteRoles || typeof ST.muteRoles !== 'object') ST.muteRoles = {};
-  if (muted) ST.muteRoles[role] = true;
-  else delete ST.muteRoles[role];
-  try { localStorage.setItem('muteRoles', JSON.stringify(ST.muteRoles)); } catch(_){ }
-  window.__stationMute = ST.muteRoles;
-}
-
-function createStationControls(stationKey){
-  const roles = STATION_ROLE_MAP[stationKey] || [];
-  if (!roles.length) return null;
-  const bar=document.createElement('div'); bar.className='station-controls';
-  const btn=document.createElement('button'); btn.className='btn mute-btn';
-  function update(){
-    const muted = roles.every(_isRoleMuted);
-    btn.textContent = muted ? 'RADIO OFF' : 'RADIO ON';
-    btn.classList.toggle('muted', muted);
-    btn.title = muted ? 'Enable radio for this station' : 'Silence radio for this station';
+async function voiceNavUpdate(field, value){
+  const payload = {};
+  if(field === 'heading'){
+    let hdg = Number(value);
+    if(!Number.isFinite(hdg)) return pushEvent('voice', 'Invalid heading');
+    while(hdg < 0) hdg += 360;
+    hdg = hdg % 360;
+    payload.heading = hdg;
+  }else if(field === 'speed'){
+    let spd = Number(value);
+    if(!Number.isFinite(spd)) return pushEvent('voice', 'Invalid speed');
+    spd = Math.max(0, Math.min(35, spd));
+    payload.speed = spd;
   }
-  btn.onclick=function(){
-    const muted = roles.every(_isRoleMuted);
-    roles.forEach(function(role){ _setRoleMuted(role, !muted); });
-    update();
-  };
-  update();
-  bar.appendChild(btn);
-  return bar;
+  const res = await voiceFetch('/api/nav/set', payload);
+  pushEvent('voice', res.ok ? `NAV set ${field} ${payload[field]}` : 'Failed to send NAV order');
 }
 
-function addStationControls(p, key){
-  const ctrl = createStationControls(key);
-  if (ctrl) p.appendChild(ctrl);
+const VOICE_WEAPON_MAP = {
+  'sea dart': 'Sea Dart SAM',
+  'dart': 'Sea Dart SAM',
+  'exocet': 'MM38 Exocet',
+  'missile': 'MM38 Exocet',
+  'main gun': '4.5 inch Mk.8 gun',
+  'gun': '4.5 inch Mk.8 gun',
+  'oerlikon': '20mm Oerlikon',
+  'gam': '20mm GAM-BO1',
+  'gam bo1': '20mm GAM-BO1',
+  'chaff': 'Corvus chaff',
+};
+
+function voiceResolveWeapon(name){
+  const key = String(name || '').trim().toLowerCase();
+  if(VOICE_WEAPON_MAP[key]) return VOICE_WEAPON_MAP[key];
+  for(const alias in VOICE_WEAPON_MAP){
+    if(key.includes(alias)) return VOICE_WEAPON_MAP[alias];
+  }
+  return name;
 }
 
-function setActive(id){ ST.active=id; $$('.toolbar .btn').forEach(b=> b.classList.toggle('active', b.dataset.st===id)); render(window._status||{}); }
+async function voiceArmWeapon(spoken, armed){
+  const name = voiceResolveWeapon(spoken);
+  const res = await voiceFetch('/weapons/arm', { name, state: armed ? 'Armed' : 'Safe' });
+  pushEvent('voice', res.ok ? `${armed ? 'Armed' : 'Safed'} ${name}` : `Failed to ${armed ? 'arm' : 'safe'} ${name}`);
+}
+
+async function voiceFireWeapon(spoken){
+  const name = voiceResolveWeapon(spoken);
+  const res = await voiceFetch('/weapons/fire', { name, mode: 'real' });
+  pushEvent('voice', res.ok ? `Firing ${name}` : `Failed to fire ${name}`);
+}
+
+async function voiceAuthorizeMission(id, authorize){
+  const res = await voiceFetch('/cap/authorize', { id, authorize });
+  pushEvent('voice', res.ok ? `${authorize ? 'Authorized' : 'Held'} mission ${id}` : `Failed to update mission ${id}`);
+}
+
+const VOICE_COMMANDS = {
+  NAV: [
+    { pattern: /^set course (\d{1,3})$/, action: (m)=>voiceNavUpdate('heading', parseInt(m[1], 10)) },
+    { pattern: /^set speed (\d{1,3})$/, action: (m)=>voiceNavUpdate('speed', parseInt(m[1], 10)) },
+  ],
+  WPN: [
+    { pattern: /^(arm) (.+)$/, action: (m)=>voiceArmWeapon(m[2], true) },
+    { pattern: /^(safe) (.+)$/, action: (m)=>voiceArmWeapon(m[2], false) },
+    { pattern: /^(fire|launch|shoot) (.+)$/, action: (m)=>voiceFireWeapon(m[2]) },
+  ],
+  RADIO: [
+    { pattern: /^(authorize|engage) mission (\d{1,3})$/, action: (m)=>voiceAuthorizeMission(parseInt(m[2], 10), true) },
+    { pattern: /^(hold|cancel) mission (\d{1,3})$/, action: (m)=>voiceAuthorizeMission(parseInt(m[2], 10), false) },
+  ],
+};
+
+const STATION_CONFIG = {
+  NAV: { channel: 1, voice: 'Navigation' },
+  RADAR: { channel: 2, voice: 'Radar' },
+  WPN: { channel: 3, voice: 'Weapons' },
+  RADIO: { channel: 4, voice: 'Pilot' },
+  ENG: { channel: 5, voice: 'Engineering' },
+  LOG: { channel: 4, voice: 'Bridge' },
+  SYS: { channel: 4, voice: 'Bridge' }
+};
+
+try{
+  loadStationPower();
+}catch(_){
+  STATION_KEYS.forEach(function(key){ if(typeof ST.power[key] !== 'boolean') ST.power[key] = true; });
+}
+
+function stationInfo(key){
+  const cfg = STATION_CONFIG[key];
+  return cfg ? { channel: cfg.channel, voice: cfg.voice } : { channel: 4, voice: 'Bridge' };
+}
+
+function updateStationGlobals(id){
+  const cfg = stationInfo(id);
+  try{
+    window.__activeStation = id;
+    window.__activeChannel = cfg.channel;
+    window.__activeVoiceRole = cfg.voice;
+    window.dispatchEvent(new CustomEvent('station:changed', { detail: { station: id, channel: cfg.channel, voice: cfg.voice } }));
+  }catch(_){ }
+}
+
+updateStationGlobals(ST.active);
+
+function setActive(id){
+  const key = STATION_CONFIG[id] ? id : 'NAV';
+  if(Voice.listening && Voice.activeStation && Voice.activeStation !== key){
+    Voice.stop();
+  }
+  ST.active = key;
+  updateStationGlobals(ST.active);
+  $$('.toolbar .btn').forEach(b=> b.classList.toggle('active', b.dataset.st===ST.active));
+  updateToolbarPowerClasses();
+  renderStationSwitches();
+  render(window._status||{});
+}
+
+function updateToolbarPowerClasses(){
+  $$('.toolbar .btn').forEach(function(btn){
+    const key = btn.dataset ? btn.dataset.st : null;
+    if(!key) return;
+    btn.classList.toggle('powered-off', !isStationPowered(key));
+  });
+}
+
+function renderStationSwitches(){
+  const bar = $('#station-switches');
+  if(!bar) return;
+  bar.innerHTML='';
+  STATION_KEYS.forEach(function(key){
+    const wrap=document.createElement('div'); wrap.className='station-switch';
+    if(ST.active === key) wrap.classList.add('active');
+    const label=document.createElement('div'); label.className='station-switch-label'; label.textContent=stationLabel(key);
+    wrap.appendChild(label);
+    const btn=document.createElement('button'); btn.className='btn station-toggle-btn';
+    const powered = isStationPowered(key);
+    if(!powered) btn.classList.add('off');
+    btn.textContent = powered ? 'TURN OFF' : 'TURN ON';
+    btn.onclick = function(){ setStationPower(key, !isStationPowered(key)); };
+    wrap.appendChild(btn);
+    bar.appendChild(wrap);
+  });
+  updateToolbarPowerClasses();
+}
+
+function insertVoiceToggle(parent, stationKey){
+  const row=document.createElement('div'); row.className='voice-toggle-row';
+  const label=document.createElement('span'); label.className='voice-label'; label.textContent='Voice control';
+  row.appendChild(label);
+  const selectWrap=document.createElement('label'); selectWrap.className='voice-device';
+  const selectCaption=document.createElement('span'); selectCaption.className='voice-device-caption'; selectCaption.textContent='Mic';
+  selectWrap.appendChild(selectCaption);
+  const select=document.createElement('select'); select.className='voice-device-select'; select.disabled = true;
+  select.addEventListener('change', function(ev){
+    const value = ev && ev.target ? ev.target.value : '';
+    Voice.setDevice(value);
+  });
+  selectWrap.appendChild(select);
+  row.appendChild(selectWrap);
+  const btn=document.createElement('button'); btn.className='btn voice-btn'; btn.dataset.station = stationKey;
+  btn.onclick = function(){ Voice.toggle(stationKey); };
+  row.appendChild(btn);
+  parent.appendChild(row);
+  Voice.attachDeviceSelect(select);
+  Voice.updateButtons();
+}
+
+function _normalizeHeading(val){
+  let hdg = Number(val);
+  if(!Number.isFinite(hdg)) return null;
+  hdg = Math.round(hdg);
+  while(hdg < 0) hdg += 360;
+  hdg = hdg % 360;
+  return hdg;
+}
+
+function _planLooksValid(plan){
+  if(!plan || typeof plan !== 'object' || Array.isArray(plan)) return false;
+  try{
+    if(Object.prototype.hasOwnProperty.call(plan, 'actions')){
+      const actions = plan.actions;
+      if(!Array.isArray(actions)) return false;
+      for(const a of actions){
+        if(!a || typeof a !== 'object' || Array.isArray(a)) return false;
+      }
+    }
+  }catch(_){ return false; }
+  return true;
+}
+
+async function _postJSON(url, body){
+  try{
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    let data = null;
+    try{ data = await resp.json(); }catch(_){ data = null; }
+    const ok = resp.ok && data && data.ok !== false;
+    return { ok, data, status: resp.status };
+  }catch(err){
+    console.warn('[voice] postJSON error', err);
+    return { ok: false, data: null, status: 0 };
+  }
+}
+
+async function _runNavOrder(order){
+  const payload = {};
+  if(order.heading !== undefined && order.heading !== null){
+    const hdg = _normalizeHeading(order.heading);
+    if(hdg !== null) payload.heading = hdg;
+  }
+  if(order.speed !== undefined && order.speed !== null){
+    const spd = Number(order.speed);
+    if(Number.isFinite(spd) && spd >= 0){
+      payload.speed = Math.round(spd);
+    }
+  }
+  if(!Object.keys(payload).length) return false;
+  const res = await _postJSON('/api/nav/set', payload);
+  if(!res.ok){
+    console.warn('[voice] nav order rejected', res.data && res.data.error);
+    return false;
+  }
+  try{
+    await poll();
+  }catch(_){ }
+  return true;
+}
+
+async function handleLocalVoiceCommand(text, context){
+  const raw = (text || '').trim();
+  if(!raw) return false;
+  const lower = raw.toLowerCase();
+  const station = (context && context.station) || ST.active || 'NAV';
+  const navContext = station === 'NAV' || lower.startsWith('nav') || lower.startsWith('navigation');
+  try{
+    appendConsole(`[voice] heard: ${raw}`);
+  }catch(_){
+    try{
+      if(window.console){ console.log('[voice] heard:', raw); }
+    }catch(_ignore){}
+  }
+  if(navContext){
+    const order = {};
+    const headingMatch = lower.match(/(?:heading|course|bearing)[^0-9]*([0-9]{1,3})/);
+    if(headingMatch){ order.heading = Number(headingMatch[1]); }
+    if(order.heading === undefined){
+      const turnMatch = lower.match(/(?:turn|steer)[^0-9]*([0-9]{1,3})/);
+      if(turnMatch) order.heading = Number(turnMatch[1]);
+    }
+    const speedMatch = lower.match(/speed[^0-9]*([0-9]{1,3})/);
+    if(speedMatch){ order.speed = Number(speedMatch[1]); }
+    if(Object.keys(order).length){
+      const ok = await _runNavOrder(order);
+      if(ok) return true;
+    }
+  }
+  return false;
+}
+
+async function executeVoiceEndpoint(url, body){
+  try{
+    if(body && typeof body === 'object' && !Array.isArray(body) && body.plan){
+      const plan = body.plan;
+      if(!_planLooksValid(plan)){
+        console.warn('[voice] skipping exec, invalid plan payload', plan);
+        return false;
+      }
+    }
+    if(body && typeof body === 'object' && !Array.isArray(body) && body.actions){
+      const actions = body.actions;
+      if(!Array.isArray(actions) || actions.some(a=>!a || typeof a !== 'object' || Array.isArray(a))){
+        console.warn('[voice] skipping exec, invalid actions payload', actions);
+        return false;
+      }
+    }
+  }catch(err){ console.warn('[voice] exec body inspect failed', err); }
+  const res = await _postJSON(url, body);
+  if(!res.ok){
+    console.warn('[voice] exec endpoint failed', url, res.data && res.data.error);
+    return false;
+  }
+  return true;
+}
+
+async function handleVoiceResponse(resp, meta){
+  if(!resp) return { success: false, payload: null };
+  let payload = null;
+  try{
+    payload = await resp.json();
+  }catch(err){
+    console.warn('[voice] invalid /radio/voice response', err);
+    return { success: false, payload: null };
+  }
+  if(!resp.ok || !payload || payload.ok === false){
+    console.warn('[voice] /radio/voice error', payload && payload.error, resp.status);
+    return { success: false, payload };
+  }
+  const voiceRole = (meta && meta.voiceRole) || 'Bridge';
+  const station = (meta && meta.station) || ST.active || 'NAV';
+  const chanDefault = STATION_CONFIG[station] ? STATION_CONFIG[station].channel : 4;
+  const channel = (meta && meta.channel != null) ? meta.channel : chanDefault;
+
+  let executed = false;
+  try{
+    const affirm = payload.affirm;
+    if(affirm && affirm.endpoint){
+      const params = new URLSearchParams();
+      params.set('speak','1');
+      params.set('voice_role', voiceRole);
+      const execUrl = `${affirm.endpoint}?${params.toString()}`;
+      const execBody = Object.assign({}, affirm.body || {}, {
+        confirm: true,
+        speak: true,
+        voice_role: voiceRole,
+        station,
+        channel
+      });
+      if(execBody.confirm !== true) execBody.confirm = true;
+      if(execBody.plan && !_planLooksValid(execBody.plan)){
+        console.warn('[voice] affirm plan invalid', execBody.plan);
+        executed = false;
+      }else if(execBody.actions && (!Array.isArray(execBody.actions) || execBody.actions.some(a=>!a || typeof a !== 'object' || Array.isArray(a)))){
+        console.warn('[voice] affirm actions invalid', execBody.actions);
+        executed = false;
+      }else{
+        executed = await executeVoiceEndpoint(execUrl, execBody);
+      }
+    }else{
+      const ai = payload.ai || {};
+      const parsed = ai.parsed;
+      const validation = ai.validation;
+      const parsedIsObject = parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+      if(parsedIsObject && _planLooksValid(parsed) && (!validation || validation.ok !== false)){
+        const execParams = new URLSearchParams();
+        execParams.set('speak','1');
+        execParams.set('voice_role', voiceRole);
+        const execUrl = '/radio/exec?' + execParams.toString();
+        const execBody = {
+          plan: parsed,
+          confirm: true,
+          speak: true,
+          voice_role: voiceRole,
+          station,
+          channel
+        };
+        executed = await executeVoiceEndpoint(execUrl, execBody);
+      }
+    }
+  }catch(err){
+    console.warn('[voice] execution error', err);
+    executed = false;
+  }
+
+  return { success: executed, payload };
+}
 
 const WEAPON_LABELS = {
   exocet_mm38: 'MM38 Exocet',
@@ -232,7 +939,137 @@ function renderNAV(j){
     if(aid==='nav-speed' || aid==='nav-course') return;
   }catch(_){ }
   const p=$('#station-panel'); p.innerHTML='';
-  addStationControls(p,'NAV');
+  insertVoiceToggle(p,'NAV');
+
+  const missionData = (j && j.mission && typeof j.mission === 'object' && Object.keys(j.mission).length) ? j.mission : null;
+
+  function fmtDuration(sec){
+    const n = Number(sec);
+    if(!Number.isFinite(n) || n < 0) return '—';
+    if(n < 60) return `${Math.round(n)}s`;
+    if(n < 3600){
+      const mins = Math.floor(n / 60);
+      const secs = Math.round(n % 60);
+      return secs ? `${mins}m ${secs}s` : `${mins}m`;
+    }
+    const hrs = Math.floor(n / 3600);
+    const mins = Math.round((n % 3600) / 60);
+    return mins ? `${hrs}h ${mins}m` : `${hrs}h`;
+  }
+
+  function titleCase(str){
+    return String(str || '')
+      .replace(/_/g, ' ')
+      .split(' ')
+      .filter(Boolean)
+      .map(function(part){ return part.charAt(0).toUpperCase() + part.slice(1); })
+      .join(' ');
+  }
+
+  function cleanText(val){
+    if(val === null || val === undefined) return '';
+    if(typeof val === 'string') return val.trim();
+    if(typeof val === 'number') return String(val);
+    return '';
+  }
+
+  function statusClassFor(key){
+    switch(key){
+      case 'in_progress':
+      case 'active':
+        return 'active';
+      case 'complete':
+      case 'completed':
+      case 'success':
+        return 'complete';
+      case 'failed':
+      case 'failure':
+      case 'aborted':
+        return 'failed';
+      case 'paused':
+      case 'hold':
+        return 'paused';
+      default:
+        return 'idle';
+    }
+  }
+
+  const missionCard=document.createElement('div'); missionCard.className='nav-mission-card';
+  if(missionData){
+    const head=document.createElement('div'); head.className='nav-mission-head';
+    const title=document.createElement('div'); title.className='nav-mission-title';
+    const labelText = cleanText(missionData.label) || 'Mission';
+    title.textContent = labelText;
+    head.appendChild(title);
+
+    const statusKey = String(missionData.status || '').toLowerCase();
+    const statusLabel = statusKey ? titleCase(statusKey) : 'Active';
+    const status=document.createElement('span');
+    status.className='status-badge nav-mission-status ' + statusClassFor(statusKey);
+    status.textContent = statusLabel;
+    head.appendChild(status);
+    missionCard.appendChild(head);
+
+    const meta=document.createElement('div'); meta.className='nav-mission-meta mono';
+    const elapsedSpan=document.createElement('span'); elapsedSpan.textContent=`Elapsed ${fmtDuration(missionData.elapsed_s)}`; meta.appendChild(elapsedSpan);
+    const leftValue = Number(missionData.time_left_s);
+    const leftSpan=document.createElement('span');
+    if(Number.isFinite(leftValue) && leftValue >= 0){
+      leftSpan.textContent = `Time left ${fmtDuration(leftValue)}`;
+    }else{
+      leftSpan.textContent = 'No mission timer';
+    }
+    meta.appendChild(leftSpan);
+    if(missionData.id !== undefined && missionData.id !== null){
+      const idSpan=document.createElement('span'); idSpan.textContent=`ID ${missionData.id}`; meta.appendChild(idSpan);
+    }
+    missionCard.appendChild(meta);
+
+    const desc = cleanText(missionData.description);
+    if(desc){
+      const descEl=document.createElement('div'); descEl.className='nav-mission-desc'; descEl.textContent=desc;
+      missionCard.appendChild(descEl);
+    }
+
+    const alertText = cleanText(missionData.alert);
+    if(alertText){
+      const alertEl=document.createElement('div'); alertEl.className='nav-mission-alert'; alertEl.textContent=alertText;
+      missionCard.appendChild(alertEl);
+    }
+
+    const outcomeText = cleanText(missionData.outcome);
+    if(outcomeText){
+      const outcomeEl=document.createElement('div'); outcomeEl.className='nav-mission-outcome';
+      outcomeEl.textContent=`Outcome: ${outcomeText}`;
+      const lower=outcomeText.toLowerCase();
+      if(lower.includes('success') || lower.includes('complete')) outcomeEl.classList.add('ok');
+      if(lower.includes('fail') || lower.includes('loss') || lower.includes('abort')) outcomeEl.classList.add('err');
+      missionCard.appendChild(outcomeEl);
+    }
+
+    const decision = missionData.pending_decision;
+    if(decision && typeof decision === 'object'){
+      const promptText = cleanText(decision.prompt || decision.text);
+      const options = Array.isArray(decision.options) ? decision.options.map(function(opt){
+        if(!opt) return '';
+        if(typeof opt === 'string') return opt.trim();
+        if(typeof opt === 'object') return cleanText(opt.label || opt.text || opt.id);
+        return '';
+      }).filter(Boolean) : [];
+      if(promptText || options.length){
+        const decisionEl=document.createElement('div'); decisionEl.className='nav-mission-decision';
+        decisionEl.textContent = options.length ? `${promptText || 'Decision required'} (${options.join(' / ')})` : promptText;
+        missionCard.appendChild(decisionEl);
+      }
+    }
+  }else{
+    const emptyTitle=document.createElement('div'); emptyTitle.className='nav-mission-title muted'; emptyTitle.textContent='No active mission';
+    missionCard.appendChild(emptyTitle);
+    const emptyNote=document.createElement('div'); emptyNote.className='nav-mission-empty'; emptyNote.textContent='Mission updates will appear here once an operation begins.';
+    missionCard.appendChild(emptyNote);
+  }
+
+  p.appendChild(missionCard);
 
   let fleet = Array.isArray(j.ownfleet)? j.ownfleet.slice() : [];
   if(!fleet.length){
@@ -380,8 +1217,18 @@ function engSystemStatus(j, systemId){
 }
 
 function renderStationOffline(p, label, stationKey){
+  let voiceRow = null;
+  try{
+    voiceRow = p.querySelector('.voice-toggle-row');
+    if(voiceRow){
+      p.removeChild(voiceRow);
+    }
+  }catch(_){ voiceRow = null; }
   p.innerHTML='';
-  addStationControls(p, stationKey || 'SYS');
+  if(voiceRow){
+    p.appendChild(voiceRow);
+    Voice.updateButtons();
+  }
   const pane=document.createElement('div'); pane.className='station-offline'; pane.textContent=label || 'SYSTEM OFFLINE';
   p.appendChild(pane);
   return true;
@@ -389,7 +1236,7 @@ function renderStationOffline(p, label, stationKey){
 
 function renderRADAR(j){
   const p=$('#station-panel'); p.innerHTML='';
-  addStationControls(p,'RADAR');
+  insertVoiceToggle(p,'RADAR');
   const radarStatus = engSystemStatus(j,'Radar');
   if(radarStatus && radarStatus.toLowerCase()!=='ok'){
     renderStationOffline(p,'SYSTEM OFFLINE','RADAR');
@@ -397,19 +1244,39 @@ function renderRADAR(j){
   }
   // Own-fleet toggle (persist via localStorage)
   let showOwnFleet = true;
-  try{ const raw = localStorage.getItem('radar_show_ownfleet'); if(raw!==null) showOwnFleet = raw==='1'; }catch(_){ showOwnFleet = true; }
+  let showFriendlies=true, showHostiles=true;
+  try{
+    const rawFriendly = localStorage.getItem('radar_show_friendlies');
+    if(rawFriendly!==null){ showFriendlies = rawFriendly==='1'; }
+  }catch(_){ showFriendlies = true; }
+  try{
+    const rawHostile = localStorage.getItem('radar_show_hostiles');
+    if(rawHostile!==null){ showHostiles = rawHostile==='1'; }
+  }catch(_){ showHostiles = true; }
 
   const toggleWrap=document.createElement('div'); toggleWrap.className='row section';
-  const ownLabel=document.createElement('span'); ownLabel.textContent='Show Own Fleet'; ownLabel.style.marginRight='8px';
-  const ownTgl=document.createElement('button'); ownTgl.className='btn'; ownTgl.textContent = showOwnFleet ? 'ON' : 'OFF';
-  ownTgl.onclick=function(){ showOwnFleet = !showOwnFleet; ownTgl.textContent = showOwnFleet ? 'ON' : 'OFF'; try{ localStorage.setItem('radar_show_ownfleet', showOwnFleet?'1':'0'); }catch(_){} render(j); };
-  toggleWrap.appendChild(ownLabel); toggleWrap.appendChild(ownTgl); p.appendChild(toggleWrap);
+  const lblFriend=document.createElement('span'); lblFriend.textContent='Friendlies'; lblFriend.style.marginRight='6px';
+  const btnFriend=document.createElement('button'); btnFriend.className='btn'; btnFriend.textContent = showFriendlies ? 'ON' : 'OFF';
+  btnFriend.onclick=function(){ showFriendlies=!showFriendlies; btnFriend.textContent=showFriendlies?'ON':'OFF'; try{ localStorage.setItem('radar_show_friendlies', showFriendlies?'1':'0'); }catch(_){} render(j); };
+  const spacer=document.createElement('span'); spacer.textContent=' ';
+  const lblHost=document.createElement('span'); lblHost.textContent='Hostiles'; lblHost.style.margin='0 6px';
+  const btnHost=document.createElement('button'); btnHost.className='btn'; btnHost.textContent = showHostiles ? 'ON' : 'OFF';
+  btnHost.onclick=function(){ showHostiles=!showHostiles; btnHost.textContent=showHostiles?'ON':'OFF'; try{ localStorage.setItem('radar_show_hostiles', showHostiles?'1':'0'); }catch(_){} render(j); };
+  toggleWrap.appendChild(lblFriend); toggleWrap.appendChild(btnFriend); toggleWrap.appendChild(spacer);
+  toggleWrap.appendChild(lblHost); toggleWrap.appendChild(btnHost);
+  p.appendChild(toggleWrap);
 
   const lockedId = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id): null;
   const primary = (j.primary && typeof j.primary==='object')? j.primary : null;
   let contacts = Array.isArray(j.contacts)? j.contacts.slice(): [];
-  // Apply own-fleet visibility filter (own-fleet entries use id prefix 'fleet:')
-  if(!showOwnFleet){ contacts = contacts.filter(c => String(c.id||'').slice(0,6) !== 'fleet:'); }
+  contacts = contacts.filter(function(c){
+    const allegiance = String(c.allegiance || c.type || '').toLowerCase();
+    const isFriendly = String(c.id||'').startsWith('fleet:') || allegiance==='friendly';
+    const isHostile = allegiance === 'hostile';
+    if(isFriendly && !showFriendlies) return false;
+    if(isHostile && !showHostiles) return false;
+    return true;
+  });
   const lockedContact = contacts.find(c=>Number(c.id)===lockedId) || null;
   const primaryBox=document.createElement('div'); primaryBox.className='primary-box';
   const primFields=[
@@ -492,7 +1359,7 @@ function computeTTI(contact){
 
 function renderWPN(j){
   const p=$('#station-panel'); p.innerHTML='';
-  addStationControls(p,'WPN');
+  insertVoiceToggle(p,'WPN');
   const weaponsStatus = engSystemStatus(j,'FireControl_Weapons');
   if(weaponsStatus && weaponsStatus.toLowerCase()!=='ok'){
     renderStationOffline(p,'SYSTEM OFFLINE','WPN');
@@ -527,54 +1394,6 @@ function renderWPN(j){
   infoTable.appendChild(dataRow);
   primaryBox.appendChild(infoTable);
 
-  const controls=document.createElement('div'); controls.className='wpn-lock-controls';
-  const label=document.createElement('span'); label.textContent='PRIMARY TARGET ID'; controls.appendChild(label);
-  const input=document.createElement('input'); input.type='text'; input.className='input mono wpn-lock-input'; input.placeholder='— —';
-  const preset = ST.wpn.lockInput || (primaryContact? String(primaryContact.id).padStart(2,'0') : '');
-  if(preset) input.value=preset;
-  input.addEventListener('input', function(){ ST.wpn.lockInput = (input.value||'').trim(); });
-  controls.appendChild(input);
-
-  const lockBtn=document.createElement('button'); lockBtn.className='btn nav-set-btn wpn-lock-btn'; lockBtn.textContent='LOCK';
-  const unlockBtn=document.createElement('button'); unlockBtn.className='btn wpn-unlock-btn'; unlockBtn.textContent='UNLOCK';
-  const msg=document.createElement('span'); msg.className='wpn-msg muted';
-
-  const doLock=async function(idStr){
-    const sanitized=(idStr||'').trim();
-    if(!sanitized){ msg.textContent=''; msg.className='wpn-msg muted'; return; }
-    ST.wpn.lockInput = sanitized;
-    try{
-      const res=await fetch('/api/command?cmd='+encodeURIComponent('/radar lock '+sanitized));
-      let ok=false;
-      try{
-        const payload=await res.json();
-        ok = !!(payload && payload.ok !== false);
-      }catch(_){ ok = res.ok; }
-      if(ok){ msg.textContent='LOCKED'; msg.className='wpn-msg ok'; await poll().catch(()=>{}); }
-      else{ msg.textContent='ERR'; msg.className='wpn-msg err'; }
-    }catch(_){ msg.textContent='ERR'; msg.className='wpn-msg err'; }
-  };
-
-  lockBtn.onclick=async function(){ await doLock(input.value); };
-  input.addEventListener('keydown', function(ev){ if(ev.key==='Enter'){ ev.preventDefault(); doLock(input.value); } });
-
-  unlockBtn.onclick=async function(){
-    try{
-      const res = await fetch('/api/command?cmd='+encodeURIComponent('/radar unlock'));
-      let ok=false;
-      try{
-        const payload=await res.json();
-        ok = !!(payload && payload.ok !== false);
-      }catch(_){ ok = res.ok; }
-      if(ok){ msg.textContent='UNLOCKED'; msg.className='wpn-msg ok'; ST.wpn.lockInput=''; input.value=''; await poll().catch(()=>{}); }
-      else{ msg.textContent='ERR'; msg.className='wpn-msg err'; }
-    }catch(_){ msg.textContent='ERR'; msg.className='wpn-msg err'; }
-  };
-
-  controls.appendChild(lockBtn);
-  controls.appendChild(unlockBtn);
-  controls.appendChild(msg);
-  primaryBox.appendChild(controls);
   p.appendChild(primaryBox);
 
   const audioState = j && j.audio ? j.audio : {};
@@ -657,6 +1476,25 @@ function renderWPN(j){
     if(Number(w.cooldown_s||0) > 0) return false;
     if(Number(w.ammo||0) <= 0) return false;
     if(ST.test) return true;
+    let canJudgeRange = false;
+    let rangeOk = true;
+    try{
+      if(primaryContact && primaryContact.range_nm!=null){
+        const rng = Number(primaryContact.range_nm);
+        if(Number.isFinite(rng)){
+          canJudgeRange = true;
+          const minRaw = w.min_nm;
+          const maxRaw = w.max_nm;
+          const min = Number(minRaw != null ? minRaw : 0);
+          const max = maxRaw == null ? Number.POSITIVE_INFINITY : Number(maxRaw);
+          if(Number.isFinite(min) && rng < min) rangeOk = false;
+          if(rangeOk && Number.isFinite(max) && rng > max) rangeOk = false;
+        }
+      }
+    }catch(_){ canJudgeRange = false; rangeOk = true; }
+    w._range_can_judge = canJudgeRange;
+    w._range_ok = canJudgeRange ? rangeOk : (w.in_range !== false);
+    if(canJudgeRange) return rangeOk;
     return !!w.in_range;
   }
 
@@ -668,7 +1506,8 @@ function renderWPN(j){
     const ammo = Number(w.ammo||0);
     const cooldownLeft = Math.max(0, Number(w.cooldown_s||0));
     const armingLeft = Math.max(0, Number(w.arming_s||0));
-    const inRange = !!w.in_range;
+    const clientRangeFlag = (w && typeof w._range_ok === 'boolean') ? Boolean(w._range_ok) : undefined;
+    const inRange = (clientRangeFlag !== undefined) ? clientRangeFlag : !!w.in_range;
 
     const tdN=document.createElement('td'); tdN.textContent=String(w.name||'—');
     const tdA=document.createElement('td'); tdA.className='num'; tdA.textContent=String(ammo);
@@ -677,7 +1516,12 @@ function renderWPN(j){
     const tdStatus=document.createElement('td');
     const statusBadge=document.createElement('span'); statusBadge.className='status-badge '+(inRange?'on':'off');
     statusBadge.textContent=inRange?'IN RANGE':'OUT OF RANGE';
+    if(w._range_can_judge && primaryContact && primaryContact.range_nm!=null){
+      statusBadge.title = `Range ${fmt(primaryContact.range_nm,1)} nm (limits ${fmt(w.min_nm,0)}–${fmt(w.max_nm,0)})`;
+    }
     tdStatus.appendChild(statusBadge);
+
+    const msg=document.createElement('div'); msg.className='wpn-msg muted';
 
     const tdArm=document.createElement('td');
     const armBtn=document.createElement('button'); armBtn.className='btn toggle-btn';
@@ -771,6 +1615,7 @@ function renderWPN(j){
       await poll().catch(()=>{});
     };
     tdF.appendChild(fb);
+    tdF.appendChild(msg);
     tr.appendChild(tdN);
     tr.appendChild(tdA);
     tr.appendChild(tdR);
@@ -794,7 +1639,7 @@ function renderRADIO(j){
     }
   }catch(_){ }
   p.innerHTML='';
-  addStationControls(p,'RADIO');
+  insertVoiceToggle(p,'RADIO');
   const commsStatus = engSystemStatus(j,'COMMS');
   if(commsStatus && commsStatus.toLowerCase()!=='ok'){
     renderStationOffline(p,'SYSTEM OFFLINE','RADIO');
@@ -1432,17 +2277,23 @@ let missionValid=false;
     const permTd=document.createElement('td'); permTd.className='action';
     const perm = (t && t.permission && typeof t.permission==='object')? t.permission : {};
     if(perm.required){
-      const authorized = Boolean(perm.authorized);
-      const engageBtn=document.createElement('button'); engageBtn.className='btn'; engageBtn.textContent = authorized ? 'HOLD FIRE' : 'ENGAGE';
+      let authorized = Boolean(perm.authorized);
+      const engageBtn=document.createElement('button');
+      engageBtn.className='btn engage-toggle';
+      engageBtn.textContent='ENGAGE';
+      engageBtn.classList.toggle('engaged', authorized);
       engageBtn.onclick = async function(){
         if(!missionId){ setStatus('Unknown mission id','err'); return; }
+        const nextAuthorize = !authorized;
         engageBtn.disabled = true;
-        setStatus(authorized? 'Revoking engagement…':'Authorizing engagement…','muted');
+        setStatus(nextAuthorize ? 'Authorizing engagement…' : 'Revoking engagement…','muted');
         try{
-          const res=await fetch('/cap/authorize',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: missionId, authorize: !authorized})});
+          const res=await fetch('/cap/authorize',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: missionId, authorize: nextAuthorize})});
           const data=await res.json();
           if(data && data.ok){
-            setStatus(!authorized ? 'Engagement authorized' : 'Holding fire', 'ok');
+            authorized = nextAuthorize;
+            engageBtn.classList.toggle('engaged', authorized);
+            setStatus(authorized ? 'Engagement authorized' : 'Engagement revoked', 'ok');
             await poll().catch(()=>{});
           }else{
             setStatus((data && data.error)? String(data.error) : 'Authorization failed','err');
@@ -1542,7 +2393,7 @@ let missionValid=false;
 }
 function renderENG(j){
   const p=$('#station-panel'); p.innerHTML='';
-  addStationControls(p,'ENG');
+  insertVoiceToggle(p,'ENG');
   const eng = j.eng || {};
   const capReady = (j.cap && j.cap.readiness) || {};
   const systems = Array.isArray(eng.systems) ? eng.systems : [];
@@ -1714,7 +2565,6 @@ function renderLOG(){
 
 function renderSYS(j){
   const p=$('#station-panel'); p.innerHTML='';
-  addStationControls(p,'SYS');
   if(!ST.sys) ST.sys = {};
   const row=document.createElement('div'); row.className='row section';
   const bScan=document.createElement('button'); bScan.className='btn'; bScan.textContent='Scan'; bScan.onclick=async function(){ await fetch('/api/command?cmd='+encodeURIComponent('/radar scan')); };
@@ -1764,6 +2614,11 @@ function render(j){
   text($('#hud-ship'), 'Ship '+hudCell);
   text($('#hud-hdg'), 'hdg '+fmt(ship.heading)); text($('#hud-spd'), 'spd '+fmt(ship.speed)+' kn');
   $('#hud-dot') && $('#hud-dot').classList.toggle('ok', !!j.ok);
+  const activeStation = ST.active || 'NAV';
+  if(!isStationPowered(activeStation)){
+    renderStationOffline($('#station-panel'), `${stationLabel(activeStation)} STATION OFFLINE`, activeStation);
+    return;
+  }
   if(ST.active==='NAV') return renderNAV(j);
   if(ST.active==='RADAR') return renderRADAR(j);
   if(ST.active==='WPN') return renderWPN(j);
@@ -1785,113 +2640,16 @@ async function poll(){
 
 function playKlik(){ try{ const a=new Audio('/data/sounds/klik.m4a'); a.volume=0.6; a.play().catch(function(){}); }catch(e){} }
 
-// --- Push-To-Talk (PTT) mic capture + browser STT fallback ---
-const PTT = { rec: null, chunks: [], stream: null, recording: false, stt: null, transcript: '' };
-
-async function _pttStart(){
-  if(PTT.recording) return;
-  try{
-    const btn = $('#ptt-btn'); if(btn) btn.classList.add('recording');
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    PTT.stream = stream;
-    const mt = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : (MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '');
-    const rec = new MediaRecorder(stream, mt?{ mimeType: mt }:{});
-    PTT.chunks = [];
-    rec.ondataavailable = function(e){ if(e && e.data && e.data.size>0) PTT.chunks.push(e.data); };
-    rec.onstop = async function(){
-      try{
-        const url = '/radio/voice?speak=1&voice_role=' + encodeURIComponent('Weapons');
-        // If browser STT produced a transcript, prefer that (more robust cross-browser)
-        const txt = (PTT.transcript||'').trim();
-        if(txt){
-          await fetch(url, { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text: txt}) });
-        }else{
-          const blob = new Blob(PTT.chunks, { type: mt || 'audio/webm' });
-          // Upload to interpreter voice chain; speak via Weapons voice; no execution
-          const form = new FormData();
-          form.append('file', blob, 'ptt.webm');
-          await fetch(url, { method: 'POST', body: form });
-        }
-      }catch(_){ /* swallow */ }
-      finally{
-        try{ if(PTT.stream){ PTT.stream.getTracks().forEach(t=>t.stop()); } }catch(_){ }
-        PTT.stream = null; PTT.rec = null; PTT.chunks = []; PTT.recording = false; PTT.transcript='';
-        const btn = $('#ptt-btn'); if(btn) btn.classList.remove('recording');
-      }
-    };
-    PTT.rec = rec; PTT.recording = true; rec.start();
-    // Start browser STT if available (fallback when server ASR fails)
-    try{
-      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if(SR){
-        const r = new SR();
-        r.lang = 'en-GB';
-        r.interimResults = false;
-        r.maxAlternatives = 1;
-        r.onresult = function(ev){ try{ const s = ev.results && ev.results[0] && ev.results[0][0] && ev.results[0][0].transcript; if(s) PTT.transcript = String(s); }catch(_){ } };
-        r.onerror = function(){ /* ignore */ };
-        r.onend = function(){ /* end of STT */ };
-        PTT.stt = r; r.start();
-      } else { PTT.stt = null; }
-    }catch(_){ PTT.stt = null; }
-  }catch(e){
-    const btn = $('#ptt-btn'); if(btn) btn.classList.remove('recording');
-    // Optional: user feedback could be added here
-  }
-}
-
-function _pttStop(){
-  try{ if(PTT.rec && PTT.recording){ PTT.rec.stop(); } }catch(_){ }
-  try{ if(PTT.stt && PTT.recording){ PTT.stt.stop(); } }catch(_){ }
-}
 
 function wire(){
+  Voice.init();
   $$('.toolbar .btn').forEach(function(b){ b.addEventListener('click', function(ev){
     playKlik();
     const st = (b && b.dataset) ? b.dataset.st : undefined;
     if(st) setActive(st);
   }); });
-  // Global Radio Mute button
-  const gbtn = $('#radio-mute-btn');
-  function _radioMuteState(){ try{ return localStorage.getItem('MUTE_ALL_RADIO')==='1'; }catch(_){ return false; } }
-  function _setRadioMute(on){ try{ if(on) localStorage.setItem('MUTE_ALL_RADIO','1'); else localStorage.removeItem('MUTE_ALL_RADIO'); }catch(_){ } }
-  function _updateG(){ const on=_radioMuteState(); if(gbtn){ gbtn.textContent = on? 'RADIO OFF':'RADIO ON'; gbtn.classList.toggle('radio-mute', true); gbtn.classList.toggle('muted', on); } }
-  if(gbtn){ _updateG(); gbtn.onclick = function(){ const on=_radioMuteState(); _setRadioMute(!on); _updateG(); }; }
-  // Wire PTT button events (press to record, release to send)
-  const ptt = $('#ptt-btn');
-  if(ptt){
-    ptt.addEventListener('mousedown', _pttStart);
-    ptt.addEventListener('touchstart', function(e){ e.preventDefault(); _pttStart(); }, { passive:false });
-    ['mouseup','mouseleave'].forEach(function(ev){ ptt.addEventListener(ev, _pttStop); });
-    ptt.addEventListener('touchend', function(e){ e.preventDefault(); _pttStop(); }, { passive:false });
-    ptt.addEventListener('touchcancel', function(e){ e.preventDefault(); _pttStop(); }, { passive:false });
-  }
-  // Keyboard PTT: hold Spacebar to record; release to send
-  function _isTyping(){
-    try{
-      const ae = document.activeElement;
-      if(!ae) return false;
-      const tag = (ae.tagName||'').toLowerCase();
-      if(tag==='input' || tag==='textarea' || ae.isContentEditable) return true;
-    }catch(_){ }
-    return false;
-  }
-  document.addEventListener('keydown', function(e){
-    if(e.code==='Space'){
-      if(_isTyping()) return;
-      if(e.repeat){ e.preventDefault(); return; }
-      e.preventDefault();
-      _pttStart();
-    }
-  }, true);
-  document.addEventListener('keyup', function(e){
-    if(e.code==='Space'){
-      if(_isTyping()) return;
-      e.preventDefault();
-      _pttStop();
-    }
-  }, true);
-  window.addEventListener('blur', _pttStop);
+  renderStationSwitches();
+  updateToolbarPowerClasses();
   // Global KLIK on all button presses
   document.addEventListener('click', function(ev){ const t=ev.target; if(t && t.matches && t.matches('button.btn')){ playKlik(); } }, true);
   renderEventConsole();

@@ -509,18 +509,33 @@ class HermesCAP:
                 target_class = None
 
         load = getattr(m, 'loadout', 'aim9')
+        is_friendly_target = False
+        try:
+            if target_contact is not None:
+                allegiance = str(getattr(target_contact, 'allegiance', '')).strip().lower()
+                is_friendly_target = allegiance == 'friendly'
+        except Exception:
+            is_friendly_target = False
+        if is_friendly_target:
+            return None
         weapon_label = 'AIM-9' if load == 'aim9' else 'Bomb'
         target_label = target_name or getattr(m, 'target_cell', '') or 'Target'
 
+        warn_cooldown = 10.0
+        now_warn = t
+
         if load == 'aim9':
             if target_class and not _is_air_class(target_class):
-                self._emit_event('cap.engage.denied', {
-                    'mission_id': m.id,
-                    'target_id': locked_target_id,
-                    'reason': 'wrong_payload',
-                    'loadout': load,
-                    'target_class': target_class,
-                })
+                last_warn = getattr(m, '_payload_warn_ts', 0.0)
+                if (now_warn - last_warn) >= warn_cooldown:
+                    self._emit_event('cap.engage.denied', {
+                        'mission_id': m.id,
+                        'target_id': locked_target_id,
+                        'reason': 'wrong_payload',
+                        'loadout': load,
+                        'target_class': target_class,
+                    })
+                    setattr(m, '_payload_warn_ts', now_warn)
                 m.last_engagement_s = t
                 return None
             if not (self.sw_min_nm <= float(distance_nm) <= self.sw_max_nm):
@@ -558,13 +573,16 @@ class HermesCAP:
         else:
             # Bombs
             if target_class and not _is_surface_class(target_class):
-                self._emit_event('cap.engage.denied', {
-                    'mission_id': m.id,
-                    'target_id': locked_target_id,
-                    'reason': 'wrong_payload',
-                    'loadout': load,
-                    'target_class': target_class,
-                })
+                last_warn = getattr(m, '_payload_warn_ts', 0.0)
+                if (now_warn - last_warn) >= warn_cooldown:
+                    self._emit_event('cap.engage.denied', {
+                        'mission_id': m.id,
+                        'target_id': locked_target_id,
+                        'reason': 'wrong_payload',
+                        'loadout': load,
+                        'target_class': target_class,
+                    })
+                    setattr(m, '_payload_warn_ts', now_warn)
                 m.last_engagement_s = t
                 return None
             if float(distance_nm) > 1.0:

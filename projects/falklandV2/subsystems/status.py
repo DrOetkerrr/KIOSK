@@ -476,23 +476,54 @@ def build() -> Dict[str, Any]:
         if pending_radio:
             role = str(pending_radio.get('role') or 'Bridge')
             text = str(pending_radio.get('text') or '')
+            channel_val = pending_radio.get('channel')
+            try:
+                channel_id = int(channel_val)
+            except Exception:
+                channel_id = None
+            if channel_id not in (1, 2, 3, 4, 5, 6):
+                try:
+                    ch = getattr(wd, 'RADIO_ROLE_CHANNEL', {}).get(role)
+                    channel_id = int(ch) if ch is not None else None
+                except Exception:
+                    channel_id = None
+            if channel_id not in (1, 2, 3, 4, 5, 6):
+                channel_id = 4
             if text:
                 try:
                     wd.record_radio(role, text)
                 except Exception:
                     pass
+            file_path = None
+            duration_s = None
             try:
-                file_path = wd._tts_synthesize(text, role)
+                if isinstance(pending_radio.get('file'), str) and pending_radio.get('file'):
+                    file_path = str(pending_radio.get('file'))
             except Exception:
                 file_path = None
-            words = max(1, len(text.split()))
-            duration_s = max(1.8, min(8.0, 0.45 * words))
+            if file_path:
+                try:
+                    val = pending_radio.get('duration')
+                    if val is not None:
+                        duration_s = float(val)
+                except Exception:
+                    duration_s = None
+            if not file_path:
+                try:
+                    file_path = wd._tts_synthesize(text, role)
+                except Exception:
+                    file_path = None
+            if duration_s is None or duration_s <= 0:
+                words = max(1, len(text.split()))
+                duration_s = max(1.8, min(8.0, 0.45 * words))
             radio_payload = {
                 'ts': time.time(),
                 'role': role,
                 'text': text,
                 'file': file_path,
-                'dur': duration_s
+                'dur': duration_s,
+                'channel': channel_id,
+                'guard': channel_id == 6
             }
             with wd.STATE_LOCK:
                 try:
@@ -644,17 +675,25 @@ def build() -> Dict[str, Any]:
                 hist_src = list(getattr(wd, 'RADIO_HISTORY', []))
         except Exception:
             hist_src = []
-        def _fmt_radio_entry(item: Dict[str, Any]) -> Dict[str, str]:
+        def _fmt_radio_entry(item: Dict[str, Any]) -> Dict[str, Any]:
             ts_raw = item.get('ts')
             try:
                 ts_val = float(ts_raw)
                 ts_str = datetime.fromtimestamp(ts_val).strftime('%H:%M:%S')
             except Exception:
                 ts_str = '--:--:--'
+            channel_val = item.get('channel')
+            try:
+                channel_id = int(channel_val)
+            except Exception:
+                channel_id = None
+            guard_flag = bool(item.get('guard') or channel_id == 6)
             return {
                 'ts': ts_str,
                 'role': str(item.get('role') or 'OFF'),
                 'text': str(item.get('text') or ''),
+                'channel': channel_id,
+                'guard': guard_flag,
             }
         payload['radio'] = [_fmt_radio_entry(it) for it in hist_src[-20:]]
     except Exception:

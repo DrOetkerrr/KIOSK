@@ -1,8 +1,8 @@
 {
   "max_lives": 4,
-  "lives": 3,
+  "lives": 4,
   "hermes_max_lives": 8,
-  "hermes_lives": 6,
+  "hermes_lives": 8,
   "belgrano_max_lives": 8,
   "belgrano_lives": 8
 }

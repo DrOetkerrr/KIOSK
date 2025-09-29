@@ -1,0 +1,67 @@
+{
+  "roles": {
+    "Navigation": {
+      "status": [
+        "Steady on course {hdg}°, speed {spd} knots, Captain.",
+        "Holding {hdg}°, making {spd} knots, sir.",
+        "Course {hdg}°. Speed {spd} knots. Ship steady."
+      ],
+      "grid": [
+        "Crossing into grid {cell} now, Captain.",
+        "Entering grid {cell}.",
+        "Grid {cell} ahead, Captain."
+      ]
+    },
+    "Radar": {
+      "contact": [
+        "Contact at bearing {bearing}°, range {range_nm} nautical miles.",
+        "New track: {type}, {bearing}°, {range_nm} nautical miles.",
+        "Radar contact {type} bearing {bearing}°, range {range_nm} nautical miles."
+      ],
+      "none": [
+        "Scope is clear, Captain.",
+        "No contacts on the plot.",
+        "Area clear, nothing on radar."
+      ],
+      "scan_report": [
+        "Scan complete: {contacts} contacts; hostiles {hostiles}, friendlies {friendlies}; top threat {threat} at {range_nm} nautical miles.",
+        "Sweep done. {contacts} tracks: hostiles {hostiles}, friendlies {friendlies}. Top threat {threat}, {range_nm} nautical miles.",
+        "Scan finished. {contacts} returns; threat {threat} at {range_nm} nm (hostiles {hostiles})."
+      ]
+    },
+    "Weapons": {
+      "ready": [
+        "{weapon} is ready, Captain.",
+        "{weapon} standing by.",
+        "{weapon} primed and ready." 
+      ],
+      "fire": [
+        "{weapon} away.",
+        "{weapon} fired, tracking.",
+        "{weapon} launched." 
+      ],
+      "hit": [
+        "Splash on {name}.",
+        "Hit confirmed on {name}.",
+        "Target {name} destroyed." 
+      ],
+      "miss": [
+        "{weapon} missed the target.",
+        "No joy. {weapon} missed.",
+        "Shot missed, {weapon}."
+      ]
+    },
+    "Engineering": {
+      "damage": [
+        "Damage reported on {system}. Team responding.",
+        "Hit on {system}; damage control on it.",
+        "{system} struck. Dispatching repair party." 
+      ],
+      "repaired": [
+        "{system} is back online.",
+        "Repairs complete on {system}.",
+        "{system} restored, Captain."
+      ]
+    }
+  }
+}

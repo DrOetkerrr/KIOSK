@@ -139,13 +139,26 @@ def weapons_fire():
         # Enforce cooldown
         now = time.time()
         if _get_cooldown_until(name) > now:
+            try:
+                L['record_event']('weapon.fire.rejected', {'name': name, 'reason': 'COOLDOWN', 'mode': mode})
+            except Exception:
+                pass
             return jsonify({'ok': False, 'error': 'COOLDOWN'}), 400
         # Enforce ARMED state for both test and real
         arming_state = L['load_arming']() if 'load_arming' in L else {}
         if arming_state.get(name) != 'Armed':
+            try:
+                L['record_event']('weapon.fire.rejected', {'name': name, 'reason': 'NOT_ARMED', 'mode': mode})
+            except Exception:
+                pass
             return jsonify({'ok': False, 'error': 'NOT_ARMED'}), 400
         if mode == 'test':
             if int(ammo.get(name, 0)) <= 0:
+                try:
+                    L['record_event']('weapon.out_of_ammo', {'name': name, 'mode': 'test'})
+                    L['record_event']('weapon.fire.rejected', {'name': name, 'reason': 'NO_AMMO', 'mode': mode})
+                except Exception:
+                    pass
                 return jsonify({'ok': False, 'error': 'NO_AMMO'}), 400
             # Consume ammo in test as a live drill (no range gating)
             try:
@@ -175,11 +188,28 @@ def weapons_fire():
             except Exception:
                 pass
             # Apply cooldown
-            _set_cooldown_until(name, now + _cooldown_seconds_by_class(name))
+            cooldown_s = _cooldown_seconds_by_class(name)
+            _set_cooldown_until(name, now + cooldown_s)
+            try:
+                L['record_event']('weapon.reload.start', {'name': name, 'mode': mode, 'cooldown_s': cooldown_s})
+            except Exception:
+                pass
+            try:
+                pending = L['PENDING_EVENTS']
+                if isinstance(pending, list):
+                    pending[:] = [ev for ev in pending if not (str(ev.get('kind')) == 'weapon_reload_ready' and str(ev.get('weapon')) == name)]
+                    pending.append({'due': now + cooldown_s, 'kind': 'weapon_reload_ready', 'weapon': name})
+            except Exception:
+                pass
             return jsonify({'ok': True, 'result': 'TEST', 'name': name, 'ammo': ammo[name]})
 
         # Real fire path
         if int(ammo.get(name, 0)) <= 0:
+            try:
+                L['record_event']('weapon.out_of_ammo', {'name': name, 'mode': 'real'})
+                L['record_event']('weapon.fire.rejected', {'name': name, 'reason': 'NO_AMMO', 'mode': mode})
+            except Exception:
+                pass
             return jsonify({'ok': False, 'error': 'NO_AMMO'}), 400
         # Compute range gate with current primary
         primary = None
@@ -195,6 +225,10 @@ def weapons_fire():
         except Exception:
             primary = None
         if not primary:
+            try:
+                L['record_event']('weapon.fire.rejected', {'name': name, 'reason': 'NO_PRIMARY', 'mode': mode})
+            except Exception:
+                pass
             return jsonify({'ok': False, 'error': 'NO_PRIMARY'}), 400
         # Invariant guard: consistency suite — enforce in_range before any shot is created
         if not L['compute_in_range'](name, primary):
@@ -204,6 +238,7 @@ def weapons_fire():
                 rng = 0.0
             try:
                 L['record_event']('weapon.fire.blocked', {'name': name, 'reason': 'OUT_OF_RANGE', 'range_nm': rng})
+                L['record_event']('weapon.fire.rejected', {'name': name, 'reason': 'OUT_OF_RANGE', 'mode': mode, 'range_nm': rng})
             except Exception:
                 pass
             return jsonify({'ok': False, 'error': 'OUT_OF_RANGE', 'range_nm': rng}), 400
@@ -245,7 +280,19 @@ def weapons_fire():
         except Exception:
             pass
         # Apply cooldown
-        _set_cooldown_until(name, now + _cooldown_seconds_by_class(name))
+        cooldown_s = _cooldown_seconds_by_class(name)
+        _set_cooldown_until(name, now + cooldown_s)
+        try:
+            L['record_event']('weapon.reload.start', {'name': name, 'mode': mode, 'cooldown_s': cooldown_s})
+        except Exception:
+            pass
+        try:
+            pending = L['PENDING_EVENTS']
+            if isinstance(pending, list):
+                pending[:] = [ev for ev in pending if not (str(ev.get('kind')) == 'weapon_reload_ready' and str(ev.get('weapon')) == name)]
+                pending.append({'due': now + cooldown_s, 'kind': 'weapon_reload_ready', 'weapon': name})
+        except Exception:
+            pass
         try:
             L['record_event']('weapon.fire', {
                 'weapon': name,

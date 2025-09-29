@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import os, sys, time, threading, logging, hashlib, math
+import os, sys, time, threading, logging, hashlib, math, contextlib, wave
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Callable
 from datetime import datetime, timezone
 from collections import deque
 
@@ -327,6 +327,93 @@ except Exception:
 
 RUNTIME = GameRuntime(port=PORT)
 APP_STARTED = RUNTIME.app_started
+try:
+    RUNTIME.reset_state()
+except Exception:
+    pass
+
+
+def _ensure_audio_flags() -> Dict[str, Any]:
+    global AUDIO_FLAGS
+    try:
+        AUDIO_FLAGS
+    except NameError:
+        AUDIO_FLAGS = {}
+    if not isinstance(AUDIO_FLAGS, dict):
+        AUDIO_FLAGS = {}
+    return AUDIO_FLAGS
+
+
+def _reset_audio_state() -> None:
+    base = {
+        "last_launch": None,
+        "last_result": None,
+        "radio": None,
+        "alarm": None,
+        "cap_launch": None,
+        "enemy_bomb": None,
+        "shots_in_flight": [],
+    }
+    AUDIO_STATE.clear()
+    AUDIO_STATE.update(base)
+
+
+def _reset_runtime_globals() -> None:
+    global PRIMARY_ID
+    PRIMARY_ID = None
+    _ensure_audio_flags().clear()
+    try:
+        _reset_audio_state()
+    except Exception:
+        pass
+    try:
+        with STATE_LOCK:
+            try:
+                PENDING_EVENTS.clear()
+            except Exception:
+                pass
+            try:
+                DEFENSE_STATE.update({"chaff_until": 0.0, "turn_until": 0.0})
+            except Exception:
+                pass
+            try:
+                MOTION_STATE.update({"last_heading": None, "last_ts": 0.0})
+            except Exception:
+                pass
+            try:
+                SKIRMISH_ACTIVE.update({"id": None, "started_ts": None})
+            except Exception:
+                pass
+            try:
+                NAV_STATE.update({"last_cell": None, "turn_target": None, "turn_hold_since": 0.0, "boundary_cooldown_until": 0.0})
+            except Exception:
+                pass
+            try:
+                CAP_META.clear()
+            except Exception:
+                pass
+            try:
+                ATTACK_STATE.clear()
+            except Exception:
+                pass
+            try:
+                ENEMY_SURFACE_STATE.clear()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        RADIO_QUEUE.clear()
+    except Exception:
+        pass
+    try:
+        RADIO_HISTORY.clear()
+    except Exception:
+        pass
+    try:
+        RADIO_STATE['busy_until'] = 0.0
+    except Exception:
+        pass
 
 
 def _bind_runtime(rt: GameRuntime) -> None:
@@ -344,6 +431,7 @@ def _bind_runtime(rt: GameRuntime) -> None:
     ENG = rt.engine
     STATE_LOCK = rt.state_lock
     AUDIO_STATE = rt.audio_state
+    _reset_runtime_globals()
     record_flight = rt.record_flight
     record_radio = rt.record_radio
     trigger_alarm = rt.trigger_alarm
@@ -368,6 +456,11 @@ def _bind_runtime(rt: GameRuntime) -> None:
     SKIRMISHES_PATH = rt.skirmishes_path
     ROADMAP_PATH = rt.roadmap_path
     VOICES_DIR = rt.voices_dir
+
+    try:
+        _reload_radio_audio_library(DATA_DIR / 'radiomsg')
+    except Exception:
+        pass
 
     _load_json = core._load_json
     _save_json = core._save_json
@@ -438,6 +531,8 @@ format_event_text = core.format_event_text
 RADIO_QUEUE: list[Dict[str, Any]] = []
 RADIO_STATE: Dict[str, Any] = {"busy_until": 0.0}
 RADIO_HISTORY: deque[Dict[str, Any]] = deque(maxlen=32)
+AUDIO_FLAGS: Dict[str, Any] = {}
+PRIMARY_ID: int | None = None
 
 # Event feed for stations console
 EVENT_QUEUE: list[Dict[str, Any]] = []
@@ -470,6 +565,90 @@ def _load_radio_script() -> Dict[str, str]:
 
 RADIO_EVENTS: Dict[str, str] = _load_radio_script()
 
+RADIO_AUDIO_DIR = core.DATA_DIR / "radiomsg"
+RADIO_AUDIO_LIBRARY: Dict[str, Dict[str, Any]] = {}
+
+
+def _wav_duration_seconds(path: Path) -> float:
+    try:
+        with contextlib.closing(wave.open(str(path), 'rb')) as wf:
+            frames = wf.getnframes()
+            rate = wf.getframerate() or 0
+            if rate <= 0:
+                return 0.0
+            return max(0.0, frames / float(rate))
+    except Exception:
+        return 0.0
+
+
+def _build_radio_audio_library(base: Path) -> Dict[str, Dict[str, Any]]:
+    lib: Dict[str, Dict[str, Any]] = {}
+    try:
+        if not base.exists():
+            return lib
+        for wav_path in sorted(base.glob('*.wav')):
+            try:
+                key = wav_path.stem.upper()
+                if not key:
+                    continue
+                dur = _wav_duration_seconds(wav_path)
+                if dur <= 0.0:
+                    dur = 2.5
+                lib[key] = {
+                    'file': f"/data/radiomsg/{wav_path.name}",
+                    'duration': round(dur, 3),
+                }
+            except Exception:
+                continue
+    except Exception:
+        return lib
+    return lib
+
+
+def _reload_radio_audio_library(base: Path | None = None) -> None:
+    global RADIO_AUDIO_DIR, RADIO_AUDIO_LIBRARY
+    try:
+        source = base or (DATA_DIR / 'radiomsg')
+    except Exception:
+        source = core.DATA_DIR / 'radiomsg'
+    RADIO_AUDIO_DIR = source
+    RADIO_AUDIO_LIBRARY = _build_radio_audio_library(source)
+
+
+_reload_radio_audio_library(core.DATA_DIR / 'radiomsg')
+
+RADIO_ROLE_CHANNEL: Dict[str, int] = {
+    'Navigation': 1,
+    'Radar': 2,
+    'Weapons': 3,
+    'Fire Control': 3,
+    'Pilot': 6,
+    'Engineering': 5,
+    'Bridge': 4,
+    'Ensign': 4,
+    'Captain': 4,
+    'XO': 4,
+}
+
+GUARD_EVENT_PREFIXES: tuple[str, ...] = (
+    'cap.',
+    'enemy.attack.',
+    'enemy.bomb.',
+    'enemy.surface.',
+    'weapon.result.',
+)
+
+GUARD_EVENT_IDS: set[str] = {
+    'radar.contact.spawn',
+    'eng.system.offline',
+    'ship.alarm.threat_close',
+}
+
+RADIO_SKIP_VOICE: set[str] = {
+    'nav.course.set',
+    'nav.speed.set',
+}
+
 
 def _radio_role_for_event(event_id: str) -> str:
     eid = str(event_id)
@@ -483,11 +662,31 @@ def _radio_role_for_event(event_id: str) -> str:
         return 'Navigation'
     if eid.startswith('enemy.'):
         return 'Engineering'
+    if eid.startswith('resupply.'):
+        return 'Pilot'
+    if eid.startswith('ship.'):
+        return 'Radar'
     return 'Ensign'
 
 
+def _radio_channel_for_event(event_id: str, *, default_role: str | None = None) -> int | None:
+    eid = str(event_id)
+    if eid in GUARD_EVENT_IDS:
+        return 6
+    for prefix in GUARD_EVENT_PREFIXES:
+        if eid.startswith(prefix):
+            return 6
+    # Guard the SHAR pilots even if event uses misc prefix
+    if eid.startswith('cap.'):
+        return 6
+    if default_role:
+        return RADIO_ROLE_CHANNEL.get(default_role, None)
+    return None
+
+
 def _emit_radio_event(event_id: str, ctx: Dict[str, Any]) -> None:
-    tpl = RADIO_EVENTS.get(str(event_id))
+    eid = str(event_id)
+    tpl = RADIO_EVENTS.get(eid)
     if not tpl:
         return
     safe_ctx = {k: ("—" if v is None else v) for k, v in (ctx or {}).items()}
@@ -496,8 +695,11 @@ def _emit_radio_event(event_id: str, ctx: Dict[str, Any]) -> None:
     except Exception:
         text = tpl
     if text:
+        if eid in RADIO_SKIP_VOICE:
+            return
         role = _radio_role_for_event(event_id)
-        record_officer(role, text)
+        channel = _radio_channel_for_event(event_id, default_role=role)
+        record_officer(role, text, channel=channel, event_id=eid, event_ctx=ctx)
 
 
 def _contact_label(contact_id: Any) -> str | None:
@@ -671,6 +873,7 @@ class _RecorderLike:
                         'id': cid,
                         'name': name,
                         'class_name': cls or (data or {}).get('allegiance') or '',
+                        'allegiance': (data or {}).get('allegiance'),
                         'range_nm': rng,
                         'speed': speed
                     })
@@ -695,6 +898,10 @@ class _RecorderLike:
                     if not isinstance(rng, (int, float)) or float(rng) <= thresh:
                         msg = str(auto.get('message') or 'Combat alarm! Threat inside {range_nm} nm.').format(range_nm=(f"{rng:.1f}" if isinstance(rng, (int,float)) else "?"))
                         trigger_alarm(str(auto.get('sound') or 'red-alert.wav'), message=msg, role=str(auto.get('role') or 'Fire Control'), loop=False)
+                        try:
+                            record_event('ship.alarm.threat_close', {'range_nm': rng})
+                        except Exception:
+                            pass
         except Exception:
             pass
 
@@ -847,6 +1054,16 @@ def data_sounds(filename: str):
         return jsonify({"ok": False, "error": str(e)}), 404
 
 
+@app.get("/data/radiomsg/<path:filename>")
+def data_radiomsg(filename: str):
+    try:
+        base = DATA_DIR / 'radiomsg'
+        return send_from_directory(str(base), filename)
+    except Exception as e:
+        logging.exception("/data/radiomsg error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 404
+
+
 @app.get("/data/tts/<path:filename>")
 def data_tts(filename: str):
     try:
@@ -951,39 +1168,405 @@ def _fmt_msg(tpl: str, ctx: Dict[str, Any]) -> str:
         return tpl
 
 
-def record_officer(role: str, text: str) -> None:
-    role_str = str(role or "OFFICER"); msg = str(text or ""); low = msg.lower()
-    # Sanitize accidental leading prefixes like "text " that might leak into TTS
+def _channel_for_role(role: str) -> int:
     try:
-        import re
-        m = re.match(r"^(?:\s*(?:text|txt)\s*[:,-]?\s+)(.*)$", msg, flags=re.IGNORECASE)
-        if m and m.group(1):
-            old = msg
-            msg = m.group(1).strip()
-            low = msg.lower()
+        ch = RADIO_ROLE_CHANNEL.get(str(role), None)
+    except Exception:
+        ch = None
+    if ch is None:
+        return 4
+    if not isinstance(ch, int):
+        try:
+            ch = int(ch)
+        except Exception:
+            return 4
+    if ch < 1 or ch > 6:
+        return 4
+    return ch
+
+
+def _normalize_channel(role: str, channel: int | None) -> int:
+    if channel is not None:
+        try:
+            ch = int(channel)
+        except Exception:
+            ch = _channel_for_role(role)
+        else:
+            if ch < 1 or ch > 6:
+                ch = _channel_for_role(role)
+        return ch
+    return _channel_for_role(role)
+
+
+def _radio_audio_lookup(key: str | None) -> Dict[str, Any] | None:
+    if not key:
+        return None
+    try:
+        return RADIO_AUDIO_LIBRARY.get(str(key).upper())
+    except Exception:
+        return None
+
+
+def _audio_key_from_cap_weapon_fire(ctx: Dict[str, Any]) -> str | None:
+    weapon = str((ctx or {}).get('weapon') or '').lower()
+    if 'bomb' in weapon:
+        return 'SHAR_BOMBS_AWAY'
+    if 'aim' in weapon or 'sidewinder' in weapon or 'aim-9' in weapon:
+        return 'SHAR_FOX_2'
+    return 'SHAR_FOX_2'
+
+
+def _audio_key_from_cap_weapon_hit(ctx: Dict[str, Any]) -> str | None:
+    weapon = str((ctx or {}).get('weapon') or '').lower()
+    if 'bomb' in weapon:
+        return 'SHAR_BOMBS_AWAY'
+    return 'SHAR_SPLASH_BANDIT'
+
+
+def _audio_key_from_contact_spawn(ctx: Dict[str, Any]) -> str | None:
+    info = ctx or {}
+    alleg = str(info.get('allegiance') or info.get('class_name') or '').lower()
+    if 'friendly' in alleg:
+        return 'RDR_NEW_RADAR_CONTACT_FRIENDLY'
+    if 'neutral' in alleg:
+        return 'RDR_NEW_RADAR_CONTACT_FRIENDLY'
+    if 'hostile' in alleg or 'enemy' in alleg:
+        return 'RDR_NEW_ENEMY_RADAR_CONTACT'
+    return 'RDR_NEW_RADAR_CONTACT_HOSTILE'
+
+
+def _audio_key_from_cap_rtb(ctx: Dict[str, Any]) -> str | None:
+    reason = str((ctx or {}).get('reason') or '').lower()
+    if reason == 'winchester':
+        return 'SHAR_WINCHESTER'
+    return 'SHAR_FINAL_APPROACH'
+
+
+def _weapon_kind(name: str) -> str:
+    nm = str(name or '').lower()
+    if '20mm' in nm:
+        return '20MM'
+    if 'sea dart' in nm or 'sam' in nm:
+        return 'SEADART'
+    if 'exocet' in nm:
+        return 'EXOCET'
+    if 'chaff' in nm:
+        return 'CHAFF'
+    if '4.5' in nm or 'mk.8' in nm or 'main gun' in nm:
+        return 'MAINGUN'
+    return 'OTHER'
+
+
+def _weapon_audio_for_arm(name: str) -> str | None:
+    kind = _weapon_kind(name)
+    return {
+        '20MM': 'WPN_20MM_ARMED_READY',
+        'SEADART': 'WPN_SEADART_ARMED',
+        'EXOCET': 'WPN_EXOCET_ARMED',
+        'MAINGUN': 'WPN_MAINGUN_ARMED',
+        'CHAFF': 'WPN_STATION_ARMED',
+        'OTHER': 'WPN_STATION_ARMED',
+    }.get(kind)
+
+
+def _weapon_audio_for_safe(name: str) -> str | None:
+    kind = _weapon_kind(name)
+    return {
+        '20MM': 'WPN_20MM_SAFE',
+        'SEADART': 'WPN_WEAPON_SAFE',
+        'EXOCET': 'WPN_WEAPON_SAFE',
+        'MAINGUN': 'WPN_MAINGUN_SAFE',
+        'CHAFF': 'WPN_WEAPON_SAFE',
+        'OTHER': 'WPN_WEAPON_SAFE',
+    }.get(kind)
+
+
+def _weapon_audio_for_reload_start(name: str) -> str | None:
+    kind = _weapon_kind(name)
+    return {
+        'SEADART': 'WPN_SEADART_RELOADING',
+        'EXOCET': 'WPN_EXOCET_RELOADING',
+        'MAINGUN': 'WPN_MAINGUN_ARMED',
+        '20MM': 'WPN_20MM_ARMED_READY',
+    }.get(kind)
+
+
+def _weapon_audio_for_ready(name: str) -> str | None:
+    kind = _weapon_kind(name)
+    return {
+        '20MM': 'WPN_20MM_LOADED',
+        'SEADART': 'WPN_SEADART_ARMED',
+        'EXOCET': 'WPN_EXOCET_ARMED',
+        'MAINGUN': 'WPN_MAINGUNARMED',
+        'CHAFF': 'WPN_STATION_ARMED',
+        'OTHER': 'WPN_STATION_ARMED',
+    }.get(kind)
+
+
+def _weapon_audio_for_out_of_ammo(name: str) -> str | None:
+    kind = _weapon_kind(name)
+    return {
+        'MAINGUN': 'WPN_4.5CM_OUTOFAMMO',
+        'SEADART': 'WPN_SEADART_OUTOFAMMO',
+        'EXOCET': 'WPN_EXOCET_OUTOFAMMO',
+    }.get(kind)
+
+
+def _weapon_audio_for_fire(name: str) -> str | None:
+    kind = _weapon_kind(name)
+    if kind == 'CHAFF':
+        return 'WPN_CHAFF'
+    return None
+
+
+def _weapon_name_from_ctx(ctx: Dict[str, Any]) -> str:
+    return str((ctx or {}).get('name') or (ctx or {}).get('weapon') or '').strip()
+
+
+def _eng_system_audio(ctx: Dict[str, Any]) -> str | None:
+    sys_name = str((ctx or {}).get('system') or '').lower()
+    if not sys_name:
+        return None
+    if 'nav' in sys_name:
+        return 'ENG_NAV-OFFLINE'
+    if 'radar' in sys_name or 'rdr' in sys_name:
+        return 'ENG_RDR_OFFLINE'
+    if 'fire' in sys_name or 'weapon' in sys_name:
+        return 'ENG_WPN_OFFLINE'
+    if 'comms' in sys_name:
+        return 'ENG_COMMS_OFFLINE'
+    if 'rudder' in sys_name or 'steering' in sys_name:
+        return 'ENG_RUDDER_DAMAGED'
+    if 'hull' in sys_name:
+        return 'ENG_HULL_BREACHED'
+    if 'engine' in sys_name or 'propulsion' in sys_name:
+        return 'ENG_TARGET_HIT'
+    return None
+
+
+def _enemy_attack_audio(outcome: str, ctx: Dict[str, Any]) -> str | None:
+    target = str((ctx or {}).get('target') or '').lower()
+    if outcome == 'hit':
+        if 'hermes' in target:
+            return 'ENG_HERMES_HIT'
+        if 'sheffield' in target or 'own' in target:
+            return 'ENG_SHEFFIELD_HIT'
+        return 'ENG_TARGET_HIT'
+    return None
+
+
+def _resupply_audio(event_id: str, ctx: Dict[str, Any]) -> str | None:
+    if event_id == 'resupply.launch':
+        return 'SEAKING_TAKING_OFF'
+    if event_id in ('resupply.ready', 'resupply.complete'):
+        return 'SEAKING_READY_RESUPPLY'
+    return None
+
+
+RADIO_EVENT_AUDIO_MAP: Dict[str, Callable[[Dict[str, Any]], str | None]] = {
+    'radar.target.locked': lambda ctx: 'RDR_PRIMARY_TARGET_LOCKED',
+    'radar.target.unlocked': lambda ctx: 'RDR_PRIMARY_TARGET_UNLOCKED',
+    'radar.contact.spawn': _audio_key_from_contact_spawn,
+    'cap.launch': lambda ctx: 'SHAR_TAKING_OFF',
+    'cap.intercept.launch': lambda ctx: 'SHAR_TAKING_OFF',
+    'cap.onstation': lambda ctx: 'SHAR_ON_STATION',
+    'cap.weapon.fire': _audio_key_from_cap_weapon_fire,
+    'cap.weapon.hit': _audio_key_from_cap_weapon_hit,
+    'cap.weapon.miss': lambda ctx: 'SHAR_TARGET_MISSED',
+    'cap.mission.rtb': _audio_key_from_cap_rtb,
+    'cap.permission.timeout': lambda ctx: 'SHAR_FINAL_APPROACH',
+    'cap.permission.authorized': lambda ctx: 'SHAR_ENGAGGING',
+    'pilot.intercept.launch': lambda ctx: 'SHAR_TAKING_OFF',
+    'pilot.cap.launch': lambda ctx: 'SHAR_TAKING_OFF',
+    'pilot.vector': lambda ctx: 'SHAR_FINAL_APPROACH',
+    'pilot.fox2': lambda ctx: 'SHAR_FOX_2',
+    'pilot.splash': lambda ctx: 'SHAR_SPLASH_BANDIT',
+    'pilot.bombsaway': lambda ctx: 'SHAR_BOMBS_AWAY',
+    'pilot.target_hit': lambda ctx: 'SHAR_SPLASH_BANDIT',
+    'pilot.target_miss': lambda ctx: 'SHAR_TARGET_MISSED',
+    'weapon.arm': lambda ctx: _weapon_audio_for_arm(_weapon_name_from_ctx(ctx)),
+    'weapon.safe': lambda ctx: _weapon_audio_for_safe(_weapon_name_from_ctx(ctx)),
+    'weapon.target.locked': lambda ctx: 'RDR_PRIMARY_TARGET_LOCKED',
+    'weapon.target.unlocked': lambda ctx: 'RDR_PRIMARY_TARGET_UNLOCKED',
+    'weapon.fire': lambda ctx: _weapon_audio_for_fire(_weapon_name_from_ctx(ctx)),
+    'weapon.result.hit': lambda ctx: 'WPN_TARGET_HIT',
+    'weapon.result.miss': lambda ctx: 'WPN_TARGET_MISS',
+    'weapon.result.no_effect': lambda ctx: 'WPN_TARGET_MISS',
+    'weapon.out_of_ammo': lambda ctx: _weapon_audio_for_out_of_ammo(_weapon_name_from_ctx(ctx)),
+    'weapon.reload.start': lambda ctx: _weapon_audio_for_reload_start(_weapon_name_from_ctx(ctx)),
+    'weapon.reload.complete': lambda ctx: _weapon_audio_for_ready(_weapon_name_from_ctx(ctx)),
+    'eng.system.offline': _eng_system_audio,
+    'eng.repair.deployed': lambda ctx: 'ENG_REPAIR_TEAMS_COMMITTED',
+    'enemy.attack.hit': lambda ctx: _enemy_attack_audio('hit', ctx),
+    'enemy.attack.miss': lambda ctx: _enemy_attack_audio('miss', ctx),
+    'enemy.bomb.hit': lambda ctx: _enemy_attack_audio('hit', ctx),
+    'enemy.bomb.miss': lambda ctx: _enemy_attack_audio('miss', ctx),
+    'enemy.surface.hit': lambda ctx: _enemy_attack_audio('hit', ctx),
+    'enemy.surface.miss': lambda ctx: _enemy_attack_audio('miss', ctx),
+    'eng.hermes.outofaction': lambda ctx: 'ENG_HEMERS_OUTOFACTION',
+    'eng.abandon_ship': lambda ctx: 'ENG_ABANDON_SHIP',
+    'ship.alarm.threat_close': lambda ctx: 'RDR_ENEMY_CONTACT_CLOSING_IN',
+    'resupply.launch': lambda ctx: _resupply_audio('resupply.launch', ctx),
+    'resupply.ready': lambda ctx: _resupply_audio('resupply.ready', ctx),
+    'resupply.complete': lambda ctx: _resupply_audio('resupply.complete', ctx),
+}
+
+
+def _event_audio_key(event_id: str | None, ctx: Dict[str, Any] | None) -> str | None:
+    if not event_id:
+        return None
+    handler = RADIO_EVENT_AUDIO_MAP.get(str(event_id))
+    if handler is None:
+        return None
+    try:
+        key = handler(ctx or {})
+    except Exception:
+        key = None
+    return key
+
+
+def _text_audio_key(role: str, msg: str) -> str | None:
+    txt = str(msg or '').lower()
+    if not txt:
+        return None
+    role_norm = str(role or '').strip().lower()
+    if role_norm == 'pilot':
+        if 'permission to engage' in txt or 'request permission' in txt:
+            return 'SHAR_PERMISSION_ENGAGE'
+        if 'fox two' in txt:
+            return 'SHAR_FOX_2'
+        if 'splash' in txt:
+            return 'SHAR_SPLASH_BANDIT'
+        if 'bombs away' in txt:
+            return 'SHAR_BOMBS_AWAY'
+        if 'target missed' in txt or 'missed target' in txt:
+            return 'SHAR_TARGET_MISSED'
+        if 'on station' in txt:
+            return 'SHAR_ON_STATION'
+        if 'winchester' in txt:
+            return 'SHAR_WINCHESTER'
+        if 'resupply' in txt and ('ready' in txt or 'complete' in txt):
+            return 'SEAKING_READY_RESUPPLY'
+        if 'resupply' in txt and ('airborne' in txt or 'underway' in txt or 'enroute' in txt):
+            return 'SEAKING_TAKING_OFF'
+    if role_norm == 'radar':
+        if 'locked' in txt and 'unlocked' not in txt:
+            return 'RDR_PRIMARY_TARGET_LOCKED'
+        if 'unlocked' in txt:
+            return 'RDR_PRIMARY_TARGET_UNLOCKED'
+        if 'new radar contact' in txt and 'friendly' in txt:
+            return 'RDR_NEW_RADAR_CONTACT_FRIENDLY'
+        if 'new radar contact' in txt and 'hostile' in txt:
+            return 'RDR_NEW_RADAR_CONTACT_HOSTILE'
+        if 'closing in' in txt or 'threat close' in txt:
+            return 'RDR_ENEMY_CONTACT_CLOSING_IN'
+    if role_norm == 'engineering':
+        if 'abandon ship' in txt:
+            return 'ENG_ABANDON_SHIP'
+        if 'hermes' in txt and ('hit' in txt or 'damaged' in txt):
+            return 'ENG_HERMES_HIT'
+        if 'hermes' in txt and ('out of action' in txt or 'combat ineffective' in txt):
+            return 'ENG_HEMERS_OUTOFACTION'
+        if 'navigation' in txt and ('offline' in txt or 'down' in txt):
+            return 'ENG_NAV-OFFLINE'
+        if 'radar' in txt and ('offline' in txt or 'down' in txt):
+            return 'ENG_RDR_OFFLINE'
+        if ('weapons' in txt or 'fire control' in txt) and ('offline' in txt or 'down' in txt):
+            return 'ENG_WPN_OFFLINE'
+        if 'comms' in txt and ('offline' in txt or 'down' in txt):
+            return 'ENG_COMMS_OFFLINE'
+        if 'rudder' in txt or 'steering' in txt:
+            return 'ENG_RUDDER_DAMAGED'
+        if 'hull' in txt and ('breach' in txt or 'breached' in txt):
+            return 'ENG_HULL_BREACHED'
+    return None
+
+
+def _radio_audio_for(role: str, text: str, *, event_id: str | None, event_ctx: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    role_name = str(role or '')
+    key = _event_audio_key(event_id, event_ctx)
+    if not key:
+        key = _text_audio_key(role_name, text)
+    info = _radio_audio_lookup(key)
+    if info:
+        return dict(info)
+    return None
+
+
+def _sanitize_radio_prefix(msg: str, role_str: str) -> str:
+    cleaned = str(msg or '')
+    try:
+        original = cleaned
+        tokens = ('text', 'txt', 'captain')
+        changed = False
+        while True:
+            stripped = cleaned.lstrip()
+            lowered = stripped.lower()
+            matched = False
+            for token in tokens:
+                if lowered.startswith(token):
+                    rest = stripped[len(token):]
+                    rest = rest.lstrip(" \t\n\r,:-" )
+                    cleaned = rest
+                    matched = True; changed = True
+                    break
+            if not matched:
+                break
+        cleaned = cleaned.strip()
+        if changed and cleaned != original:
             try:
                 record_flight({
                     'route': '/radio.sanitize', 'method': 'INT', 'status': 200, 'duration_ms': 0,
-                    'request': {'role': role_str}, 'response': {'before': old[:120], 'after': msg[:120]}
+                    'request': {'role': role_str}, 'response': {'before': original[:120], 'after': cleaned[:120]}
                 })
             except Exception:
                 pass
     except Exception:
         pass
+    return cleaned or ''
+
+
+def record_officer(role: str, text: str, *, channel: int | None = None,
+                   event_id: str | None = None, event_ctx: Dict[str, Any] | None = None) -> None:
+    role_str = str(role or "OFFICER"); msg = str(text or "")
+    msg = _sanitize_radio_prefix(msg, role_str)
+    low = msg.lower()
     prio = (role_str in ("Fire Control",)) or any(w in low for w in ("priority", "threat", "hit", "miss", "locked", "destroyed"))
+    channel_id = _normalize_channel(role_str, channel)
+    audio_info = _radio_audio_for(role_str, msg, event_id=event_id, event_ctx=event_ctx)
     with STATE_LOCK:
         ts = time.time()
         # Deduplicate identical consecutive messages within a short window to prevent double playback
         try:
             last = RADIO_QUEUE[-1] if RADIO_QUEUE else None
-            if last and str((last or {}).get('text','')).strip() == msg.strip() and (ts - float((last or {}).get('enq_ts', 0.0))) <= 1.0:
+            if last and str((last or {}).get('text','')).strip() == msg.strip() and int((last or {}).get('channel', 0)) == channel_id and (ts - float((last or {}).get('enq_ts', 0.0))) <= 1.0:
                 return
         except Exception:
             pass
-        entry = {"role": role_str, "text": msg, "prio": bool(prio), "enq_ts": ts}
+        guard_flag = channel_id == 6
+        entry = {
+            "role": role_str,
+            "text": msg,
+            "prio": bool(prio),
+            "enq_ts": ts,
+            "channel": channel_id,
+            "guard": guard_flag,
+        }
+        if event_id:
+            entry['event'] = event_id
+        if audio_info:
+            file_path = audio_info.get('file')
+            if file_path:
+                entry['file'] = file_path
+            try:
+                dur = float(audio_info.get('duration') or 0.0)
+            except Exception:
+                dur = 0.0
+            if dur > 0:
+                entry['duration'] = dur
         RADIO_QUEUE.append(entry)
         try:
-            RADIO_HISTORY.append({"ts": ts, "role": role_str, "text": msg})
+            RADIO_HISTORY.append({"ts": ts, "role": role_str, "text": msg, "channel": channel_id, "guard": guard_flag})
         except Exception:
             pass
 
@@ -1001,6 +1584,7 @@ def officer_say(role: str, key: str, ctx: Dict[str, Any] | None = None, fallback
         ('Radar', 'scan_report'): 'radar.scan.complete',
         ('Weapons', 'ready'): 'weapon.arm',
         ('Weapons', 'status'): None,  # status is dynamic; leave to fallback or caller
+        ('Pilot', 'cleared'): 'cap.permission.authorized',
     }
     ev_id = ROLE_KEY_TO_EVENT.get((str(role), str(key)))
     text = ''
@@ -1013,7 +1597,7 @@ def officer_say(role: str, key: str, ctx: Dict[str, Any] | None = None, fallback
         tpl = _crew_msg(role, key)
         text = _fmt_msg(tpl, ctx or {}) if tpl else (fallback or "")
     if text:
-        record_officer(role, text)
+        record_officer(role, text, event_id=ev_id, event_ctx=ctx or {})
 
 
 def _arg_or_json(request, key: str, default: str | None = None) -> str | None:
