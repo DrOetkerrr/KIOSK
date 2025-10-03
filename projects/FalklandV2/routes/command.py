@@ -175,10 +175,6 @@ def api_command():
             except Exception:
                 pass
             try:
-                officer_say('Fire Control', 'unlocked', {})
-            except Exception:
-                pass
-            try:
                 record_event('radar.target.unlocked', {})
                 record_event('weapon.target.unlocked', {})
             except Exception:
@@ -223,27 +219,25 @@ def api_command():
                 pass
             # allow '/radar lock nearest' or 'primary'
             if str(arg).lower() in ("nearest","primary"):
-                tid = getattr(RADAR, 'priority_id', None)
-                target = next((c for c in RADAR.contacts if int(getattr(c,'id',-1)) == int(tid)), None) if tid is not None else None
-                # Fallback: compute nearest now if priority not yet selected
-                if target is None:
-                    try:
-                        st2 = ENG.public_state() if hasattr(ENG, 'public_state') else {}
-                        ox, oy = get_own_xy(st2)
-                        best = None; bestd = 1e99
-                        clist = list(getattr(RADAR, 'contacts', []) or [])
-                        for c in clist:
-                            try:
-                                dx = float(getattr(c,'x',0.0)) - float(ox)
-                                dy = float(getattr(c,'y',0.0)) - float(oy)
-                                d = dx*dx + dy*dy
-                                if d < bestd:
-                                    bestd = d; best = c
-                            except Exception:
-                                continue
-                        target = best or (clist[0] if clist else None)
-                    except Exception:
-                        target = None
+                # Always recompute the nearest contact to allow switching
+                # targets even when a manual lock already exists.
+                try:
+                    st2 = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+                    ox, oy = get_own_xy(st2)
+                    best = None; bestd = 1e99
+                    clist = list(getattr(RADAR, 'contacts', []) or [])
+                    for c in clist:
+                        try:
+                            dx = float(getattr(c,'x',0.0)) - float(ox)
+                            dy = float(getattr(c,'y',0.0)) - float(oy)
+                            d = dx*dx + dy*dy
+                            if d < bestd:
+                                bestd = d; best = c
+                        except Exception:
+                            continue
+                    target = best or (clist[0] if clist else None)
+                except Exception:
+                    target = None
             else:
                 target = _radar_find_by_id(arg)
             if target is None:
@@ -300,15 +294,7 @@ def api_command():
                     })
                 except Exception:
                     pass
-                try:
-                    officer_say('Fire Control','locked',{'name': ui.get('name'), 'id': tid, 'range_nm': ui.get('range_nm')})
-                except Exception:
-                    pass
             except Exception:
-                try:
-                    officer_say('Fire Control','locked',{'id': tid})
-                except Exception:
-                    pass
                 try:
                     record_event('radar.target.locked', {'id': tid})
                     record_event('weapon.target.locked', {'id': tid})

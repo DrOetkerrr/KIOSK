@@ -1,0 +1,458 @@
+{
+  "ok": true,
+  "api_version": 1,
+  "server_version": "20250929175346",
+  "engine_kind": "falklands",
+  "capabilities": [
+    "nav:set",
+    "weapons:cooldown",
+    "cap:ready",
+    "radar:force_spawn"
+  ],
+  "mission": {
+    "id": "tutorial_ops",
+    "label": "Tutorial Ops",
+    "description": "Orientation sortie: stations stay offline and only friendly contacts are present.",
+    "status": "in_progress",
+    "elapsed_s": 21.697450876235962,
+    "time_left_s": null,
+    "outcome": null,
+    "pending_decision": null,
+    "assets": {
+      "sheffield": {
+        "lives": 4,
+        "max_lives": 4
+      },
+      "hermes": {
+        "lives": 8,
+        "max_lives": 8
+      },
+      "belgrano": {
+        "lives": 8,
+        "max_lives": 8
+      }
+    },
+    "settings": {
+      "stations_offline": true,
+      "hostile_spawns": false
+    },
+    "available": [
+      {
+        "id": "tutorial_ops",
+        "label": "Tutorial Ops"
+      },
+      {
+        "id": "protect_hermes",
+        "label": "Protect Hermes"
+      }
+    ],
+    "sequence": {
+      "order": [
+        {
+          "id": "tutorial_ops",
+          "label": "Tutorial Ops",
+          "auto_advance_s": null
+        },
+        {
+          "id": "protect_hermes",
+          "label": "Protect Hermes",
+          "auto_advance_s": null
+        }
+      ],
+      "active": "tutorial_ops",
+      "index": 0
+    }
+  },
+  "state": {
+    "ship": {
+      "col": 48,
+      "row": 50,
+      "heading": 270.0,
+      "speed": 15.0
+    },
+    "CELL_NM": 4.0
+  },
+  "ownfleet": [
+    {
+      "id": "own",
+      "name": "HMS Sheffield",
+      "class": "Type 42",
+      "cell": "AT20",
+      "speed": 15.0,
+      "heading": 270.0,
+      "status": {}
+    },
+    {
+      "id": "hermes",
+      "name": "HMS Hermes",
+      "class": "Carrier",
+      "cell": "AR20",
+      "speed": 15.0,
+      "heading": 270.0,
+      "status": {}
+    },
+    {
+      "id": "t21_escort",
+      "name": "HMS Glamorgan",
+      "class": "Type 21",
+      "cell": "AT18",
+      "speed": 15.0,
+      "heading": 270.0,
+      "status": {}
+    }
+  ],
+  "contacts": [
+    {
+      "id": "fleet:t21_escort",
+      "cell": "AT18",
+      "name": "HMS Glamorgan",
+      "type": "Friendly",
+      "class": "Type 21",
+      "range_nm": 1.5650354510943547,
+      "course": 270,
+      "speed": 15
+    },
+    {
+      "id": "fleet:hermes",
+      "cell": "AR20",
+      "name": "HMS Hermes",
+      "type": "Friendly",
+      "class": "Carrier",
+      "range_nm": 1.8371289380559883,
+      "course": 270,
+      "speed": 15
+    },
+    {
+      "id": 2,
+      "ID": 2,
+      "cell": "AD09",
+      "name": "ARA General Belgrano",
+      "type": "Hostile",
+      "range_nm": 19.45,
+      "Range": 19.45,
+      "course": 124,
+      "CRS": 124,
+      "speed": 16,
+      "SPD": 16,
+      "class": "Ship",
+      "primary_weapon": "6-inch main battery",
+      "min_nm": 8.0,
+      "max_nm": 15.0
+    },
+    {
+      "id": 1,
+      "ID": 1,
+      "cell": "BN21",
+      "name": "Fleet Tanker (RFA)",
+      "type": "Friendly",
+      "range_nm": 20.86,
+      "Range": 20.86,
+      "course": 273,
+      "CRS": 273,
+      "speed": 10,
+      "SPD": 10,
+      "class": "Ship"
+    },
+    {
+      "id": 4,
+      "ID": 4,
+      "cell": "BN26",
+      "name": "Sea King Helicopter",
+      "type": "Friendly",
+      "range_nm": 21.89,
+      "Range": 21.89,
+      "course": 281,
+      "CRS": 281,
+      "speed": 68,
+      "SPD": 68,
+      "class": "Helicopter"
+    },
+    {
+      "id": 3,
+      "ID": 3,
+      "cell": "AH00",
+      "name": "Mirage III",
+      "type": "Hostile",
+      "range_nm": 23.16,
+      "Range": 23.16,
+      "course": 148,
+      "CRS": 148,
+      "speed": 341,
+      "SPD": 341,
+      "class": "Aircraft",
+      "primary_weapon": "Bombs / rockets",
+      "min_nm": 1.0,
+      "max_nm": 2.0
+    }
+  ],
+  "threats": [
+    {
+      "id": 2,
+      "ID": 2,
+      "cell": "AD09",
+      "name": "ARA General Belgrano",
+      "type": "Hostile",
+      "range_nm": 19.45,
+      "Range": 19.45,
+      "course": 124,
+      "CRS": 124,
+      "speed": 16,
+      "SPD": 16,
+      "class": "Ship",
+      "primary_weapon": "6-inch main battery",
+      "min_nm": 8.0,
+      "max_nm": 15.0
+    },
+    {
+      "id": 3,
+      "ID": 3,
+      "cell": "AH00",
+      "name": "Mirage III",
+      "type": "Hostile",
+      "range_nm": 23.16,
+      "Range": 23.16,
+      "course": 148,
+      "CRS": 148,
+      "speed": 341,
+      "SPD": 341,
+      "class": "Aircraft",
+      "primary_weapon": "Bombs / rockets",
+      "min_nm": 1.0,
+      "max_nm": 2.0
+    }
+  ],
+  "top_threat_id": 2,
+  "radar": {
+    "scan_interval_s": 180,
+    "scan_left_s": 179,
+    "locked_id": null
+  },
+  "hud_state": {
+    "active_contact_id": null,
+    "radar_locked_id": null
+  },
+  "weapons": [
+    {
+      "name": "MM38 Exocet",
+      "class": "Missile",
+      "min_nm": 8.0,
+      "max_nm": 22.0,
+      "armed": "Safe",
+      "arming_s": 0,
+      "ammo": 4,
+      "in_range": true,
+      "cooldown_s": 0
+    },
+    {
+      "name": "Sea Dart SAM",
+      "class": "SAM",
+      "min_nm": 2.0,
+      "max_nm": 35.0,
+      "armed": "Safe",
+      "arming_s": 0,
+      "ammo": 26,
+      "in_range": true,
+      "cooldown_s": 0
+    },
+    {
+      "name": "20mm GAM-BO1 (twin)",
+      "class": "Gun",
+      "min_nm": 0.3,
+      "max_nm": 2.5,
+      "armed": "Safe",
+      "arming_s": 0,
+      "ammo": 1850,
+      "in_range": false,
+      "cooldown_s": 0
+    },
+    {
+      "name": "20mm Oerlikon",
+      "class": "Gun",
+      "min_nm": 0.25,
+      "max_nm": 0.5,
+      "armed": "Safe",
+      "arming_s": 0,
+      "ammo": 5000,
+      "in_range": false,
+      "cooldown_s": 0
+    },
+    {
+      "name": "4.5 inch Mk.8 gun",
+      "class": "Gun",
+      "min_nm": 1.0,
+      "max_nm": 8.0,
+      "armed": "Safe",
+      "arming_s": 0,
+      "ammo": 550,
+      "in_range": false,
+      "cooldown_s": 0
+    },
+    {
+      "name": "Corvus chaff",
+      "class": "Decoy",
+      "min_nm": 0.0,
+      "max_nm": 1.0,
+      "armed": "Safe",
+      "arming_s": 0,
+      "ammo": 15,
+      "in_range": false,
+      "cooldown_s": 0
+    }
+  ],
+  "resupply": {
+    "active": false,
+    "left_s": 0,
+    "stage": null
+  },
+  "audio": {
+    "last_launch": null,
+    "last_result": null,
+    "radio": {
+      "ts": 1759168430.474613,
+      "role": "Ensign",
+      "text": "Self-test ping received.",
+      "file": "/data/tts/30391ea8db54f4b135e6.mp3",
+      "dur": 1.8,
+      "channel": 4,
+      "guard": false
+    },
+    "alarm": null,
+    "cap_launch": null,
+    "enemy_bomb": null,
+    "shots_in_flight": []
+  },
+  "radio": [
+    {
+      "ts": "19:53:48",
+      "role": "Ensign",
+      "text": "Self-test ping received.",
+      "channel": 4,
+      "guard": false
+    }
+  ],
+  "grid": {
+    "world_n": 40,
+    "board_n": 26
+  },
+  "nav": {
+    "turn_target": null
+  },
+  "cap": {
+    "ready": true,
+    "pairs": 6,
+    "airframes": 10,
+    "cooldown_s": 0,
+    "committed": 0,
+    "tasks": [],
+    "committed_pairs": 0,
+    "committed_airframes": 0,
+    "sidewinders_pool": 40,
+    "sidewinders_committed": 0,
+    "sidewinders": 40,
+    "pair_size": 2
+  },
+  "eng": {
+    "timestamp": 1759168448.435071,
+    "teams_total": 4,
+    "teams_free": 4,
+    "teams_used": 0,
+    "loss_threshold_s": 120,
+    "ship_lives": 4,
+    "ship_max_lives": 4,
+    "ship_pct": 100,
+    "systems": [
+      {
+        "index": 1,
+        "id": "Navigation",
+        "label": "NAV station",
+        "status": "OK",
+        "timer_s": 0,
+        "team_assigned": false,
+        "last_damaged_ts": 0.0,
+        "time_since_damage_s": null,
+        "time_to_loss_s": null,
+        "warn_halfway": false,
+        "warn_critical": false
+      },
+      {
+        "index": 2,
+        "id": "Radar",
+        "label": "RDR station",
+        "status": "OK",
+        "timer_s": 0,
+        "team_assigned": false,
+        "last_damaged_ts": 0.0,
+        "time_since_damage_s": null,
+        "time_to_loss_s": null,
+        "warn_halfway": false,
+        "warn_critical": false
+      },
+      {
+        "index": 3,
+        "id": "FireControl_Weapons",
+        "label": "FCR / Weapons",
+        "status": "OK",
+        "timer_s": 0,
+        "team_assigned": false,
+        "last_damaged_ts": 0.0,
+        "time_since_damage_s": null,
+        "time_to_loss_s": null,
+        "warn_halfway": false,
+        "warn_critical": false
+      },
+      {
+        "index": 4,
+        "id": "COMMS",
+        "label": "COMMS station",
+        "status": "OK",
+        "timer_s": 0,
+        "team_assigned": false,
+        "last_damaged_ts": 0.0,
+        "time_since_damage_s": null,
+        "time_to_loss_s": null,
+        "warn_halfway": false,
+        "warn_critical": false
+      },
+      {
+        "index": 5,
+        "id": "Engine_Propulsion",
+        "label": "Engine / Propulsion",
+        "status": "OK",
+        "timer_s": 0,
+        "team_assigned": false,
+        "last_damaged_ts": 0.0,
+        "time_since_damage_s": null,
+        "time_to_loss_s": null,
+        "warn_halfway": false,
+        "warn_critical": false
+      },
+      {
+        "index": 6,
+        "id": "Rudder_Steering",
+        "label": "Rudder / Steering",
+        "status": "OK",
+        "timer_s": 0,
+        "team_assigned": false,
+        "last_damaged_ts": 0.0,
+        "time_since_damage_s": null,
+        "time_to_loss_s": null,
+        "warn_halfway": false,
+        "warn_critical": false
+      },
+      {
+        "index": 7,
+        "id": "Hull",
+        "label": "Hull",
+        "status": "OK",
+        "timer_s": 0,
+        "team_assigned": false,
+        "last_damaged_ts": 0.0,
+        "time_since_damage_s": null,
+        "time_to_loss_s": null,
+        "warn_halfway": false,
+        "warn_critical": false
+      }
+    ]
+  },
+  "events": []
+}

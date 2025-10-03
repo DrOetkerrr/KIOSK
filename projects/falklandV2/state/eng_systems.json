@@ -1,6 +1,6 @@
 {
   "teams_total": 4,
-  "teams_free": 4,
+  "teams_free": 3,
   "systems": [
     {
       "id": "Navigation",
@@ -29,10 +29,11 @@
     {
       "id": "COMMS",
       "name": "COMMS station",
-      "status": "OK",
-      "timer_s": 0,
-      "team_assigned": false,
-      "last_damaged_ts": 0.0
+      "status": "Damaged",
+      "timer_s": 63,
+      "team_assigned": true,
+      "last_damaged_ts": 1759475665.836288,
+      "response_deadline_ts": 0.0
     },
     {
       "id": "Engine_Propulsion",

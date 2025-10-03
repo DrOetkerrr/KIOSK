@@ -40,9 +40,10 @@ def eng_assign():
                 s['team_assigned'] = True
                 st['teams_free'] = max(0, int(st.get('teams_free', 0)) - 1)
                 status = str(s.get('status'))
-                if status in ('Offline', 'Damaged') and int(s.get('timer_s', 0)) <= 0:
+                current_timer = float(s.get('timer_s', 0) or 0.0)
+                if status in ('Offline', 'Damaged') and current_timer <= 0.0:
                     s['status'] = 'Damaged'
-                    s['timer_s'] = 120
+                    s['timer_s'] = 120.0
                     s['last_damaged_ts'] = time.time()
                     s['response_deadline_ts'] = 0.0
                     try:

@@ -12,13 +12,20 @@ bp = Blueprint("radar", __name__)
 def _lazy():
     # Late imports from webdash to avoid circular imports
     from ..webdash import (
-        ENG, RADAR, Contact,
+        ENG, RADAR, Contact, RUNTIME,
         record_flight, officer_say,
         world_to_cell, contact_to_ui, get_own_xy,
         radar_xy_from_state,
         _load_json, DATA_DIR, HOSTILES, WORLD_N
     )
     return locals()
+
+
+def _hostiles_allowed(runtime) -> bool:
+    try:
+        return bool(runtime.allow_hostile_contacts())
+    except Exception:
+        return True
 
 
 @bp.get("/debug/cellmap")
@@ -57,6 +64,12 @@ def debug_cellmap():
 def radar_force_spawn():
     L = _lazy(); t0 = time.time(); route = "/radar/force_spawn"
     try:
+        if not _hostiles_allowed(L['RUNTIME']):
+            payload = {"ok": False, "error": "hostile_spawns_disabled"}
+            L['record_flight']({"route": route, "method": "GET", "status": 403,
+                              "duration_ms": int((time.time()-t0)*1000),
+                              "request": {}, "response": payload})
+            return jsonify(payload), 403
         st = L['ENG'].public_state() if hasattr(L['ENG'], "public_state") else {}
         own_x, own_y = L['radar_xy_from_state'](st)
         c = L['RADAR'].force_spawn(own_x, own_y, "Hostile", bearing_deg=315.0, range_nm=random.uniform(8.0, 14.0))
@@ -87,6 +100,12 @@ def radar_force_spawn():
 def radar_force_spawn_hostile():
     L = _lazy(); t0 = time.time(); route = "/radar/force_spawn_hostile"
     try:
+        if not _hostiles_allowed(L['RUNTIME']):
+            payload = {"ok": False, "error": "hostile_spawns_disabled"}
+            L['record_flight']({"route": route, "method": "GET", "status": 403,
+                              "duration_ms": int((time.time()-t0)*1000),
+                              "request": {}, "response": payload})
+            return jsonify(payload), 403
         st = L['ENG'].public_state() if hasattr(L['ENG'], "public_state") else {}
         own_x, own_y = L['get_own_xy'](st)
         c = L['RADAR'].force_spawn(own_x, own_y, "Hostile", 315.0, random.uniform(8.0, 14.0))
@@ -148,6 +167,12 @@ def radar_force_spawn_near():
     """Spawn a forced Hostile contact nearby for weapons testing."""
     L = _lazy(); t0 = time.time(); route = "/radar/force_spawn_near"
     try:
+        if not _hostiles_allowed(L['RUNTIME']):
+            payload = {"ok": False, "error": "hostile_spawns_disabled"}
+            L['record_flight']({"route": route, "method": "GET", "status": 403,
+                              "duration_ms": int((time.time()-t0)*1000),
+                              "request": {}, "response": payload})
+            return jsonify(payload), 403
         st = L['ENG'].public_state() if hasattr(L['ENG'], "public_state") else {}
         own_x, own_y = L['get_own_xy'](st)
         klass = (request.args.get('class') or 'Aircraft').title()
@@ -222,4 +247,3 @@ def radar_reload_catalog():
                           "duration_ms": int((time.time()-t0)*1000),
                           "request": {}, "response": payload})
         return jsonify(payload), 500
-

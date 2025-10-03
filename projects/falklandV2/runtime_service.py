@@ -16,6 +16,7 @@ import time
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MethodType, SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 
 from projects.falklands.core.engine import Engine
@@ -24,7 +25,7 @@ from projects.falklandV2.subsystems.hermes_cap import HermesCAP
 from projects.falklandV2.subsystems import webcore as core
 from projects.falklandV2.subsystems import ui_snapshot as ui_snap
 from projects.falklandV2.subsystems.mission import MissionController
-from projects.falklandV2.engine_adapter import contact_to_ui
+from projects.falklandV2.engine_adapter import contact_to_ui, _scale_legacy
 
 
 class _RadarRecorder:
@@ -98,12 +99,21 @@ class GameRuntime:
         self._rebinder: Optional[Callable[["GameRuntime"], None]] = None
 
         self.state_path = state_path or Path.home() / "Documents" / "kiosk" / "falklands_state.json"
+        self._engine_contacts: List[Any] = []
+        self._engine_grid = SimpleNamespace(cols=float(WORLD_N), rows=float(WORLD_N), cell_nm=1.0)
+        self._engine_state_cache: Dict[str, Any] = {}
         self.engine: Engine = self._create_engine()
         self.cap: Optional[HermesCAP] = self._create_cap()
+        self._mission_settings_cache: Dict[str, Any] = {}
         self.radar: Radar = self._create_radar()
+        self._install_engine_compat(self.engine)
+        self._update_engine_state_view()
         now = time.time()
         self.mission: MissionController = MissionController(self.data_dir, now=now)
+        self._last_engine_tick_ts: float = now
         self._last_radar_tick_ts: float = now
+        self._mission_settings_cache = self.mission.current_settings()
+        self._apply_mission_contact_filters(self.radar)
 
     # ---------- creation helpers
     def _read_port(self) -> int:
@@ -193,10 +203,114 @@ class GameRuntime:
         except Exception:
             pass
         try:
-            radar.seed_test_contacts(seed_x, seed_y, count=4)
+            if self.allow_hostile_contacts():
+                radar.seed_test_contacts(seed_x, seed_y, count=4)
+            else:
+                bearings = (45.0, 315.0, 90.0)
+                for bearing in bearings:
+                    rng_nm = random.uniform(6.0, 12.0)
+                    radar.force_spawn(seed_x, seed_y, 'Friendly', bearing, rng_nm)
         except Exception:
             pass
+        self._apply_mission_contact_filters(radar)
         return radar
+
+    # ---------- engine compatibility helpers ----------
+    def _install_engine_compat(self, eng: Engine) -> None:
+        if getattr(eng, '_ui_compat', False):
+            return
+        setattr(eng, '_ui_compat', True)
+
+        # Shared contact store reused by pool/engine surfaces
+        self._engine_contacts = []
+        eng.contacts = self._engine_contacts
+
+        # Provide pool/grid shim expected by ui_snapshot
+        grid = self._engine_grid
+        eng.pool = SimpleNamespace(contacts=self._engine_contacts, grid=grid)
+
+        # Ensure hud() exists (ui snapshot calls eng.hud())
+        if not hasattr(eng, 'hud'):
+            eng.hud = eng.hud_line  # type: ignore[attr-defined]
+
+        runtime = self
+
+        def _ship_xy(_self) -> tuple[float, float]:  # pragma: no cover - thin shim
+            pos = runtime._engine_state_cache.get('ship', {}).get('pos', {})
+            try:
+                return (float(pos.get('x', 0.0)), float(pos.get('y', 0.0)))
+            except Exception:
+                return (0.0, 0.0)
+
+        def _ship_course_speed(_self) -> tuple[float, float]:  # pragma: no cover - thin shim
+            ship = runtime._engine_state_cache.get('ship', {})
+            try:
+                return (float(ship.get('heading', 0.0)), float(ship.get('speed', 0.0)))
+            except Exception:
+                return (0.0, 0.0)
+
+        eng._ship_xy = MethodType(_ship_xy, eng)     # type: ignore[attr-defined]
+        eng._ship_course_speed = MethodType(_ship_course_speed, eng)  # type: ignore[attr-defined]
+
+        # Provide mutable state dict expected by legacy surfaces
+        runtime._update_engine_state_view()
+
+    def _update_engine_state_view(self) -> None:
+        try:
+            st = getattr(self.engine, 'st', None)
+            data = st.data if st is not None else {}
+        except Exception:
+            data = {}
+
+        ship = data.get('ship', {}) if isinstance(data, dict) else {}
+        pos = data.get('ship_position', {}) if isinstance(data, dict) else {}
+
+        try:
+            col_f = float(pos.get('col_f', ship.get('col', 50.0)))
+        except Exception:
+            col_f = 50.0
+        try:
+            row_f = float(pos.get('row_f', ship.get('row', 50.0)))
+        except Exception:
+            row_f = 50.0
+
+        x = _scale_legacy(col_f)
+        y = _scale_legacy(row_f)
+
+        try:
+            heading = float(ship.get('heading', data.get('ship_course_deg', 270.0)))
+        except Exception:
+            heading = 270.0
+        try:
+            speed = float(ship.get('speed', data.get('ship_speed_kn', 15.0)))
+        except Exception:
+            speed = 15.0
+
+        self._engine_state_cache = {
+            'ship': {
+                'pos': {'x': x, 'y': y},
+                'heading': heading,
+                'speed': speed,
+            },
+            'radar': {
+                'locked_contact_id': getattr(self.radar, 'priority_id', None)
+            }
+        }
+
+        try:
+            self.engine.state = self._engine_state_cache
+        except Exception:
+            pass
+
+        # Refresh pool/grid with nominal WORLD_N metrics
+        try:
+            self._engine_grid.cols = float(WORLD_N)
+            self._engine_grid.rows = float(WORLD_N)
+            self._engine_grid.cell_nm = 1.0
+        except Exception:
+            pass
+
+    # ---------- convenience surface ----------
 
     # ---------- lifecycle
     def register_rebinder(self, cb: Callable[["GameRuntime"], None]) -> None:
@@ -242,13 +356,53 @@ class GameRuntime:
             return {}
         with self.state_lock:
             ctx = self._mission_context()
-            return self.mission.update(ctx, now=ctx["now"])
+            snap = self.mission.update(ctx, now=ctx["now"])
+            self._mission_settings_cache = self.mission.current_settings()
+            return snap
 
     def apply_mission_decision(self, decision_id: str, choice: str) -> Dict[str, Any]:
         if not self.mission:
             return {"ok": False, "error": "mission_unavailable"}
         with self.state_lock:
             return self.mission.register_decision(decision_id, choice)
+
+    def mission_settings(self) -> Dict[str, Any]:
+        with self.state_lock:
+            return dict(self._mission_settings_cache)
+
+    def allow_hostile_contacts(self) -> bool:
+        try:
+            settings = getattr(self, '_mission_settings_cache', {}) or {}
+            return bool(settings.get('hostile_spawns', True))
+        except Exception:
+            return True
+
+    def activate_mission(self, mission_id: str) -> Dict[str, Any]:
+        if not self.mission:
+            return {"ok": False, "error": "mission_unavailable"}
+        with self.state_lock:
+            previous = dict(self._mission_settings_cache)
+            res = self.mission.activate(mission_id, now=time.time())
+            if res.get('ok'):
+                self._mission_settings_cache = self.mission.current_settings()
+                self._handle_mission_settings_change(previous, self._mission_settings_cache)
+            return res
+
+    def _handle_mission_settings_change(self, previous: Dict[str, Any], new: Dict[str, Any]) -> None:
+        prev_hostiles = bool(previous.get('hostile_spawns', True))
+        new_hostiles = bool(new.get('hostile_spawns', True))
+        try:
+            if prev_hostiles and not new_hostiles:
+                self._apply_mission_contact_filters(self.radar)
+            elif not prev_hostiles and new_hostiles:
+                ox, oy = self._own_xy()
+                try:
+                    self.radar.seed_test_contacts(ox, oy, count=4)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self._apply_mission_contact_filters(self.radar)
 
     def reset_engine_and_cap(self) -> None:
         with self.state_lock:
@@ -258,7 +412,10 @@ class GameRuntime:
                 self.radar.cap_effects_provider = (lambda: self.cap.current_effects() if self.cap is not None else {"active": False})
             except Exception:
                 pass
-            self._last_radar_tick_ts = time.time()
+            now = time.time()
+            self._last_engine_tick_ts = now
+            self._last_radar_tick_ts = now
+            self._sync_engine_contacts()
         self._rebind()
 
     def reset_state(self, *, clear_tts: bool = False) -> None:
@@ -321,6 +478,7 @@ class GameRuntime:
             now = time.time()
             self.mission = MissionController(self.data_dir, now=now)
             self._last_radar_tick_ts = now
+            self._sync_engine_contacts()
         self._rebind()
 
     # Convenience pass-throughs for callers that expect functions
@@ -345,6 +503,7 @@ class GameRuntime:
         Mirrors projects/falklandV2/subsystems/ui_snapshot.build_snapshot.
         """
         with self.state_lock:
+            self._update_engine_state_view()
             contacts_ui, radar_meta = self._radar_snapshot()
             mission_block: Dict[str, Any] = {}
             try:
@@ -427,6 +586,74 @@ class GameRuntime:
             contacts_ui = []
         return contacts_ui, radar_meta
 
+    def _apply_mission_contact_filters(self, radar: Optional[Radar]) -> None:
+        if radar is None:
+            return
+        if self.allow_hostile_contacts():
+            return
+        try:
+            filtered = []
+            for contact in getattr(radar, 'contacts', []) or []:
+                allegiance = str(getattr(contact, 'allegiance', '')).lower()
+                if allegiance == 'hostile':
+                    continue
+                filtered.append(contact)
+            radar.contacts = filtered
+        except Exception:
+            pass
+        self._sync_engine_contacts()
+
+    def _sync_engine_contacts(self) -> None:
+        contacts = list(getattr(self.radar, 'contacts', []) or [])
+        self._engine_contacts[:] = contacts
+        try:
+            self.engine.contacts = self._engine_contacts
+        except Exception:
+            pass
+        try:
+            if hasattr(self.engine, 'pool'):
+                self.engine.pool.contacts = self._engine_contacts
+        except Exception:
+            pass
+        self._update_engine_state_view()
+
+    def _advance_engine(self, *, now: Optional[float] = None) -> None:
+        if not hasattr(self, 'engine') or self.engine is None:
+            return
+        ts = now if now is not None else time.time()
+        last = getattr(self, '_last_engine_tick_ts', None)
+        if last is None:
+            self._last_engine_tick_ts = ts
+            return
+        dt_total = max(0.0, float(ts) - float(last))
+        if dt_total <= 0.0:
+            return
+
+        progressed = False
+        remaining = dt_total
+        while remaining > 0.0:
+            step = min(1.0, remaining)
+            with self.state_lock:
+                try:
+                    self.engine.tick(step)
+                    progressed = True
+                except Exception:
+                    break
+            remaining -= step
+
+        if progressed:
+            with self.state_lock:
+                try:
+                    if self.cap is not None:
+                        self.cap.tick(now=ts)
+                except Exception:
+                    pass
+                try:
+                    self._update_engine_state_view()
+                except Exception:
+                    pass
+        self._last_engine_tick_ts = ts
+
     def _advance_radar(self, *, now: Optional[float] = None) -> None:
         if not hasattr(self, 'radar') or self.radar is None:
             return
@@ -439,6 +666,7 @@ class GameRuntime:
             dt_total = max(0.0, float(ts) - float(last))
             if dt_total <= 0.0:
                 return
+            self._advance_engine(now=ts)
             own_x, own_y = self._own_xy()
             # Advance in bounded steps so spawn math matches live loop expectations.
             remaining = dt_total
@@ -450,6 +678,8 @@ class GameRuntime:
                     break
                 remaining -= step
             self._last_radar_tick_ts = ts
+            self._apply_mission_contact_filters(self.radar)
+            self._sync_engine_contacts()
         except Exception:
             self._last_radar_tick_ts = now if now is not None else time.time()
 
@@ -457,6 +687,8 @@ class GameRuntime:
         ox, oy = self._own_xy()
         try:
             self.radar.scan(ox, oy)
+            self._apply_mission_contact_filters(self.radar)
+            self._sync_engine_contacts()
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}

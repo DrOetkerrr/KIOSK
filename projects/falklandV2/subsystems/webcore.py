@@ -70,6 +70,26 @@ ENG_SYSTEM_LABELS = {
 }
 
 
+def _runtime_mission_settings(wd) -> Dict[str, Any]:
+    runtime = getattr(wd, 'RUNTIME', None)
+    if runtime is not None and hasattr(runtime, 'mission_settings'):
+        try:
+            settings = runtime.mission_settings()
+            if isinstance(settings, dict):
+                return settings
+        except Exception:
+            return {}
+    return {}
+
+
+def _mission_hostiles_allowed(wd) -> bool:
+    settings = _runtime_mission_settings(wd)
+    try:
+        return bool(settings.get('hostile_spawns', True))
+    except Exception:
+        return True
+
+
 # ---- JSON helpers ----
 def _load_json(path: Path, default):
     try:
@@ -202,6 +222,63 @@ def load_eng_sys() -> Dict[str, Any]:
 
 def save_eng_sys(obj: Dict[str, Any]) -> None:
     _save_json(ENG_SYS_PATH, obj)
+
+
+# ---- Engineering repair helpers ----
+def _advance_eng_repairs(eng: Dict[str, Any], dt: float, now: float) -> bool:
+    """Advance repair timers by dt seconds. Returns True if state mutated."""
+    changed = False
+    try:
+        teams_total = int(eng.get('teams_total', 0) or 0)
+    except Exception:
+        teams_total = 0
+
+    systems = eng.get('systems', []) if isinstance(eng.get('systems'), list) else []
+    for s in systems or []:
+        try:
+            status = str(s.get('status', 'OK'))
+            assigned = bool(s.get('team_assigned'))
+            timer = float(s.get('timer_s', 0) or 0.0)
+            resp_deadline = float(s.get('response_deadline_ts', 0.0) or 0.0)
+
+            if status == 'Offline':
+                if assigned and timer <= 0.0:
+                    s['status'] = 'Damaged'
+                    s['timer_s'] = 120.0
+                    s['last_damaged_ts'] = now
+                    s['response_deadline_ts'] = 0.0
+                    status = 'Damaged'
+                    timer = 120.0
+                    changed = True
+                elif (not assigned) and resp_deadline and now >= resp_deadline:
+                    s['status'] = 'Damaged'
+                    s['response_deadline_ts'] = 0.0
+                    status = 'Damaged'
+                    changed = True
+
+            if assigned and timer > 0.0:
+                new_timer = max(0.0, timer - float(dt))
+                new_timer = 0.0 if new_timer < 1e-6 else round(new_timer, 3)
+                if new_timer != timer:
+                    s['timer_s'] = new_timer
+                    changed = True
+                if new_timer == 0.0:
+                    s['status'] = 'OK'
+                    s['last_damaged_ts'] = 0.0
+                    s['response_deadline_ts'] = 0.0
+                    if assigned:
+                        s['team_assigned'] = False
+                        current_free = int(eng.get('teams_free', 0) or 0)
+                        eng['teams_free'] = min(teams_total, current_free + 1)
+                    changed = True
+            else:
+                # Normalise stored timer value
+                if timer != float(s.get('timer_s', 0) or 0.0):
+                    s['timer_s'] = timer
+        except Exception:
+            continue
+
+    return changed
 
 
 # ---- Sound mapping helpers ----
@@ -1305,6 +1382,7 @@ def spawn_initial_friendlies(wd) -> None:
             return
         friend_bearings = (45.0, 315.0)
         hostile_bearings = (135.0, 225.0)
+        allow_hostiles = _mission_hostiles_allowed(wd)
 
         for b in friend_bearings:
             try:
@@ -1314,6 +1392,8 @@ def spawn_initial_friendlies(wd) -> None:
                 continue
 
         for b in hostile_bearings:
+            if not allow_hostiles:
+                break
             try:
                 r = random.uniform(10.0, 18.0)
                 wd.RADAR.force_spawn(own_x, own_y, 'Hostile', bearing_deg=b, range_nm=r)
@@ -1324,6 +1404,8 @@ def spawn_initial_friendlies(wd) -> None:
 
 
 def spawn_hostile_by_name(wd, own_x: float, own_y: float, *, name: str, range_nm: float, bearing_deg: float):
+    if not _mission_hostiles_allowed(wd):
+        return None
     try:
         from ..radar import Contact, WORLD_N  # late import to avoid cycles
     except Exception:
@@ -1456,11 +1538,14 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
             except Exception:
                 return None
 
+        allowed_statuses = {"queued", "airborne", "onstation", "rtb", "recovering"}
         for m in missions:
             try:
                 mid = int(m.get('id'))
                 status = str(m.get('status') or '')
                 status_lc = status.lower()
+                if status_lc not in allowed_statuses:
+                    continue
                 loadout_value = m.get('loadout')
                 loadout_lower = str(loadout_value or '').lower()
                 meta_rec = meta_all.get(mid) if isinstance(meta_all, dict) else None
@@ -1966,7 +2051,7 @@ def engine_thread_run(wd) -> None:
                             if cap_obj is not None:
                                 cfg_weapons = cap_obj.cfg.setdefault('weapons', {})
                                 aim9_cfg = cfg_weapons.setdefault('aim9', {})
-                                default_pair = int(aim9_cfg.get('missiles_total', 8) or 8)
+                                default_pair = int(aim9_cfg.get('missiles_total', 4) or 4)
                                 aim9_cfg['inventory_total'] = int(aim9_cfg.get('inventory_total', 40) or 40)
                                 for mission in list(getattr(cap_obj, 'missions', []) or []):
                                     try:
@@ -2120,6 +2205,8 @@ def engine_thread_run(wd) -> None:
             pass
         # Enemy attack when inside weapon envelope (cooldown per contact)
         try:
+            if not _mission_hostiles_allowed(wd):
+                return
             hlth = _load_health()
             att = getattr(wd, 'ATTACK_STATE', {})
             st_attack = wd.ENG.public_state() if hasattr(wd.ENG, 'public_state') else {}
@@ -2526,49 +2613,7 @@ def engine_thread_run(wd) -> None:
         # Tick ENG repairs counting down timers
         try:
             eng = load_eng_sys()
-            changed = False
-            teams_total = int(eng.get('teams_total', 0) or 0)
-            for s in eng.get('systems', []) or []:
-                try:
-                    status = str(s.get('status', 'OK'))
-                    assigned = bool(s.get('team_assigned'))
-                    timer = int(s.get('timer_s', 0) or 0)
-                    resp_deadline = float(s.get('response_deadline_ts', 0.0) or 0.0)
-
-                    if status == 'Offline':
-                        if assigned and timer <= 0:
-                            s['status'] = 'Damaged'
-                            s['timer_s'] = 120
-                            s['last_damaged_ts'] = now
-                            s['response_deadline_ts'] = 0.0
-                            changed = True
-                            status = 'Damaged'
-                            timer = 120
-                        elif not assigned and resp_deadline and now >= resp_deadline:
-                            s['status'] = 'Damaged'
-                            s['response_deadline_ts'] = 0.0
-                            changed = True
-                            status = 'Damaged'
-
-                    if assigned and timer > 0:
-                        new_timer = max(0, timer - int(dt))
-                        if new_timer != timer:
-                            s['timer_s'] = new_timer
-                            changed = True
-                        if new_timer == 0:
-                            s['status'] = 'OK'
-                            s['last_damaged_ts'] = 0.0
-                            s['response_deadline_ts'] = 0.0
-                            if assigned:
-                                s['team_assigned'] = False
-                                current_free = int(eng.get('teams_free', 0) or 0)
-                                eng['teams_free'] = min(teams_total, current_free + 1)
-                            changed = True
-                    else:
-                        s['timer_s'] = timer
-                except Exception:
-                    continue
-            if changed:
+            if _advance_eng_repairs(eng, dt, now):
                 save_eng_sys(eng)
         except Exception:
             pass

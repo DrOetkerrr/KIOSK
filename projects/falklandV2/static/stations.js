@@ -3,6 +3,14 @@ const $$ = (sel)=>document.querySelectorAll(sel);
 const text = (el, s)=>{ if(el) el.textContent = s; };
 const fmt = (v, d)=> (v===undefined||v===null||Number.isNaN(Number(v))) ? '—' : Number(v).toFixed(d||0);
 
+try{
+  window.__stations_build = '20251012_radar_delta';
+  if(!window.__stations_log_once){
+    window.__stations_log_once = true;
+    console.log('[stations] build', window.__stations_build);
+  }
+}catch(_){ }
+
 function formatHermesOrderSummary(payload){
   try{
     if(!payload || payload.ok === false) return null;
@@ -45,7 +53,8 @@ let ST = {
   events: [],
   eventHistory: [],
   eventKeys: { launch: null, result: null, cap: null },
-  power: {}
+  power: {},
+  radar: {}
 };
 
 const STATION_KEYS = ['NAV','RADAR','WPN','RADIO','ENG'];
@@ -106,6 +115,7 @@ const Voice = {
   mode: 'webspeech',
   processing: false,
   deviceId: null,
+  deviceMeta: null,
   devices: [],
   deviceSelect: null,
   stream: null,
@@ -180,13 +190,45 @@ const Voice = {
   _loadStoredDevice(){
     try{
       const saved = localStorage.getItem(VOICE_DEVICE_STORAGE_KEY);
-      if(saved){ this.deviceId = saved; }
-    }catch(_){ this.deviceId = this.deviceId || null; }
+      if(!saved){
+        this.deviceId = null;
+        this.deviceMeta = null;
+        return;
+      }
+      let meta = null;
+      try{
+        meta = JSON.parse(saved);
+      }catch(_parseErr){
+        meta = saved && typeof saved === 'string' ? { id: saved } : null;
+      }
+      if(meta && typeof meta === 'object'){
+        const id = typeof meta.id === 'string' && meta.id.trim() ? String(meta.id) : null;
+        const label = typeof meta.label === 'string' ? meta.label : null;
+        const groupId = typeof meta.groupId === 'string' && meta.groupId.trim() ? meta.groupId : null;
+        this.deviceId = id;
+        this.deviceMeta = id || label || groupId ? { id, label, groupId } : null;
+      }else{
+        this.deviceId = null;
+        this.deviceMeta = null;
+      }
+    }catch(_){
+      this.deviceId = this.deviceId || null;
+      if(!this.deviceMeta && this.deviceId){
+        this.deviceMeta = { id: this.deviceId };
+      }
+    }
   },
-  _storeDevice(id){
+  _storeDevicePref(meta){
     try{
-      if(id){ localStorage.setItem(VOICE_DEVICE_STORAGE_KEY, id); }
-      else{ localStorage.removeItem(VOICE_DEVICE_STORAGE_KEY); }
+      if(meta && (meta.id || meta.label || meta.groupId)){
+        const payload = {};
+        if(meta.id){ payload.id = String(meta.id); }
+        if(meta.label){ payload.label = String(meta.label); }
+        if(meta.groupId){ payload.groupId = String(meta.groupId); }
+        localStorage.setItem(VOICE_DEVICE_STORAGE_KEY, JSON.stringify(payload));
+      }else{
+        localStorage.removeItem(VOICE_DEVICE_STORAGE_KEY);
+      }
     }catch(_){ }
   },
   async _refreshDeviceList(){
@@ -197,14 +239,10 @@ const Voice = {
       const list = await navigator.mediaDevices.enumerateDevices();
       const inputs = Array.isArray(list) ? list.filter((d)=>d && d.kind === 'audioinput') : [];
       this.devices = inputs;
-      if(this.deviceId && !inputs.some((d)=>d.deviceId === this.deviceId)){
-        this.deviceId = null;
-      }
-      if(!this.deviceId && inputs.length){
-        const preferred = inputs.find((d)=>d.deviceId && d.deviceId !== 'communications') || inputs[0];
-        this.deviceId = preferred ? preferred.deviceId : null;
-        if(this.deviceId){ this._storeDevice(this.deviceId); }
-      }
+      const pref = this._resolvePreferredDevice(inputs);
+      this.deviceId = pref.id;
+      this.deviceMeta = pref;
+      this._storeDevicePref(pref);
       this._syncDeviceSelect();
     }catch(err){
       console.warn('[voice] enumerate devices failed', err);
@@ -219,6 +257,65 @@ const Voice = {
     if(device.deviceId === 'default'){ return 'System default'; }
     if(device.deviceId === 'communications'){ return 'Communications mic'; }
     return `Mic ${index+1}`;
+  },
+  _resolvePreferredDevice(list){
+    const inputs = Array.isArray(list) ? list.filter((d)=>!!d && d.kind === 'audioinput') : [];
+    if(!inputs.length){
+      return { id: null, label: null, groupId: null };
+    }
+    const matchById = (id)=> inputs.find((d)=>d && d.deviceId === id) || null;
+    if(this.deviceId){
+      const exact = matchById(this.deviceId);
+      if(exact){
+        return {
+          id: exact.deviceId || null,
+          label: exact.label || null,
+          groupId: exact.groupId || null
+        };
+      }
+    }
+    const storedId = this.deviceMeta && this.deviceMeta.id ? String(this.deviceMeta.id) : null;
+    if(storedId){
+      const exactStored = matchById(storedId);
+      if(exactStored){
+        return {
+          id: exactStored.deviceId || null,
+          label: exactStored.label || null,
+          groupId: exactStored.groupId || null
+        };
+      }
+    }
+    const storedGroup = this.deviceMeta && this.deviceMeta.groupId ? String(this.deviceMeta.groupId) : null;
+    if(storedGroup){
+      const grp = inputs.find((d)=> d && d.groupId && String(d.groupId) === storedGroup);
+      if(grp){
+        return {
+          id: grp.deviceId || null,
+          label: grp.label || null,
+          groupId: grp.groupId || null
+        };
+      }
+    }
+    const storedLabel = this.deviceMeta && this.deviceMeta.label ? String(this.deviceMeta.label).trim().toLowerCase() : null;
+    if(storedLabel){
+      const lbl = inputs.find((d)=> (d.label || '').trim().toLowerCase() === storedLabel);
+      if(lbl){
+        return {
+          id: lbl.deviceId || null,
+          label: lbl.label || null,
+          groupId: lbl.groupId || null
+        };
+      }
+    }
+    const preferred = inputs.find((d)=> d && d.deviceId && d.deviceId !== 'communications') || inputs[0];
+    if(preferred){
+      return {
+        id: preferred.deviceId || null,
+        label: preferred.label || null,
+        groupId: preferred.groupId || null
+      };
+    }
+    return { id: null, label: null, groupId: null };
   },
   _syncDeviceSelect(){
     const select = this.deviceSelect;
@@ -239,9 +336,23 @@ const Voice = {
       opt.textContent = this._deviceLabel(dev, idx);
       select.appendChild(opt);
     });
-    const wanted = this.deviceId && this.devices.some((d)=>d.deviceId === this.deviceId)
-      ? this.deviceId
-      : (this.devices[0] ? this.devices[0].deviceId : '');
+    let wanted = null;
+    if(this.deviceId && this.devices.some((d)=>d.deviceId === this.deviceId)){
+      wanted = this.deviceId;
+    }else if(this.devices.length){
+      const pref = this._resolvePreferredDevice(this.devices);
+      if(pref && (pref.id || pref.label || pref.groupId)){
+        if(pref.id !== this.deviceId || !this.deviceMeta || pref.groupId !== this.deviceMeta.groupId || pref.label !== this.deviceMeta.label){
+          this.deviceId = pref.id;
+          this.deviceMeta = pref;
+          this._storeDevicePref(pref);
+        }
+        wanted = pref.id || null;
+      }
+      if(!wanted && this.devices[0]){
+        wanted = this.devices[0].deviceId || '';
+      }
+    }
     if(wanted){ select.value = wanted; }
     else { select.selectedIndex = 0; }
     select.disabled = false;
@@ -259,7 +370,21 @@ const Voice = {
       this.stop();
     }
     this.deviceId = newId || null;
-    this._storeDevice(this.deviceId);
+    if(this.deviceId){
+      const match = this.devices.find((d)=>d && d.deviceId === this.deviceId);
+      if(match){
+        this.deviceMeta = {
+          id: match.deviceId || null,
+          label: match.label || null,
+          groupId: match.groupId || null
+        };
+      }else{
+        this.deviceMeta = { id: this.deviceId };
+      }
+    }else{
+      this.deviceMeta = null;
+    }
+    this._storeDevicePref(this.deviceMeta);
     this._syncDeviceSelect();
     if(wasListening && station){
       this.start(station).catch((err)=>{ console.warn('[voice] restart failed after device change', err); });
@@ -283,7 +408,8 @@ const Voice = {
           this.stream = fallback;
           this._hasDevicePermission = true;
           this.deviceId = null;
-          this._storeDevice(null);
+          this.deviceMeta = null;
+          this._storeDevicePref(null);
           pushEvent('voice', 'Falling back to system microphone');
           this._refreshDeviceList();
           return fallback;
@@ -414,8 +540,9 @@ const Voice = {
   },
   handleTranscript(text){
     const cleaned = String(text || '').trim().toLowerCase();
-    if(!cleaned) return;
-    if(['stop listening','cancel listening','end voice'].includes(cleaned)){
+    const normalized = cleaned.replace(/[?!.,]+$/g, '').replace(/\s+/g, ' ').trim();
+    if(!normalized) return;
+    if(['stop listening','cancel listening','end voice'].includes(normalized)){
       this.stop();
       return;
     }
@@ -426,7 +553,7 @@ const Voice = {
     }
     const handlers = VOICE_COMMANDS[station] || [];
     for(const entry of handlers){
-      const match = cleaned.match(entry.pattern);
+      const match = normalized.match(entry.pattern);
       if(match){
         try{
           entry.action(match);
@@ -514,8 +641,8 @@ async function voiceAuthorizeMission(id, authorize){
 
 const VOICE_COMMANDS = {
   NAV: [
-    { pattern: /^set course (\d{1,3})$/, action: (m)=>voiceNavUpdate('heading', parseInt(m[1], 10)) },
-    { pattern: /^set speed (\d{1,3})$/, action: (m)=>voiceNavUpdate('speed', parseInt(m[1], 10)) },
+    { pattern: /^(?:set\s+(?:course|heading)|course)\s*(?:to\s*)?(\d{1,3})(?:\s*(?:deg|degree|degrees))?$/, action: (m)=>voiceNavUpdate('heading', parseInt(m[1], 10)) },
+    { pattern: /^(?:set\s+)?speed\s*(?:to\s*)?(\d{1,3})(?:\s*(?:knots?|kts?))?$/, action: (m)=>voiceNavUpdate('speed', parseInt(m[1], 10)) },
   ],
   WPN: [
     { pattern: /^(arm) (.+)$/, action: (m)=>voiceArmWeapon(m[2], true) },
@@ -942,6 +1069,19 @@ function renderNAV(j){
   insertVoiceToggle(p,'NAV');
 
   const missionData = (j && j.mission && typeof j.mission === 'object' && Object.keys(j.mission).length) ? j.mission : null;
+  const missionSettings = currentMissionSettings(j) || {};
+  const missionId = missionData && missionData.id ? String(missionData.id) : '';
+  const missionOptions = (missionData && Array.isArray(missionData.available)) ? missionData.available.slice() : [];
+  const missionSequence = (missionData && missionData.sequence && typeof missionData.sequence === 'object') ? missionData.sequence : null;
+
+  if(!ST._missionPowerApplied || typeof ST._missionPowerApplied !== 'object') ST._missionPowerApplied = {};
+  if(ST._missionActiveId !== missionId){
+    ST._missionActiveId = missionId || '';
+    ST._missionPowerApplied = {};
+  }
+  if(missionId){
+    applyMissionPowerPreset(missionId, missionSettings);
+  }
 
   function fmtDuration(sec){
     const n = Number(sec);
@@ -994,6 +1134,63 @@ function renderNAV(j){
     }
   }
 
+  if(missionOptions.length || missionId){
+    if(missionId && missionOptions.every(function(opt){ return String(opt && opt.id) === missionId ? false : true; })){
+      missionOptions.push({id: missionId, label: (missionData && missionData.label) ? missionData.label : missionId});
+    }
+
+    const missionSelectRow=document.createElement('div'); missionSelectRow.className='row section nav-mission-selector';
+    const missionLabel=document.createElement('span'); missionLabel.className='nav-mission-label'; missionLabel.textContent='Mission'; missionLabel.style.marginRight='8px';
+    missionSelectRow.appendChild(missionLabel);
+    const missionSelect=document.createElement('select'); missionSelect.className='input'; missionSelect.id='nav-mission-select';
+    missionOptions.forEach(function(opt){
+      if(!opt) return;
+      const option=document.createElement('option');
+      option.value=String(opt.id || '');
+      option.textContent=opt.label ? String(opt.label) : String(opt.id || '');
+      missionSelect.appendChild(option);
+    });
+    if(missionId) missionSelect.value=missionId;
+    const missionSelectMsg=document.createElement('span'); missionSelectMsg.className='nav-msg muted'; missionSelectMsg.style.marginLeft='8px';
+
+    async function switchMission(targetId){
+      const trimmed=(targetId||'').trim();
+      if(!trimmed || trimmed===missionId){
+        missionSelect.value = missionId;
+        missionSelectMsg.textContent='';
+        missionSelectMsg.className='nav-msg muted';
+        return;
+      }
+      missionSelect.disabled = true;
+      missionSelectMsg.textContent='Switching…';
+      missionSelectMsg.className='nav-msg muted';
+      try{
+        const res=await fetch('/mission/select',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: trimmed})});
+        const data=await res.json();
+        if(data && data.ok){
+          missionSelectMsg.textContent='Mission updated';
+          missionSelectMsg.className='nav-msg ok';
+          try{ await poll(); }catch(_){ }
+        }else{
+          missionSelectMsg.textContent = (data && (data.error || data.message)) ? String(data.error || data.message) : 'Mission update failed';
+          missionSelectMsg.className='nav-msg err';
+          missionSelect.value = missionId;
+        }
+      }catch(_){
+        missionSelectMsg.textContent='Mission update failed';
+        missionSelectMsg.className='nav-msg err';
+        missionSelect.value = missionId;
+      }finally{
+        missionSelect.disabled = false;
+      }
+    }
+
+    missionSelect.addEventListener('change', function(){ switchMission(missionSelect.value); });
+    missionSelectRow.appendChild(missionSelect);
+    missionSelectRow.appendChild(missionSelectMsg);
+    p.appendChild(missionSelectRow);
+  }
+
   const missionCard=document.createElement('div'); missionCard.className='nav-mission-card';
   if(missionData){
     const head=document.createElement('div'); head.className='nav-mission-head';
@@ -1020,10 +1217,30 @@ function renderNAV(j){
       leftSpan.textContent = 'No mission timer';
     }
     meta.appendChild(leftSpan);
+    if(missionSequence && Array.isArray(missionSequence.order) && missionSequence.order.length){
+      const idx = (typeof missionSequence.index === 'number' && missionSequence.index >= 0) ? missionSequence.index : null;
+      const seqSpan=document.createElement('span');
+      if(idx !== null && idx < missionSequence.order.length){
+        seqSpan.textContent = `Stage ${idx+1} of ${missionSequence.order.length}`;
+      }else{
+        seqSpan.textContent = `${missionSequence.order.length} mission sequence`;
+      }
+      meta.appendChild(seqSpan);
+    }
     if(missionData.id !== undefined && missionData.id !== null){
       const idSpan=document.createElement('span'); idSpan.textContent=`ID ${missionData.id}`; meta.appendChild(idSpan);
     }
     missionCard.appendChild(meta);
+
+    if(missionSettings.stations_offline){
+      const trainingNotice=document.createElement('div'); trainingNotice.className='nav-mission-alert';
+      trainingNotice.textContent='Training mode: stations start powered down and hostile contacts are suppressed.';
+      missionCard.appendChild(trainingNotice);
+    }else if(missionSettings.hostile_spawns === false){
+      const quietNotice=document.createElement('div'); quietNotice.className='nav-mission-alert';
+      quietNotice.textContent='Hostile spawns disabled for this mission.';
+      missionCard.appendChild(quietNotice);
+    }
 
     const desc = cleanText(missionData.description);
     if(desc){
@@ -1234,6 +1451,58 @@ function renderStationOffline(p, label, stationKey){
   return true;
 }
 
+function currentMissionSettings(j){
+  if(!j || !j.mission) return null;
+  const settings=j.mission.settings;
+  return settings && typeof settings==='object' ? settings : null;
+}
+
+function missionPowerPreset(settings){
+  if(!settings || typeof settings!=='object') return null;
+  if(settings.station_power_defaults && typeof settings.station_power_defaults==='object'){
+    return settings.station_power_defaults;
+  }
+  if(settings.stations_offline){
+    const defaults={};
+    STATION_KEYS.forEach(function(key){ if(key!=='NAV') defaults[key] = false; });
+    return defaults;
+  }
+  return null;
+}
+
+function applyMissionPowerPreset(missionId, settings){
+  if(!missionId) return;
+  const preset = missionPowerPreset(settings);
+  if(!preset) return;
+  if(!ST._missionPowerApplied) ST._missionPowerApplied = {};
+  if(ST._missionPowerApplied.id === missionId) return;
+  if(!ST.power || typeof ST.power !== 'object') ST.power = {};
+  let changed = false;
+  STATION_KEYS.forEach(function(key){
+    if(key==='NAV'){
+      if(ST.power[key] !== true){
+        ST.power[key] = true;
+        changed = true;
+      }
+      return;
+    }
+    let desired;
+    if(Object.prototype.hasOwnProperty.call(preset, key)) desired = !!preset[key];
+    else if(settings && settings.stations_offline) desired = false;
+    else return;
+    if(ST.power[key] !== desired){
+      ST.power[key] = desired;
+      changed = true;
+    }
+  });
+  if(changed){
+    saveStationPower();
+    renderStationSwitches();
+    updateToolbarPowerClasses();
+  }
+  ST._missionPowerApplied.id = missionId;
+}
+
 function renderRADAR(j){
   const p=$('#station-panel'); p.innerHTML='';
   insertVoiceToggle(p,'RADAR');
@@ -1268,6 +1537,7 @@ function renderRADAR(j){
 
   const lockedId = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id): null;
   const primary = (j.primary && typeof j.primary==='object')? j.primary : null;
+  if(!ST.radar || typeof ST.radar !== 'object') ST.radar = {};
   let contacts = Array.isArray(j.contacts)? j.contacts.slice(): [];
   contacts = contacts.filter(function(c){
     const allegiance = String(c.allegiance || c.type || '').toLowerCase();
@@ -1279,10 +1549,12 @@ function renderRADAR(j){
   });
   const lockedContact = contacts.find(c=>Number(c.id)===lockedId) || null;
   const primaryBox=document.createElement('div'); primaryBox.className='primary-box';
+  const lockedRangeDecimals = (lockedContact && String(lockedContact.type||'').toLowerCase()==='hostile') ? 2 : 1;
+  const primaryRangeDecimals = (primary && String(primary.type||'').toLowerCase()==='hostile') ? 2 : 1;
   const primFields=[
     ['#ID', lockedContact ? String(lockedContact.id).padStart(2,'0') : '—'],
     ['Name', lockedContact ? String(lockedContact.name||'') : (primary? String(primary.name||''): '—')],
-    ['Range', lockedContact && lockedContact.range_nm!=null ? `${fmt(lockedContact.range_nm,1)} nm` : (primary&&primary.range_nm!=null? `${fmt(primary.range_nm,1)} nm` : '—')],
+    ['Range', lockedContact && lockedContact.range_nm!=null ? `${fmt(lockedContact.range_nm,lockedRangeDecimals)} nm` : (primary&&primary.range_nm!=null? `${fmt(primary.range_nm,primaryRangeDecimals)} nm` : '—')],
     ['Speed', lockedContact && lockedContact.speed!=null ? `${fmt(lockedContact.speed,0)} kn` : '—'],
     ['TTI', (function(){ const t=lockedContact?computeTTI(lockedContact):null; return t!==null? `${t}s` : '—'; })()]
   ];
@@ -1303,6 +1575,16 @@ function renderRADAR(j){
     .sort(function(a,b){ return (a.range_nm||1e9)-(b.range_nm||1e9); })
     .slice(0,10);
   const lockContact = async (id)=>{ if(id===undefined||id===null) return; await fetch('/api/command?cmd='+encodeURIComponent(`/radar lock ${id}`)); await poll().catch(()=>{}); };
+  function readNumber(obj, keys){
+    for(const key of keys){
+      if(obj && Object.prototype.hasOwnProperty.call(obj, key)){
+        const val = Number(obj[key]);
+        if(!Number.isNaN(val)) return val;
+      }
+    }
+    return null;
+  }
+
   list.forEach(function(c, idx){
     const tr=document.createElement('tr');
     if(lockedId!==null && Number(c.id)===lockedId){ tr.classList.add('locked-row'); }
@@ -1311,10 +1593,17 @@ function renderRADAR(j){
     const tdType=document.createElement('td'); tdType.textContent=String(c.class||c.meta_class||c.meta?.cap?.class||'—');
     const tdName=document.createElement('td'); tdName.textContent=String(c.name||'—');
     const tdCell=document.createElement('td'); tdCell.textContent = c.cell ? String(c.cell) : '—';
-    const tdRange=document.createElement('td'); tdRange.className='num'; tdRange.textContent=(c.range_nm!==undefined&&c.range_nm!==null)?`${fmt(c.range_nm,1)} nm`:'—';
-    const tdSpeed=document.createElement('td'); tdSpeed.className='num'; tdSpeed.textContent=(c.speed!==undefined&&c.speed!==null)?`${fmt(c.speed,0)} kn`:'—';
-    const tti = computeTTI(c);
-    const tdTTI=document.createElement('td'); tdTTI.className='num'; tdTTI.textContent = (tti!==null)? `${tti}s` : '—';
+    const hostileRow = String(c.type||'').toLowerCase()==='hostile';
+    const tdRange=document.createElement('td'); tdRange.className='num';
+    const rangeDecimals = hostileRow ? 2 : 1;
+    const rangeVal = readNumber(c, ['range_nm','Range','range','distance_nm','distance']);
+    const hasRange = rangeVal !== null;
+    tdRange.textContent = hasRange ? `${fmt(rangeVal, rangeDecimals)} nm` : '—';
+    const speedVal = readNumber(c, ['speed','speed_kts','SPD']);
+    const tdSpeed=document.createElement('td'); tdSpeed.className='num'; tdSpeed.textContent=(speedVal!==null)?`${fmt(speedVal,0)} kn`:'—';
+    const tdTTI=document.createElement('td'); tdTTI.className='num';
+    const ttiLegacy = computeTTI(c);
+    tdTTI.textContent = (ttiLegacy!==null)? `${ttiLegacy}s` : '—';
     const tdId=document.createElement('td'); tdId.className='num'; tdId.textContent=(c.id!==undefined&&c.id!==null)?String(c.id).padStart(2,'0'):'—';
     const tdLock=document.createElement('td');
     const btn=document.createElement('button'); btn.className='btn'; btn.textContent='LOCK';
@@ -1383,7 +1672,8 @@ function renderWPN(j){
   const typeCell=document.createElement('td'); typeCell.textContent=primaryContact? String(primaryContact.type || primaryContact.class || '—') : '—'; dataRow.appendChild(typeCell);
   const nameCell=document.createElement('td'); nameCell.textContent=primaryContact? String(primaryContact.name||'—') : '—'; dataRow.appendChild(nameCell);
   const cellCell=document.createElement('td'); cellCell.textContent=primaryContact && primaryContact.cell ? String(primaryContact.cell) : '—'; dataRow.appendChild(cellCell);
-  const rangeCell=document.createElement('td'); rangeCell.className='num'; rangeCell.textContent=primaryContact && primaryContact.range_nm!=null? `${fmt(primaryContact.range_nm,1)} nm`:'—'; dataRow.appendChild(rangeCell);
+  const primaryRangeDecimals = (primaryContact && String(primaryContact.type||'').toLowerCase()==='hostile') ? 2 : 1;
+  const rangeCell=document.createElement('td'); rangeCell.className='num'; rangeCell.textContent=primaryContact && primaryContact.range_nm!=null? `${fmt(primaryContact.range_nm,primaryRangeDecimals)} nm`:'—'; dataRow.appendChild(rangeCell);
   const speedCell=document.createElement('td'); speedCell.className='num'; speedCell.textContent=primaryContact && primaryContact.speed!=null? `${fmt(primaryContact.speed,0)} kn`:'—'; dataRow.appendChild(speedCell);
   const ttiCell=document.createElement('td'); ttiCell.className='num';
   try{
@@ -1887,7 +2177,7 @@ function renderRADIO(j){
   const commitHeader=document.createElement('h3'); commitHeader.className='comms-subhead'; commitHeader.textContent='Active flights'; p.appendChild(commitHeader);
   const commitTable=document.createElement('table'); commitTable.className='comms-commit-table';
   const commitHead=document.createElement('tr');
-  ['Flight','Status','POS','Target','RNG','TOT','TOS','Engage','Reassign','RTB'].forEach(function(label){
+  ['Flight','AIM9','Status','POS','Target','RNG','TOT','TOS','Engage','Reassign','RTB'].forEach(function(label){
     const th=document.createElement('th'); th.textContent=label; commitHead.appendChild(th);
   });
   commitTable.appendChild(commitHead);
@@ -2215,6 +2505,16 @@ let missionValid=false;
     try{
       let res;
       if(mission.missionType==='intercept'){
+        if(mission.primaryContact){
+          const pc = mission.primaryContact;
+          const lockId = (pc.id!=null ? pc.id : (pc.ID!=null ? pc.ID : null));
+          if(lockId!=null){
+            try{
+              const lockCmd = `/api/command?cmd=${encodeURIComponent('/radar lock '+lockId)}`;
+              await fetch(lockCmd);
+            }catch(_){ }
+          }
+        }
         res = await fetch('/cap/vector',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: missionId})});
       }else{
         const payload={ mission_id: missionId, cell: mission.cell, minutes: 10 };
@@ -2261,6 +2561,10 @@ let missionValid=false;
     const missionId = t && (t.id!=null ? t.id : t.n);
     const statusKey = String(t && t.status || '').toLowerCase();
     const flightTd=document.createElement('td'); flightTd.textContent = missionId ? `SHAR ${missionId}` : 'SHAR'; tr.appendChild(flightTd);
+    const missilesTd=document.createElement('td'); missilesTd.className='num';
+    const missilesLeftRaw = (t && t.missiles_left != null) ? Number(t.missiles_left) : Number.NaN;
+    missilesTd.textContent = Number.isFinite(missilesLeftRaw) ? Math.max(0, Math.round(missilesLeftRaw)) : '—';
+    tr.appendChild(missilesTd);
     const statusTd=document.createElement('td'); statusTd.textContent = String(t.status || '—').toUpperCase(); tr.appendChild(statusTd);
     const posTd=document.createElement('td'); posTd.textContent = String(t.cur_cell || t.origin_cell || '—'); tr.appendChild(posTd);
     const tgtTd=document.createElement('td'); tgtTd.textContent = targetDescription(t); tr.appendChild(tgtTd);
@@ -2360,7 +2664,7 @@ let missionValid=false;
   if(sharTasks.length){
     sharTasks.forEach(addSharRow);
   }else{
-    const tr=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=10; td.textContent='No active SHAR flights'; tr.appendChild(td); commitTable.appendChild(tr);
+    const tr=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=11; td.textContent='No active SHAR flights'; tr.appendChild(td); commitTable.appendChild(tr);
   }
 
   const resupply = j.resupply || {};
@@ -2368,10 +2672,11 @@ let missionValid=false;
     const tr=document.createElement('tr'); tr.className='resupply-row';
     const cols=[
       'Sea King',
+      '—',
       String(resupply.stage || 'ACTIVE').toUpperCase(),
       String(resupply.cell || resupply.pos || '—'),
       'Sheffield (Resupply)',
-      (resupply.range_nm!=null && Number.isFinite(Number(resupply.range_nm)))? `${fmt(resupply.range_nm,1)} nm` : '—',
+      (resupply.range_nm!=null && Number.isFinite(Number(resupply.range_nm)))? `${fmt(resupply.range_nm,2)} nm` : '—',
       '—',
       resupply.left_s!=null ? fmtDuration(resupply.left_s) : '—',
       '—',
@@ -2380,7 +2685,7 @@ let missionValid=false;
     ];
     cols.forEach(function(text, idx){
       const td=document.createElement('td');
-      if(idx>=4 && idx<=6) td.className='num';
+      if(idx>=5 && idx<=7) td.className='num';
       td.textContent=text;
       tr.appendChild(td);
     });

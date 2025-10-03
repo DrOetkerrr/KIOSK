@@ -22,6 +22,15 @@ def build() -> Dict[str, Any]:
 
     now = time.time()
 
+    # Advance radar simulation so subsequent snapshots reflect motion.
+    try:
+        runtime = getattr(wd, 'RUNTIME', None)
+        if runtime is not None and hasattr(runtime, '_advance_radar'):
+            runtime._advance_radar(now=now)
+    except Exception:
+        # Radar advancement is best-effort; fall back to stale positions on failure.
+        pass
+
     # Capability helpers
     def _engine_kind() -> str:
         try:

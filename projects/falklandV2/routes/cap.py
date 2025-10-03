@@ -500,10 +500,14 @@ def cap_request():
             except Exception:
                 pass
             try:
-                # Intercept launch call
-                L['voice_emit']('pilot.intercept.launch', {'cell': cell}, fallback='Hermes, intercept bogey, vector to %s.' % (cell,), role='Pilot')
-                # Generic CAP launch fallback (kept for compatibility)
-                L['voice_emit']('pilot.cap.launch', {'cell': cell}, fallback='Hermes, proceeding to CAP station at %s.' % (cell,), role='Pilot')
+                mission_kind = str((res.get('mission') or {}).get('kind') or '').lower()
+                event_id = 'pilot.intercept.launch' if mission_kind == 'intercept' else 'pilot.cap.launch'
+                fallback = (
+                    'Hermes, intercept bogey, vector to %s.' % (cell,)
+                    if event_id == 'pilot.intercept.launch'
+                    else 'Hermes, proceeding to CAP station at %s.' % (cell,)
+                )
+                L['voice_emit'](event_id, {'cell': cell}, fallback=fallback, role='Pilot')
             except Exception:
                 pass
             try:

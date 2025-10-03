@@ -461,10 +461,17 @@ class HermesCAP:
                     self.ready_pairs = min(self.ready_pairs + 1, self.ready_pairs_max)
                     if self.airframe_pool_max:
                         self.airframe_pool_total = min(self.airframe_pool_total + 2, self.airframe_pool_max)
+                    try:
+                        from . import webcore as _core  # late import to avoid cycles
+                        _core.record_officer('Pilot', f'SHAR {m.id} recovered and rearmed.')
+                    except Exception:
+                        pass
                     self._drop_meta(m.id)
 
-        if len(self.missions) > 12:
-            self.missions = [m for m in self.missions if m.status != "complete"][-12:]
+        if self.missions:
+            self.missions = [m for m in self.missions if m.status != "complete"]
+            if len(self.missions) > 12:
+                self.missions = self.missions[-12:]
 
     # ---------- engagement logic
     def _pk_for_range(self, range_nm: float) -> float:
@@ -643,6 +650,10 @@ class HermesCAP:
             elif m.status == 'rtb':
                 item['tot_s'] = None
                 item['tos_s'] = max(0, int(eta_rec - t_now)) if eta_rec else None
+            elif m.status == 'recovering':
+                ready_again = m.ts.get('ready_again')
+                item['tot_s'] = None
+                item['tos_s'] = max(0, int((ready_again or 0) - t_now)) if ready_again else None
             else:
                 item['tot_s'] = None
                 item['tos_s'] = None

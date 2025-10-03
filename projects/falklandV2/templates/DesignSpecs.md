@@ -1,139 +1,142 @@
-Got you. I’ve rebuilt the whole thing as one consistent master doc with two layers inside it: a strict spec Codex can bind to, plus the full-fat human design (examples, audio, narrative). For the station UIs I’ve switched from HTML to a desktop-app UI spec: panes, fields, indicators, actions, and state flows described in plain language so Codex won’t “invent” a web server.
+Updated reference - Falkland V3 is now synced to the live build that shipped the desktop shell, the resupply loop, and the revised CAP engine. The document still has the dual structure: Part I is the strict contract the code must obey; Part III is the plain-language UI brief; Part IV carries binding tables and quick examples.
 
-Falkland V3 — Dual Reference (Strict Spec + Full Design)
+Falkland V3 - Dual Reference (Strict Spec + Full Design)
 
-Part I — Strict Spec (Codex Reference)
-
-This section is the single source of truth for constants, rules, and interfaces. All numbers and logic here must match code. If anything differs elsewhere, this section wins.
+Part I - Strict Spec (Codex Reference)
 
 Core world model
 
-Engine grid is 40×40 at 1 nm per cell. The captain’s “threat board” is 30×30 at 1 nm per cell, centred within the engine grid. Off-board activity can be modelled as countdowns and only joins the bubble around 12–15 nm. The default ship start is K15 unless overridden by a scenario. HMS Hermes and HMS Coventry are always tracked and always visible but never count toward the radar’s 10-contact cap. The game clock is real-time; the engine tick is 1 second. The code word “status” advances the game hour by exactly +1 (H+1). Maximum movement per game hour is one grid cell even at maximum speed. Course changes take 1 second per degree. Own ship max speed is 32 knots. Damage uses hidden “lives”: Sheffield has 4, Hermes has 8. Each hit reduces lives by 1. UI health is shown as a percentage derived from lives (Sheffield 4 lives = 100%; Hermes 8 lives = 100%). At 0 lives the UI shows 0% and the abandon-ship routine triggers.
+The simulation runs on a 40x40 nm world. The bridge threat board is a centred 26x26 grid (columns A-Z, rows 1-26) at 1 nm per cell. Own ship boots in K13 on heading 000 deg and 0 kts unless a scenario overrides it. Hermes and Coventry ride in the convoy model: they are always tracked, surface in radar/status payloads as `fleet:` entries, and never consume hostile slots. Engine ticks are 1 s; the runtime throttles between 0.05 s and 1.0 s to keep radar, CAP, and audio smooth.
+
+Course orders slew at 1 deg/s toward the commanded heading; speed clamps to 32 kts (ship.json). Movement uses ktsxdt/3600. Convoy escorts honour a 30-50 s lag before adopting the leader’s new course/speed; Hermes offset commands (`/nav hermes close_in|stand_off`) adjust formation spacing by 1 nm steps while preserving that lag. Lives are tracked per hull: Sheffield 4, Hermes 8, Belgrano 8. UI health percentages are derived from those pools (Sheffield: 100/75/50/25/0; Hermes: 100 down in 12.5 % steps). When Sheffield hits 0 lives the abandon-ship routine triggers; Hermes at 0 emits `eng.hermes.outofaction` and halts CAP launches.
 
 Stations and roles
 
-RDR is the Radar Officer and owns scanning and tracking. WPN/FCR is the Weapons Officer and owns arming, locking, and firing. NAV is the Navigation Officer and owns course, speed, and convoy following. COMMS is the Communications Officer and owns Hermes link and CAP tasking. ENG is the Engineering Officer and owns system status and repairs.
+RDR owns radar control, threat prioritisation, and the alert ladder. WPN/FCR governs arming, range gating, launch, cooldowns, and shot bookkeeping. NAV handles course/speed, convoy offsets, and mission selection. COMMS controls CAP, Hermes liaison, resupply, and mission prompts. ENG manages repair teams, system timers, and health state.
 
 Radar (RDR)
 
-Automatic scan runs every 180 seconds; manual scan triggers an immediate sweep. At most 10 active contacts (friendly or enemy) are displayed and managed by radar; Hermes and Coventry are permanently tracked outside this cap. Spawn distance is 15–20 nm from own ship. On a 1d6 roll of 5, one contact may appear by surprise at 10 nm. Exception: Super Étendard with Exocet always originates at 20 nm or beyond and never uses the 10 nm surprise. Hostile courses are biased toward own ship. Contacts move at 75% of real-world maximums. Hostile course and speed may change every 5 minutes. The priority target is determined by highest threat; ties break by nearest range, then by earliest detection time. Clock positions are computed relative to ship heading using 30-degree sectors. Alert triggers when the priority target is within 3 nm; a Red escalation at 1 nm is permitted. Contacts that leave the world bubble are dropped; destroyed contacts are logged and removed from the active list.
+Automatic scans fire every 180 s; manual `/radar scan` flushes immediately. Spawns are time-based: normal traffic uses a Poisson rate of 0.1667/min, surprise events 0.0556/min. Surprise inserts a single hostile at 10-14 nm; otherwise contacts spawn 15-40 nm out. Non-surprise rolls have a 30 % chance to spawn a friendly (usually escorts or civilian traffic); surprise is always hostile. All contact picks come from `data/contacts.json`; hostiles respect weighted odds and CAP modifiers.
+
+The radar can carry 20 live contacts. CAP flights injected by Hermes and Sea King resupply flights do not count toward the hostile cap. Surface ships spawn no closer than 20 nm; Super Étendards never enter on the 10 nm surprise rule and are forced to >=20 nm. Hostiles steer gently toward own ship unless flagged `retreating`.
+
+Priority selection honours manual locks. Without a lock it picks the closest hostile, breaking ties by spawn weight then detection time. Priority alarms log `ship.alarm.threat_close` whenever the current hostile closes to <=3 nm, with a 30 s cooldown per target. Hermes CAP effects feed back into radar: active stations apply `spawn_weight_multiplier` and `intercept_prob_pre_release`, so some aircraft are intercepted before they appear. CAP missions also inject friendly contacts at their current cells and move as missions transition between queued/airborne/on-station/RTB. Resupply launches inject a friendly Sea King contact while the helicopter is en route or landing. When a hostile aircraft comes within 10 nm of any on-station CAP flight the deterrence rule fires: 30 % of those aircraft flip to `retreating`, roll their own heading away, and drop to low threat.
 
 Weapons and fire control (WPN/FCR)
 
-A primary target lock is exclusive; the system must unlock before locking a different target. Live fire requires the weapon to be armed, a primary lock to exist, the target to be inside the weapon’s range, and the weapon class to match the target class; otherwise the fire request is rejected or results in a miss as defined by the weapon rules. Test fire consumes ammunition but needs only “armed”; no target is required. The engagement cycle is Arm → Lock → Fire. UI state exposes, per weapon: weapon type, remaining ammunition, min/max range, “target in range and appropriate” indicator, “armed” indicator, and Fire/Test actions.
+Arming is stateful: pressing ARM schedules a 5 s delay, records the pending state on disk, then flips to Armed and starts cooldown tracking. SAFING clears the flag immediately. All fire modes (real or test) require the weapon to be in the Armed state and off cooldown. Cooldowns are class-driven: Missiles 8 s, SAMs 6 s, Decoys 5 s, Guns 2 s unless `weapons_catalog.json` provides an override.
+
+`/weapons/fire` enforces primary-lock and range gates. Primary data comes from the radar priority; `compute_in_range` uses the catalog’s `min_nm`/`max_nm` and supported target classes to decide whether the shot is legal. Test fire consumes ammo (1 round for missiles/exocet/gun salvo, 50 rounds for the automatic guns) but skips targeting rules; range gating still colours the UI. Real fire subtracts ammo, schedules a shot event, applies cooldown, and logs to the event bus. Shot resolution uses class flight-time envelopes: Missiles & SAMs resolve after `3 s + range_nm / 1.94` (~Mach 3 behaviour), Guns at `2 s per nm`, everything else at `3 s per nm`. Per-shot Pk comes from the catalog via `_pk_from_range`. When a surface ship is hit the damage helper applies 1 HP for Sea Dart, 2 HP for bombs; hostile ships begin with 4 HP and switch to retreat behaviour once tracking shows they are fleeing or sunk. Range gating is mirrored in the UI (`IN RANGE` badge, timer column) and in the server’s invariant guard.
 
 Sheffield gameplay loadout (intentional alt-history)
 
-Sea Dart SAM: 26 missiles, engagement 2–35 nm, best against medium/high altitude aircraft, strongly reduced at very low altitude.
-4.5-inch Mk.8 gun: HE 550 and Illumination 100; effective 1–12 nm for surface/shore.
-20 mm Oerlikon: 0.25–0.5 nm; aircraft/helos; low hit probability.
-Two GAM-BO1 20 mm: 0.3–2.5 nm; aircraft/helos; low hit probability.
-Exocet MM38: 4 missiles, engagement 7–23 nm, surface only.
-Corvus chaff: 15 salvoes.
+Sea Dart SAM - 26 missiles; 2-35 nm; supports Aircraft and Ship. 4.5 inch Mk.8 gun - HE 550, Illum 100; 1-8 nm; supports Ship/Shore. 20 mm Oerlikon - 5,000 rounds; 0.25-0.5 nm; aircraft focus. Twin 20 mm GAM-BO1 - 1,850 rounds; 0.3-2.5 nm; aircraft/small craft. MM38 Exocet - 4 missiles; 8-22 nm; surface only. Corvus chaff - 15 salvoes; 0-1 nm defensive bloom.
 
-Flight-time rules in real seconds are: shells and bullets take two seconds per nautical mile of range; guided missiles take four seconds plus six seconds per nautical mile of range.
+Communications, CAP, and logistics
 
-Communications (COMMS) and CAP
+Hermes CAP is driven by `data/cap_config.json`. Ready pairs max at 6, the airframe pool holds 10 aircraft (5 pairs). Launch cadence honours a 60 s minimum interval and a 60 s deck cycle; intercept missions use a 12 s deck cycle. Default on-station time is 10 min (CAP), intercepts hold for 2 min unless retasked. Station radius is 10 nm. Max CAP stations in play is 3, with a surge ceiling of 4 pairs; beyond that `/cap` responds “All CAP sorties committed.” Each pair carries four AIM‑9; bombs loadouts (4 weapons) are allowed for surface missions and auto-convert to intercept if `follow=hermes` is requested. Ready state reflects cooldowns (`cooldown_s`, `launch_interval_left_s`) so UI can disable buttons when the deck is cycling.
 
-Sea Harriers operate in pairs. Each aircraft carries four AIM-9. Effective missile envelope is roughly 2–5 nm with higher probability closer in. Launch cadence is one pair per 180 seconds; surge launches up to two pairs inside 300 seconds. A maximum of six aircraft can be on task at once, briefly rising to eight with penalties. Station radius for on-station effects is 5 nm; intercept checks occur when a hostile comes within 15 nm of the pair. A pair that is already airborne, has missiles remaining, and is within 15 nm of a locked target can be re-vectored immediately. Turnaround from recovery to “ready” is always five minutes. Winchester pairs (no missiles) return to base. When tasked to intercept or hold station, pairs request permission to engage when conditions are met; they ask every 30 seconds and return to base after ten minutes if engagement is not authorised.
+Re-vector logic: if a pair is airborne or on-station, has missiles left, and sits within 15 nm of the locked target, `/cap/intercept` reuses that mission and returns a TOT estimate. Otherwise a fresh intercept launches from Hermes. CAP missions flagged `follow=hermes` update their station cell every tick so the protection bubble rides with the flagship. While on-station the CAP mission requests permission once a hostile crosses 15 nm from the station centre; denials prompt every 30 s. If no permission arrives within 10 min the mission times out and RTBs. `auto_engage` is only active when permission is granted; Pk points are pulled from config (2 nm → 0.90, 3 nm → 0.80, 4 nm → 0.70, 5 nm → 0.60).
 
-Engineering (ENG)
+Harriers that go Winchester immediately RTB. Recovery + rearm is 5 min (`pair_rearm_refuel_min`). When a mission completes the pair returns to the ready pool, the airframe stock is replenished up to the configured max, and CAP history is rotated to keep at most 12 missions.
 
-The seven critical systems are Navigation, Radar, Fire Control/Weapons, COMMS, Engine/Propulsion, Rudder/Steering, and Hull (whose sub-states are breach and fire). There are four repair teams. A team can be assigned to one damaged system at a time. Each damaged system has a two-minute repair timer when a team is committed. If a critical system is left unrepaired for two minutes after damage, the system becomes permanently inoperative and lives are reduced by one. Repaired systems return to service once their timer completes. At zero lives (0%) the abandon-ship routine triggers.
-
-End states and missions
-
-At 0% health, the abandon-ship alarm sounds and the game ends once the captain acknowledges. Missions and scenarios can be loaded at the Menu Station; missions define victory conditions and rewards. Hermes is always tracked and must be protected; losing Hermes ends the game immediately.
-
-⸻
-
-Part II — Full Design Doc (Human Use)
-
-This section expands the strict spec with examples, audio, language for the crew, and operator guidance. All numbers mirror the strict spec above.
-
-World and timing
-
-You sail a 30×30 tile “threat board” at 1 nm per tile, sitting inside a 40×40 logic grid. Off-board raids and surface groups can be teased as “countdown tracks” until they enter at roughly 12–15 nm. The real-time clock runs continuously; the radio voice uses H-codes when you ask for “status.” Every status call advances one game hour and caps actual displacement to one tile even if you’re flat out at 32 knots. Helm changes heading at one second per degree; that matters in knife-fights when shaving a rocket run.
-
-Stations and voices
-
-RDR talks like a plotter: bearings, ranges, relative clocks. WPN/FCR is clipped and procedural, owning the “Arm–Lock–Fire” cadence and confirming locks. NAV calls your grid, heading and speed, and warns when you are one tile from the board edge. COMMS handles Hermes, CAP launches, “Winchester,” and “RTB.” ENG calls system hits, sets repair teams, and pressures you if a system is bleeding out toward a permanent loss.
-
-Radar behaviour (RDR, lived-in)
-
-Routine sweeps ping every three minutes, but an immediate scan request can fold in a contact between sweeps. The list never holds more than ten; that keeps the bridge sane. Hermes and Coventry are pinned on their own layer: always there, never pushing real targets off the list. Spawns begin at 15–20 nm. If fortune frowns and the die comes up a five, something may pop at ten miles—never a Super Étendard with Exocet; they stay at twenty and beyond. Hostiles bend their tracks toward you but not suicidally; they move at around three-quarters of their real maxima, and can jink every five minutes. RDR reports clock positions relative to your present heading, not north. Expect “Priority target, three o’clock, 18 miles, high threat.” If that priority crosses three miles, the bridge gets a warning; under a mile, the tone hardens and the weapons lights should already be green.
-
-Worked micro-example: a Mirage spawns at 18 nm bearing 120° while you’re steering 090°. Relative is 30°, which is one o’clock; RDR calls “one o’clock, eighteen miles.” If you swing right to 120°, the same track shifts to twelve o’clock; your clock is your nose.
-
-Audio cues: a soft bridge loop should idle at low volume. When a weapon goes “green” because the primary is in envelope, a discrete chirp confirms you could shoot without drowning the voice-net. A harsh fly-by crack is reserved for very close passes at two tenths of a mile.
-
-Weapons pacing (WPN/FCR, lived-in)
-
-Fire control owns one hard lock at a time. If you want CAP to chase someone you haven’t decided to shoot yet, you still lock it; CAP vectors off your primary. Test firing is allowed in peacetime exercises and deducts ammunition, but it only needs the weapon armed. Live firing needs the full quartet: armed, locked, in range, right class. Shells are honest: two seconds per mile. A 4 nm ranging shot splashes in eight seconds; at eight miles it’s sixteen. Sea Dart rides the beam: four seconds to launch and settle, then six seconds per mile. Ten miles is roughly sixty-four seconds. Exocet is the same flight-time rule in this model, but only counts for surface, and its minimum range is seven miles in this game. The 20 mm mounts are last-ditch; expect a second or four from first squeeze to effect.
-
-Crew language: “Sea Dart away.” At mid-course: “Missile tracking.” Final call: either “Splash” (if a kill) or “Missile missed; bandit pressing.” For guns: “Gun—shoot.” Optional “Splash” just before impact if you want theatre.
-
-COMMS and air cover
-
-Hermes is a steady presence. Sea Harriers operate in twos, each with four Sidewinders. If a pair is already airborne and within fifteen miles of your locked target, COMMS can re-vector them—“Hermes: CAP pair turning hot, time-on-target one minute.” CAP can protect an valuable object like Hermes as a grid cell although moving. Cap flights can be revectored to intercept and vice versa. Otherwise the deck cycles a ready pair in about three minutes; in a surge you can push two pairs inside five. Six on station is sustainable; eight is brief and exacts a price. Pairs patrol a 10-mile station circle. If a hostile sniffs inside fifteen miles of them, they request permission to engage, ask again every thirty seconds if you deny, they will return to base after ten minutes if they still haven’t fired. Turnaround back to “ready” is five minutes, regardless of who’s shouting. When Winchester, they don’t bluff; they come home.
-
-Behavioural spice you can keep or tune later: challenged attackers sometimes lose their nerve—ten to twenty percent abort when a pair lights them up. If Hermes is hurt enough to close the deck, CAP requests auto-fail until you get the deck clear again.
+Resupply is handled via `/resupply`. Launching spins up a Sea King helicopter, records its origin cell (Hermes via convoy offsets), injects a friendly radar contact, and sets `stage='enroute'` with default ETA 180 s unless overridden. When ETA hits the runtime promotes the stage to `landing`, plays `Seaking.wav`, and emits `resupply.ready`. If the frontend fails to acknowledge within 15 s the fallback path calls `/resupply/complete`, clears the contact, emits `resupply.complete`, and refills ammo to the catalog defaults (preserving any higher-than-default counts). Cancel resets the state to idle without refilling.
 
 Engineering and damage
 
-Seven places can take a real bite: Navigation, Radar, Fire Control and Weapons, COMMS, Engine/Propulsion, Rudder/Steering, and the Hull, which can be on fire or open to the sea. You have four repair teams; that’s never enough in a bad ten minutes. Commit one to a system and a two-minute timer starts; pull them off and you lose the time. Leave a system unrepaired for two minutes and it dies for good—and you shed a life on top. At zero lives, the ship is done. ENG should pressure you whenever a timer is halfway spent without a team or a team is about to time out.
+Engineering tracks seven systems: Navigation, Radar, FireControl_Weapons, COMMS, Engine/Propulsion, Rudder/Steering, Hull (with fire/breach sub-status). Four repair teams exist. Enemy hits pick a random OK system, push it to `Offline`, stamp `response_deadline_ts = now + 120 s`, and subtract a Sheffield life or a Hermes life depending on the target. Assigning a team to an Offline or Damaged system starts/restarts a 120 s repair timer. The timer decrements while a team is present; hitting zero restores the system to OK, frees the team, and clears deadlines. If a system is Offline and no team answers before `response_deadline_ts` the state downgrades to `Damaged` (no additional life loss); assigning a team to a Damaged 0 s entry also sets the timer back to 120 s. Timers pause when teams are pulled off. Hull sub-status (`fire`, `flood`) is surfaced via badges and colour in the ENG UI and in `status` payloads.
 
-Endgame flavour
+Navigation and convoy
 
-At zero, the siren cuts through everything. “Captain, recommend abandon ship.” If you acknowledge, the voices fade, panels die, and the farewell text appears. Keep the text you drafted; it lands.
+NAV keeps course/speed controls plus mission oversight. Course inputs accept numeric degrees or cardinals; speed is in knots. Submitting a new course shows a “rudder” countdown derived from the 1 deg/s slew rate. The board-edge predictor warns one tile early if the current course will exit the 26x26 threat board within the next hour. Convoy separation shows Hermes and Coventry ranges with an amber warning above 3 nm. Hermes offset commands expose close-in vs stand-off spacing; each command nudges offsets by one cell (1 nm) and the convoy module rotates offsets with ship heading to keep formation relative to the leader.
 
 Missions, scenarios, and menu
 
-Use Menu to load scenarios for debugging rather than waiting for the dice. Missions stack win conditions on top: keep Sir Galahad safe, hold an air-defence screen for twenty minutes, coordinate a CAP station at G-10 and live through it, or go surface hunting and force Belgrano to quit after one Exocet hits. Mission clocks and rewards are your theatre here.
+`MissionController` loads `data/missions/end_conditions.json`. The default active mission is `protect_hermes`. Success/Failure branches are evaluated every tick using AND/OR logic against health, elapsed timers, and mission settings. Decisions are modelled via `DecisionState`: prompts carry configurable timeouts; once acknowledged or timed out they emit `mission.decision.*` events. Mission selection is exposed through `/mission/select` and the NAV UI. Scenario editing flows remain in the Menu station for debugging (set start cells, inject contacts, seed damage, etc.); mission cards display elapsed time, time remaining, and status badges (`Active`, `Success`, `Failure`, `Hold`).
 
 Audio backbone
 
-Bridge ambience should never drown callouts. Weapon-ready chirps are short and polite. The Mk.8 has a distinct bark; Sea Dart launch is a whoosh with a hard impact if it connects. Exocet gets its own tone. Keep a single “hit_small.wav” for 20 mm, and a “chaff_dispense.wav” that feels like a canister thump and bloom.
+Ambient bridge audio stays below speech cues. Weapon launch sounds map through `_sound_key_for_weapon` so Sea Dart, Exocet, Mk.8, and chaff each carry distinct effects. `AUDIO_STATE` maintains shots-in-flight for HUD and for synchronising impact sounds with `_schedule_shot_result`. CAP voices use role-specific voices drawn from `data/voice_events.json`; permission prompts, FOX‑2 advisories, and RTB orders route through the Pilot voice. Resupply launch/ready/complete cues tie into the same voice and audio tables.
 
-⸻
-
-Part III — Station UI Specs (Desktop App)
-
-These are desktop-app oriented UI descriptions. Think “main window with station tabs” or “multi-pane view.” Elements are named so Codex can bind to them without inventing HTML. For each station describe panes, fields, indicators, actions, and state transitions.
+Part III - Station UI Specs (Desktop App)
 
 Radar Station (RDR)
 
-Layout is a single main pane with a contact table, a status header, and a controls strip. The status header shows the auto-scan countdown in seconds and the current H-code. The contact table lists up to ten rows with columns for contact ID, type, allegiance, clock, range in nm, threat level, speed and heading. Rows are sorted so the closest highest-threat is always row one; if sorting changes between sweeps the table animates to the new order. The primary target is visually flagged with a left-edge stripe and mirrored in a small “Primary” info chip under the header. The controls strip has a Scan button that forces a sweep and a Status button that triggers the H+1 hour advance; pressing Status also refreshes all bearings and ranges and emits the standard status report line. Two alert indicators live in the header: a general alert that turns amber when the priority target is within three miles, and a red alert that turns red at one mile and pulses at 1 Hz until cleared by the user. Hermes and Coventry appear in a small “Convoy” subpane with name and grid; they never occupy rows in the contact table. Destroyed contacts animate out of the list and are logged to a “History” drawer that can be toggled open by the operator.
+The radar station shows a primary box plus a 10-row contact table. The primary box lists ID, name, range (hostiles at 0.01 nm precision), speed, and TTI (seconds until impact based on range/speed). Controls across the top include Scan, and hostiles/friendlies filters. The table columns are `#`, `Status` (allegiance badge), `Type` (class), `Name`, `Grid`, `Range nm`, `Speed kn`, `TTI s`, `ID`, and `Lock`. Rows are sorted by range and capped at ten for readability even though the backend tracks up to 20. `LOCK` buttons issue `/radar lock <id>`; the currently locked row is highlighted. Alerts (amber/red) mirror the backend close-threat rule. A carved-out area on the right honours destroyed contacts and recent events (five-line event strip). A separate “Shots in Flight” panel lives under Weapons, not Radar.
 
 Weapons & Fire Control Station (WPN/FCR)
 
-Layout uses a weapons table, a lock panel, and an actions strip. The weapons table shows one row per system with the fields weapon name, ammunition remaining, min–max range, a target-in-range indicator that lights green only when the locked target is inside envelope and of a valid class, an armed indicator that lights when the system is armed, and two buttons labelled Fire and Test. The lock panel shows the current primary target with its ID, type, range and a lock status icon; there are two buttons labelled Lock and Unlock. The Unlock action drops any current lock. The Lock action opens a picker listing current contacts by ID and type; selecting one attempts a lock and either confirms with “Lock established” or returns a reason for failure. The actions strip has an Arm toggle per weapon, a global “Safe” switch for drills, and a text log that prints the standard callouts (“Sea Dart away”, “Missile tracking”, “Hit confirmed”, “Missed”). The station enforces the fire rules strictly: Fire is enabled only when armed, locked, in range, and target class matches; Test is enabled when armed. Firing deducts a realistic salvo immediately. When the priority-target indicator from RDR goes green on this station, a quiet ready tone plays once and the in-range cell flashes for one second.
+Top section: primary target summary identical to the radar primary box. Beneath it a Shots in Flight table shows every pending shot (weapon, target, grid, ETA, Pk %, result, range). If no shots exist the panel shows “No active shots.” A Test Mode toggle flips between real/test fire payloads.
+
+The weapons table columns are `Weapon`, `Ammo`, `Range (nm)`, `Status` (IN/OUT OF RANGE with range tooltip when a primary exists), `Arm` button, `ARM Status` dot, `Timer`, and `Fire`. `Arm` toggles between SAFE→ARM (with arming progress) and SAFE when already armed. The timer column shows `ARM <seconds>`, cooldown seconds, or READY. The Fire button switches label to `TEST FIRE` when Test Mode is on and only enables when the weapon is armed, cooled down, has ammo, and the range check passes (or Test mode allows override). Each fire/arm action reports through the small message strip under the row (“ARMING…”, “FIRED”, error codes). The station keeps `LOCK`/`UNLOCK` controls, range badge, and PK cues consistent with backend state.
 
 Navigation Station (NAV)
 
-Layout has a course-and-speed input panel, a positioning panel, and a convoy panel. The input panel contains a course field that accepts either degrees or cardinal notation and a GO button, and a speed field in knots with a GO button. Submitting a new course starts a visible “rudder time” countdown that equals one second per degree of change. The positioning panel shows your current grid cell, heading, and speed; it also shows a “board edge” predictor that warns if your current course will leave the 30×30 board within the next hour, with a one-tile early alarm that sounds if you are about to cross. The convoy panel shows Hermes and Coventry with “Following” status, present separation in nautical miles, and a note that escort behaviour lags by thirty seconds; if separation exceeds three nautical miles the status changes to “Struggling to keep up” and colours amber until resolved.
+The NAV station combines mission control with helm inputs. Mission selector at the top lists available missions; switching calls `/mission/select` and shows status feedback. A mission card displays name, status badge, elapsed time, time remaining, sequence position, and brief success/failure rules. Below, course and speed inputs (numeric text boxes with GO buttons) send `/nav set heading=` and `/nav set speed=`. A status ribbon shows current cell, heading, speed, and convoy separation from Hermes/Coventry (with amber “Struggling to keep up” when >3 nm). Board-edge predictor displays warnings (“Approaching grid boundary: east (column Z)”) using the 1-hour look-ahead. Mission prompts (e.g., decisions) appear inline with confirm/hold buttons if the controller requests action.
 
 Communications Station (COMMS)
 
-Layout includes a Hermes status header, a CAP status panel, and a tasking panel. The Hermes header shows Hermes grid, course and speed. The CAP status panel shows the number of ready pairs, the number committed, aircraft airborne and on station, and any cool-downs or turnarounds with timers in minutes and seconds; Winchester status for pairs is also surfaced. The tasking panel has two flows. The Intercept flow contains a button labelled Launch Intercept that is enabled only when WPN/FCR reports a valid primary lock; pressing it either re-vectors a nearby airborne pair if within fifteen miles, reporting the time over target, or launches a new pair and starts a deck-cycle timer. The Station flow has a grid input field and a Launch CAP button; pressing it launches a pair to that grid and starts an on-station timer. When a CAP pair reaches a hostile within fifteen miles, the station raises a permission dialog with Engage and Hold buttons; choosing Hold starts a repeating prompt every thirty seconds up to ten minutes, after which the pair returns to base. Turnaround always shows as a five-minute timer on the status panel.
+Header shows Hermes cell, course, speed. CAP status panel lists ready pairs, committed pairs/airframes, cooldowns, Sidewinder inventory (pool + committed), and active tasks. Each active mission row displays flight number, loadout, current/target cell, target name, range, TOT/TOS counts, feasibility hints, permission state, missiles remaining, and buttons:
+- `Engage` (authorise, toggles to `Hold` when already authorised)
+- `Reassign` (retask to CAP grid or follow Hermes; disabled when payload or status forbids)
+- `RTB`
+Resupply controls sit under the CAP panel: `Launch Sea King` (disabled while active), status badge (EN ROUTE / LANDING / COMPLETE), and cancellation when available. Hermes follow retasks appear as part of the CAP rows (loadout forced to AIM-9). Permission prompts surface as toast dialogues when missions request ROE authorisation.
 
 Engineering Station (ENG)
 
-Layout is a systems table, a repair control area, and a health readout. The systems table has one row per critical system: Navigation, Radar, Fire Control/Weapons, COMMS, Engine/Propulsion, Rudder/Steering, and Hull. Each row shows current status (OK, Damaged, Offline), a timer field that counts down when a repair team is assigned, and an Assign/Release button. Assigning a team starts the two-minute repair timer; releasing a team pauses the timer; leaving a damaged system without a team for two minutes marks it as permanently offline and reduces lives by one. The repair control area shows total teams and teams available; attempts to assign beyond four are rejected with a “No teams available” message. The health readout shows Sheffield health and Hermes health as percentages derived from their lives; when a ship drops to 0% the station raises a modal “Abandon ship” prompt for the captain to acknowledge. Fires and breaches on the Hull row are called out as sub-badges and will colour the row red until addressed.
+ENG shows flagship summary (Sheffield/Hermes health), CAP status snippet, and the repair table. The systems table columns are `#`, `Systems`, `Status`, `Timer`, `Repair`. Status badges use colour: OK (green), Damaged (amber), Offline (red), with icons for Hull fire/flood. Timer counts down while a team is assigned; once zero it flips to READY and the row auto-frees the team. The Assign/Release button toggles team state; when no teams are free the Assign side shows `NO TEAMS`. Rows with approaching response deadlines (>=50 % elapsed without a team) glow amber. Hull sub-badges (“FIRE”, “FLOOD”) appear next to the system name.
 
 Menu Station (Scenarios and Debug)
 
-Layout presents three cards. The Events Monitor card shows a live scroll of engine events with filters for station, severity, and system. The Scenario Editor card opens a form that allows you to set start positions, inject specific contacts, set weather if you add it later, and pre-seed damage or ammo states; saving produces a scenario file that can be loaded later. The Missions card lists curated missions with their victory conditions; starting a mission overlays its win/lose rules on the HUD and enables its reward screen. Hermes is always tracked and appears even when the radar contact list is full.
+Menu provides three pillars:
+- Events Monitor: scrolling event feed with filters for station, severity, and system. Includes CAP, resupply, mission, and alarm events.
+- Scenario Tools: load/save forms for start positions, contact injections, weather placeholders, ammo/damage seeds. Outputs scenario JSON to reuse later.
+- Missions & Diagnostics: mission summaries with victory/defeat criteria, manual launch of the `protect_hermes` sequence, and hooks for diagnostics (`/diag/reset`, session start/end, debrief). The Sea King control mirrors COMMS so testers can exercise logistics without swapping stations.
 
-⸻
+Part IV - Worked Examples and Tables (for quick binding)
 
-Part IV — Worked Examples and Tables (for quick binding)
+Flight times (seconds)
+- Sea Dart (missile class) at 5 nm → ~5.6 s; 10 nm → ~8.2 s; 20 nm → ~13.3 s (`3 + range/1.94`).
+- Exocet at 12 nm → ~9.2 s; at 22 nm → ~14.3 s.
+- Mk.8 gun at 4 nm → 8 s; 8 nm → 16 s (2 s per nm).
+- Chaff/other miscellaneous shots use 3 s per nm.
 
-Flight times align to the strict formula. A Sea Dart at five miles resolves at roughly thirty-four seconds; ten miles is roughly sixty-four; twenty miles about one hundred twenty-four. A Mk.8 round at four miles resolves in eight seconds; at eight miles in sixteen. Exocet at seven to twenty-three miles maps to roughly forty-six to one hundred forty-two seconds.
+Range gates (from `weapons_catalog.json`)
+- Sea Dart SAM: 2-35 nm; supports Aircraft, Ship.
+- MM38 Exocet: 8-22 nm; supports Ship.
+- 4.5 inch Mk.8: 1-8 nm; supports Ship, Shore.
+- 20 mm Oerlikon: 0.25-0.5 nm; supports Aircraft, SmallCraft.
+- 20 mm GAM-BO1 (twin): 0.3-2.5 nm; supports Aircraft, SmallCraft.
+- Corvus chaff: 0-1 nm; supports Aircraft (defensive only).
 
-Priority selection is deterministic. If two contacts share the same threat and range, the older one remains primary until circumstances change. The 3 nm alert and 1 nm red alert mirror that choice; if primary changes, alerts follow the new primary.
+Spawn rules and traits
+- Normal spawn: 15-40 nm, Poisson λ=0.1667/min. Surprise: 10-14 nm, λ=0.0556/min.
+- Friendly spawn probability on normal rolls: 0.3.
+- Surface hostiles and Super Étendards are clamped to >=20 nm spawn ranges.
+- CAP active → apply `spawn_weight_multiplier` (per target name) and pre-release intercept chance.
+- Active CAP within 10 nm of a hostile → 30 % chance that hostile retreats.
+- Manual locks override automatic priority until the contact vanishes or `/radar unlock` clears it.
 
-Spawn rules are canonicalized here. Hostiles appear at fifteen to twenty miles; on a DC 5 one may appear at ten; Étendard never uses the ten-mile rule and instead begins at twenty or more. Contacts that step outside the engine grid are dropped silently; kills populate the History drawer.
+Lives → health UI mapping
+- Sheffield lives (4→0) map to 100, 75, 50, 25, 0 %.
+- Hermes lives (8→0) map to 100, 87.5, 75, 62.5, 50, 37.5, 25, 12.5, 0 %.
+- Belgrano (if scenario enables) maps 8→0 in the same steps as Hermes.
 
-Lives and UI health mapping is linear. Sheffield converts 4, 3, 2, 1, 0 lives to 100%, 75%, 50%, 25%, 0%. Hermes converts 8 through 0 to 100%, 87.5%, 75%, 62.5%, 50%, 37.5%, 25%, 12.5%, and 0%. The ENG station displays only percentages; Codex uses lives internally.
+CAP readiness quick view
+- Ready pairs: up to 6. Max concurrent CAP stations: 3 (surge 4).
+- Airframe pool: 10 (pairs consume 2 frames; RTB recycles after 5 min).
+- Launch gating: min 60 s between launches, deck cycle 60 s, scramble cooldown 60 s.
+- On-station default: 10 min CAP, 2 min intercept. Permission timeout: 600 s.
+- Sidewinder Pk: 2 nm 0.90, 3 nm 0.80, 4 nm 0.70, 5 nm 0.60.
 
+TTI and alerts
+- TTI = round(range_nm x 3600 / speed_kn). Only computed for hostiles with valid speed. Radar and WPN primary boxes display TTI in seconds.
+- Alert ladder: amber at <=3 nm, red escalation allowed at <=1 nm. Cooldown per contact 30 s.
+
+Repair timers
+- Assigning a team to a Damaged/Offline system sets `timer_s = 120`. Timer decrements while assigned; hitting zero restores to OK and frees the team. Response deadlines (120 s from offline) mark rows amber if half elapsed without a team.
+
+Resupply timeline (default launch)
+- Launch (t=0): Sea King contact injected, ETA 180 s.
+- Arrival (t~180 s): stage `landing`, `resupply.ready`, audio cue.
+- Completion (frontend callback or fallback at +15 s): ammo refilled to defaults, Sea King removed, `resupply.complete` event broadcast.

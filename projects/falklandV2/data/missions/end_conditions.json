@@ -1,10 +1,26 @@
 {
   "active_mission": "protect_hermes",
+  "sequence": [
+    {"id": "protect_hermes", "label": "Protect Hermes"},
+    {"id": "tutorial_ops", "label": "Tutorial Ops"}
+  ],
   "missions": {
+    "tutorial_ops": {
+      "label": "Tutorial Ops",
+      "description": "Orientation sortie: stations stay offline and only friendly contacts are present.",
+      "settings": {
+        "stations_offline": true,
+        "hostile_spawns": false
+      }
+    },
     "protect_hermes": {
       "label": "Protect Hermes",
       "description": "Keep HMS Hermes operational throughout the engagement.",
       "duration_s": 1200,
+      "settings": {
+        "stations_offline": false,
+        "hostile_spawns": true
+      },
       "success": {
         "all": [
           {"timer_elapsed": {"seconds": 1200}},

@@ -41,7 +41,7 @@
       "aim9": {
         "min_nm": 2.0,
         "max_nm": 5.0,
-        "missiles_total": 8,
+        "missiles_total": 4,
         "inventory_total": 40,
         "engagement_cooldown_s": 5,
         "pk_points": [[2.0,0.90],[3.0,0.80],[4.0,0.70],[5.0,0.60]]

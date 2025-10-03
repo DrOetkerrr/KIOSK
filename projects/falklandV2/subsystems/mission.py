@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from copy import deepcopy
 
 
 # Type aliases for hooks to avoid import cycles with webdash.
@@ -86,6 +87,7 @@ class MissionController:
         self._config = self._load_config()
         self._active_id = self._config.get("active_mission")
         self._mission_def = self._resolve_definition(self._active_id)
+        self._sequence = self._parse_sequence(self._config.get("sequence"))
         self._start_ts = now if now is not None else time.time()
         self._outcome: Optional[MissionOutcome] = None
         self._last_eval_ts: float = self._start_ts
@@ -146,6 +148,11 @@ class MissionController:
         time_left = None
         if duration:
             time_left = max(0.0, duration - elapsed_val)
+        sequence_state = {
+            "order": self._sequence,
+            "active": self._active_id,
+            "index": self._sequence_index(self._active_id),
+        }
         snapshot = {
             "id": self._active_id,
             "label": definition.get("label") if definition else None,
@@ -156,8 +163,59 @@ class MissionController:
             "outcome": self._outcome.__dict__ if self._outcome else None,
             "pending_decision": self._decision_snapshot(ts),
             "assets": assets if assets is not None else None,
+            "settings": self.current_settings(),
+            "available": self.available_missions(),
+            "sequence": sequence_state,
         }
         return snapshot
+
+    def available_missions(self) -> List[Dict[str, Any]]:
+        missions_cfg = self._config.get("missions")
+        items: List[Dict[str, Any]] = []
+        ordered_ids = [entry.get("id") for entry in self._sequence if isinstance(entry, dict) and entry.get("id")]
+        seen: set[str] = set()
+        if isinstance(missions_cfg, dict):
+            for mid in ordered_ids:
+                if not isinstance(mid, str) or mid in seen:
+                    continue
+                definition = missions_cfg.get(mid)
+                if not isinstance(definition, dict):
+                    continue
+                label = definition.get("label") or mid
+                items.append({"id": mid, "label": label})
+                seen.add(mid)
+            for mid, definition in missions_cfg.items():
+                if not isinstance(mid, str) or mid in seen or not isinstance(definition, dict):
+                    continue
+                label = definition.get("label") or mid
+                items.append({"id": mid, "label": label})
+                seen.add(mid)
+        return items
+
+    def current_settings(self) -> Dict[str, Any]:
+        definition = self._mission_def or {}
+        settings = definition.get("settings") if isinstance(definition, dict) else None
+        if isinstance(settings, dict):
+            return deepcopy(settings)
+        return {}
+
+    def activate(self, mission_id: str, *, now: Optional[float] = None) -> Dict[str, Any]:
+        mission_key = str(mission_id or "").strip()
+        if not mission_key:
+            return {"ok": False, "error": "missing_mission"}
+        definition = self._resolve_definition(mission_key)
+        if definition is None:
+            return {"ok": False, "error": "unknown_mission"}
+        ts = now if now is not None else time.time()
+        self._active_id = mission_key
+        self._mission_def = definition
+        self._start_ts = ts
+        self._outcome = None
+        self._pending_decision = None
+        self._prev_asset_lives = {}
+        self._last_eval_ts = ts
+        self._config["active_mission"] = mission_key
+        return {"ok": True, "mission": self.snapshot(now=ts, elapsed=0.0)}
 
     def register_decision(self, decision_id: str, choice: str, *, now: Optional[float] = None) -> Dict[str, Any]:
         ts = now if now is not None else time.time()
@@ -221,6 +279,39 @@ class MissionController:
             mission_def = missions.get(str(mission_id))
             if isinstance(mission_def, dict):
                 return mission_def
+        return None
+
+    def _parse_sequence(self, raw_sequence: Any) -> List[Dict[str, Any]]:
+        if not isinstance(raw_sequence, list):
+            return []
+        parsed: List[Dict[str, Any]] = []
+        for entry in raw_sequence:
+            mission_id: str = ""
+            extra: Dict[str, Any] = {}
+            if isinstance(entry, str):
+                mission_id = entry.strip()
+            elif isinstance(entry, dict):
+                mission_id = str(entry.get("id") or entry.get("mission") or "").strip()
+                extra = {k: v for k, v in entry.items() if k not in {"id", "mission"}}
+            if not mission_id:
+                continue
+            definition = self._resolve_definition(mission_id) or {}
+            label = extra.get("label") or definition.get("label") or mission_id
+            auto = extra.get("auto_advance_s", extra.get("duration_s"))
+            auto_s = _safe_float(auto) if auto is not None else 0.0
+            parsed.append({
+                "id": mission_id,
+                "label": label,
+                "auto_advance_s": auto_s if auto_s > 0 else None,
+            })
+        return parsed
+
+    def _sequence_index(self, mission_id: Optional[str]) -> Optional[int]:
+        if not mission_id:
+            return None
+        for idx, entry in enumerate(self._sequence):
+            if entry.get("id") == mission_id:
+                return idx
         return None
 
     def _extract_assets(self, health: Dict[str, Any]) -> Dict[str, Dict[str, int]]:

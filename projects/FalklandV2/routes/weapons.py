@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import logging
+import threading
 from flask import Blueprint, jsonify, request
 
 bp = Blueprint("weapons", __name__)
@@ -58,8 +59,9 @@ def weapons_arm():
         raw = L['_load_json'](L['ARMING_PATH'], {})
         if not isinstance(raw, dict):
             raw = {}
+        arm_delay = 5.0
         if state == 'Armed':
-            rec = {'armed': False, 'arming_until': time.time() + 5.0}
+            rec = {'armed': False, 'arming_until': time.time() + arm_delay}
             disp_state = 'Arming'
         else:
             rec = {'armed': False, 'arming_until': 0}
@@ -72,7 +74,28 @@ def weapons_arm():
             pass
         if state == 'Armed':
             try:
-                L['PENDING_EVENTS'].append({'due': time.time()+5.0, 'kind': 'arming_ready', 'weapon': name})
+                L['PENDING_EVENTS'].append({'due': time.time()+arm_delay, 'kind': 'arming_ready', 'weapon': name})
+            except Exception:
+                pass
+            def _complete():
+                try:
+                    with L['STATE_LOCK']:
+                        raw_local = L['_load_json'](L['ARMING_PATH'], {})
+                        if isinstance(raw_local, dict):
+                            rec_local = raw_local.get(name)
+                            if isinstance(rec_local, dict):
+                                rec_local['armed'] = True
+                                rec_local['arming_until'] = 0.0
+                                raw_local[name] = rec_local
+                                L['_save_json'](L['ARMING_PATH'], raw_local)
+                except Exception:
+                    return
+                try:
+                    L['record_event']('weapon.reload.complete', {'name': name, 'source': 'arming'})
+                except Exception:
+                    pass
+            try:
+                threading.Timer(arm_delay + 0.1, _complete, daemon=True).start()
             except Exception:
                 pass
         try:

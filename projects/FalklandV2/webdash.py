@@ -533,6 +533,8 @@ RADIO_STATE: Dict[str, Any] = {"busy_until": 0.0}
 RADIO_HISTORY: deque[Dict[str, Any]] = deque(maxlen=32)
 AUDIO_FLAGS: Dict[str, Any] = {}
 PRIMARY_ID: int | None = None
+RADIO_RECENT_WINDOW_S = 4.0
+RADIO_RECENT_MESSAGES: Dict[tuple[str, str], float] = {}
 
 # Event feed for stations console
 EVENT_QUEUE: list[Dict[str, Any]] = []
@@ -647,11 +649,17 @@ GUARD_EVENT_IDS: set[str] = {
 RADIO_SKIP_VOICE: set[str] = {
     'nav.course.set',
     'nav.speed.set',
+    'weapon.target.locked',
+    'weapon.target.unlocked',
 }
 
 
 def _radio_role_for_event(event_id: str) -> str:
     eid = str(event_id)
+    if eid in ('radar.target.locked', 'radar.target.unlocked'):
+        return 'Fire Control'
+    if eid.startswith('radar.'):
+        return 'Radar'
     if eid.startswith('weapon.'):
         return 'Fire Control'
     if eid.startswith('cap.'):
@@ -1378,7 +1386,7 @@ RADIO_EVENT_AUDIO_MAP: Dict[str, Callable[[Dict[str, Any]], str | None]] = {
     'cap.permission.authorized': lambda ctx: 'SHAR_ENGAGGING',
     'pilot.intercept.launch': lambda ctx: 'SHAR_TAKING_OFF',
     'pilot.cap.launch': lambda ctx: 'SHAR_TAKING_OFF',
-    'pilot.vector': lambda ctx: 'SHAR_FINAL_APPROACH',
+    'pilot.vector': lambda ctx: 'SHAR_ENGAGING',
     'pilot.fox2': lambda ctx: 'SHAR_FOX_2',
     'pilot.splash': lambda ctx: 'SHAR_SPLASH_BANDIT',
     'pilot.bombsaway': lambda ctx: 'SHAR_BOMBS_AWAY',
@@ -1536,6 +1544,18 @@ def record_officer(role: str, text: str, *, channel: int | None = None,
     audio_info = _radio_audio_for(role_str, msg, event_id=event_id, event_ctx=event_ctx)
     with STATE_LOCK:
         ts = time.time()
+        try:
+            key_recent = (role_str, msg.strip())
+            last_ts = RADIO_RECENT_MESSAGES.get(key_recent)
+            if last_ts is not None and (ts - float(last_ts)) <= RADIO_RECENT_WINDOW_S:
+                return
+            RADIO_RECENT_MESSAGES[key_recent] = ts
+            cutoff = ts - (RADIO_RECENT_WINDOW_S * 2.0)
+            for k, stamp in list(RADIO_RECENT_MESSAGES.items()):
+                if stamp < cutoff:
+                    RADIO_RECENT_MESSAGES.pop(k, None)
+        except Exception:
+            pass
         # Deduplicate identical consecutive messages within a short window to prevent double playback
         try:
             last = RADIO_QUEUE[-1] if RADIO_QUEUE else None
