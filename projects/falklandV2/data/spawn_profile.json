@@ -1,0 +1,39 @@
+{
+  "total_game_time_min": 60,
+  "default_min_range_nm": 18,
+  "waves": [
+    {
+      "name": "Opening Probe",
+      "duration_min": 12,
+      "spawn": {
+        "Pucara": { "prob": 0.3, "min_range_nm": 18 },
+        "A-4 Skyhawk": { "prob": 0.4, "min_range_nm": 20 },
+        "Mirage III": { "prob": 0.3, "min_range_nm": 22 }
+      }
+    },
+    {
+      "name": "Raid Build-up",
+      "duration_min": 18,
+      "spawn": {
+        "A-4 Skyhawk": { "prob": 0.35, "min_range_nm": 20 },
+        "Mirage III": { "prob": 0.25, "min_range_nm": 22 },
+        "Mirage III (R550)": { "prob": 0.2, "min_range_nm": 24 },
+        "Canberra bomber": { "prob": 0.1, "min_range_nm": 24 },
+        "Super Etendard": { "prob": 0.1, "min_range_nm": 28 }
+      }
+    },
+    {
+      "name": "Climax",
+      "duration_min": 30,
+      "spawn": {
+        "A-4 Skyhawk": { "prob": 0.25, "min_range_nm": 20 },
+        "Mirage III": { "prob": 0.2, "min_range_nm": 22 },
+        "Mirage III (R550)": { "prob": 0.2, "min_range_nm": 24 },
+        "Super Etendard": { "prob": 0.15, "min_range_nm": 30 },
+        "Canberra bomber": { "prob": 0.1, "min_range_nm": 26 },
+        "ARA General Belgrano": { "prob": 0.05, "min_range_nm": 32 },
+        "ARA Hércules (Type 42 Destroyer)": { "prob": 0.05, "min_range_nm": 32 }
+      }
+    }
+  ]
+}

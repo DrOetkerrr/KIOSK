@@ -577,6 +577,12 @@ def trigger_alarm(sound: str = "red-alert.wav", *, message: str | None = None, r
     try:
         from .. import webdash as wd  # type: ignore
         with wd.STATE_LOCK:
+            try:
+                stamp = {'ts': time.time(), 'sound': 'explosion'}
+                wd.AUDIO_STATE['explosion'] = dict(stamp)
+                AUDIO_STATE['explosion'] = dict(stamp)
+            except Exception:
+                pass
             AUDIO_STATE['alarm'] = {"file": str(sound), "loop": False, "ts": time.time()}
         if message:
             wd.record_officer(role or 'Captain', message)

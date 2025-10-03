@@ -160,6 +160,139 @@ class Catalog:
     def counts(self) -> Tuple[int, int]:
         return (len(self._hostile), len(self._friendly))
 
+    def hostile_info(self, name: str) -> Optional[Tuple[str, float, Optional[str]]]:
+        for n, s, _w, k in self._hostile:
+            if n == name:
+                return (n, float(s), k)
+        return None
+
+
+class SpawnProfile:
+    def __init__(self, path: Optional[str], *, rng: Optional[random.Random] = None):
+        self.enabled = False
+        self.waves: List[Dict[str, Any]] = []
+        self.total_minutes: float = 0.0
+        self.default_min_range: float = 15.0
+        self._active: Optional[Dict[str, Any]] = None
+        self._rng = rng or random.Random()
+        if not path:
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as fh:
+                data = json.load(fh)
+        except Exception:
+            return
+        try:
+            total = float(data.get('total_game_time_min', 0) or 0)
+        except Exception:
+            total = 0.0
+        waves = data.get('waves') if isinstance(data, dict) else None
+        if not isinstance(waves, list) or not waves:
+            return
+        built: List[Dict[str, Any]] = []
+        minutes_used = 0.0
+        for idx, raw in enumerate(waves):
+            if not isinstance(raw, dict):
+                continue
+            try:
+                dur = float(raw.get('duration_min', 0))
+            except Exception:
+                dur = 0.0
+            if dur <= 0:
+                continue
+            spawn = raw.get('spawn') or {}
+            if not isinstance(spawn, dict):
+                spawn = {}
+            table: Dict[str, Dict[str, Any]] = {}
+            total_prob = 0.0
+            for name, spec in spawn.items():
+                try:
+                    if isinstance(spec, dict):
+                        prob = float(spec.get('prob', 0.0))
+                        min_range = spec.get('min_range_nm')
+                    else:
+                        prob = float(spec)
+                        min_range = None
+                except Exception:
+                    continue
+                prob = max(0.0, float(prob))
+                if prob <= 0.0:
+                    continue
+                entry = {'prob': prob}
+                if min_range is not None:
+                    try:
+                        entry['min_range_nm'] = float(min_range)
+                    except Exception:
+                        pass
+                table[str(name)] = entry
+                total_prob += entry['prob']
+            built.append({
+                'index': len(built),
+                'name': str(raw.get('name') or f'Wave {idx+1}'),
+                'duration_min': dur,
+                'spawn': table,
+                'prob_total': total_prob,
+                'start_min': minutes_used,
+                'end_min': minutes_used + dur,
+            })
+            minutes_used += dur
+        if not built:
+            return
+        self.waves = built
+        self.total_minutes = float(total if total > 0 else minutes_used)
+        try:
+            self.default_min_range = float(data.get('default_min_range_nm', 15.0))
+        except Exception:
+            self.default_min_range = 15.0
+        self.enabled = True
+
+    def wave_at(self, minute: float) -> Dict[str, Any]:
+        if not self.enabled or not self.waves:
+            return {}
+        if self.total_minutes <= 0:
+            phase = minute
+        else:
+            # Clamp to total time; after total time, stay on last wave
+            if minute >= self.total_minutes:
+                return self.waves[-1]
+            phase = minute
+        for wave in self.waves:
+            if phase < wave['end_min']:
+                return wave
+        return self.waves[-1]
+
+    def pick_hostile(self, minute: float) -> Optional[Tuple[str, Dict[str, Any]]]:
+        wave = self.wave_at(minute)
+        spawn = wave.get('spawn') if wave else None
+        if not spawn:
+            return None
+        total = wave.get('prob_total', 0.0)
+        if total <= 0:
+            return None
+        roll = self._rng.uniform(0.0, total)
+        acc = 0.0
+        for name, spec in spawn.items():
+            prob = float(spec.get('prob', 0.0))
+            if prob <= 0:
+                continue
+            acc += prob
+            if roll <= acc:
+                return name, spec
+        # fallback last entry
+        last_name = next(reversed(spawn))
+        return last_name, spawn[last_name]
+
+    def diagnostics(self, minute: float) -> Dict[str, Any]:
+        if not self.enabled:
+            return {}
+        wave = self.wave_at(minute)
+        return {
+            'active_wave': wave.get('name') if wave else None,
+            'wave_index': wave.get('index') if wave else None,
+            'wave_start_min': wave.get('start_min') if wave else None,
+            'wave_end_min': wave.get('end_min') if wave else None,
+        }
+
 # --- Contact model -----------------------------------------------------------
 @dataclass
 class Contact:
@@ -247,8 +380,26 @@ class Radar:
             default_path = os.path.join(os.path.dirname(__file__), 'data', 'contacts.json')
             self.catalog = Catalog(default_path, rng=self.rng)
 
+        profile_path = os.path.join(os.path.dirname(__file__), 'data', 'spawn_profile.json')
+        self.spawn_profile = SpawnProfile(profile_path, rng=self.rng)
+        self._elapsed_s = 0.0
+        self._wave_diag: Dict[str, Any] = {}
+        if self.spawn_profile.enabled:
+            self.cfg['friendly_prob'] = 0.0
+
     # API
     def tick(self, dt_s: float, own_x: float, own_y: float):
+        try:
+            self._elapsed_s += float(dt_s)
+        except Exception:
+            self._elapsed_s += dt_s
+        if self.spawn_profile.enabled:
+            try:
+                self._wave_diag = self.spawn_profile.diagnostics(self._elapsed_s / 60.0)
+            except Exception:
+                self._wave_diag = {}
+        else:
+            self._wave_diag = {}
         # cadence
         self._accum += dt_s
         if self._accum >= self.cfg["scan_interval_s"]:
@@ -337,7 +488,10 @@ class Radar:
         x = max(0.0, min(float(WORLD_N), own_x + dx))
         y = max(0.0, min(float(WORLD_N), own_y + dy))
 
+        minute = self._elapsed_s / 60.0 if getattr(self, '_elapsed_s', None) is not None else 0.0
+
         # Decide allegiance: surprise always Hostile; otherwise Friendly with configured probability
+        profile_spec: Optional[Dict[str, Any]] = None
         if surprise:
             allegiance = "Hostile"
         else:
@@ -347,6 +501,20 @@ class Radar:
         if allegiance == "Friendly":
             name, speed, klass = self.catalog.pick_friendly()
         else:
+            if self.spawn_profile.enabled:
+                choice = self.spawn_profile.pick_hostile(minute)
+                if choice:
+                    candidate, spec = choice
+                    info = self.catalog.hostile_info(candidate)
+                    if info is not None:
+                        name, speed, klass = info
+                        profile_spec = spec
+                    else:
+                        choice = None
+                if choice and profile_spec is not None:
+                    pass  # name/speed/klass already set
+                else:
+                    profile_spec = None
             mult_map: Optional[Dict[str, float]] = None
             try:
                 if self.cap_effects_provider is not None:
@@ -359,7 +527,14 @@ class Radar:
             # Pick hostiles, respecting the Étendard exception for surprise spawns
             def _pick_hostile():
                 return (self.catalog.pick_hostile_weighted(mult_map) if mult_map else self.catalog.pick_hostile())
-            name, speed, klass = _pick_hostile()
+            if not self.spawn_profile.enabled or profile_spec is None:
+                name, speed, klass = _pick_hostile()
+            else:
+                # ensure klass includes catalog hint if missing
+                if not klass and profile_spec is not None:
+                    klass = profile_spec.get('class')
+            if profile_spec is not None and not klass:
+                klass = profile_spec.get('class')
             if surprise:
                 tries = 0
                 while name == 'Super Etendard' and tries < 10:
@@ -376,6 +551,21 @@ class Radar:
         surface_meta: Optional[Dict[str, Any]] = None
         if str(allegiance).lower() == 'hostile' and str(klass or '').lower() == 'ship':
             surface_meta = {'hp': 4.0, 'max_hp': 4.0}
+        if allegiance == 'Hostile' and self.spawn_profile.enabled:
+            min_req = None
+            try:
+                if 'profile_spec' in locals() and profile_spec is not None:
+                    min_req = profile_spec.get('min_range_nm')
+            except Exception:
+                min_req = None
+            if min_req is None:
+                min_req = self.spawn_profile.default_min_range
+            try:
+                mr = float(min_req)
+                if r < mr:
+                    r = mr
+            except Exception:
+                pass
         meta = {
             "spawn": {"bearing_deg": round(bearing_deg,1), "range_nm": round(r,2), "surprise": surprise, "allegiance": allegiance},
             "cap": self.catalog.details(name)
@@ -432,6 +622,9 @@ class Radar:
                 "world_xy": [round(c.x,2), round(c.y,2)], "course_deg": c.course_deg,
                 "speed_kts": c.speed_kts * HOSTILE_SPEED_SCALE
             })
+
+    def spawn_wave_diag(self) -> Dict[str, Any]:
+        return dict(self._wave_diag) if self._wave_diag else {}
 
     def force_spawn(self, own_x: float, own_y: float, allegiance: str, bearing_deg: float, range_nm: float) -> Contact:
         r = float(range_nm)

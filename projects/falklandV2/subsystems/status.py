@@ -848,4 +848,15 @@ def build() -> Dict[str, Any]:
     except Exception:
         payload['events'] = []
 
+    try:
+        wave_diag = {}
+        if hasattr(wd.RADAR, 'spawn_wave_diag'):
+            func = getattr(wd.RADAR, 'spawn_wave_diag')
+            if callable(func):
+                wave_diag = func() or {}
+        if wave_diag:
+            payload.setdefault('diag', {})['spawn_wave'] = wave_diag
+    except Exception:
+        pass
+
     return payload

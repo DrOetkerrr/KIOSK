@@ -27,6 +27,7 @@
     enemy_bomb_miss: "miss.wav",
     // alarms
     red_alert: "red-alert.wav",
+    explosion: "Sheffieldhit.wav",
   };
 
   const BASE = "/data/sounds/";
@@ -204,6 +205,7 @@
   let alarmAudio = null;
   let lastCapLaunch = null;
   let lastEnemyBomb = null;
+  let lastExplosion = null;
   let duckUntil = 0;
   let SFX_GAIN = 1.0; // global multiplier for SFX/ambience
 
@@ -515,6 +517,19 @@
         if (!lastCapLaunch || lastCapLaunch.ts !== ts5) {
           lastCapLaunch = { ts: ts5 };
           if (unlocked) playRadio(cap.file || 'SHAR.wav', {vol: Number(cap.vol || 0.1), fadeOutMs: Number(cap.fade_s || 2.0)*1000, fadeInMs: Number(cap.fade_in_ms || 0), onEndUrl: (cap.on_end_url || null)});
+        }
+      }
+
+      const boom = j?.audio?.explosion;
+      if (boom) {
+        const tsBoom = boom.ts || 0;
+        if (!lastExplosion || lastExplosion.ts !== tsBoom) {
+          lastExplosion = { ts: tsBoom };
+          if (unlocked) {
+            const key = String(boom.sound || boom.key || 'explosion');
+            const file = boom.file || SOUND_MAP[key] || SOUND_MAP.explosion;
+            if (file) playOne(file);
+          }
         }
       }
 
