@@ -1,6 +1,6 @@
 {
   "teams_total": 4,
-  "teams_free": 3,
+  "teams_free": 4,
   "systems": [
     {
       "id": "Navigation",
@@ -29,11 +29,10 @@
     {
       "id": "COMMS",
       "name": "COMMS station",
-      "status": "Damaged",
-      "timer_s": 63,
-      "team_assigned": true,
-      "last_damaged_ts": 1759475665.836288,
-      "response_deadline_ts": 0.0
+      "status": "OK",
+      "timer_s": 0,
+      "team_assigned": false,
+      "last_damaged_ts": 0.0
     },
     {
       "id": "Engine_Propulsion",
@@ -54,10 +53,11 @@
     {
       "id": "Hull",
       "name": "Hull",
-      "status": "OK",
+      "status": "Offline",
       "timer_s": 0,
       "team_assigned": false,
-      "last_damaged_ts": 0.0
+      "last_damaged_ts": 1759492855.614731,
+      "response_deadline_ts": 1759492975.614731
     }
   ]
 }

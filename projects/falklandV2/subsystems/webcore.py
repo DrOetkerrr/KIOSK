@@ -1706,16 +1706,22 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
                     if status_lc == 'queued':
                         return origin_cell or (target_cell_disp if target_cell_disp != '—' else '—')
 
-                    if status_lc == 'airborne' and origin_xy and target_xy:
+                    if status_lc == 'airborne':
                         ts_local = (m.get('timestamps') or {})
-                        launch_ts = ts_local.get('launch', ts_local.get('created'))
-                        eta_on = ts_local.get('eta_onstation')
-                        prog = _progress(now, launch_ts, eta_on) if eta_on is not None else None
-                        if prog is None:
-                            prog = 0.0
-                        x = origin_xy[0] + (target_xy[0] - origin_xy[0]) * prog
-                        y = origin_xy[1] + (target_xy[1] - origin_xy[1]) * prog
-                        return _xy_to_cell(x, y)
+                        start_xy = _as_xy(ts_local.get('vector_start_xy'))
+                        if start_xy is None:
+                            start_xy = origin_xy
+                        if start_xy and target_xy:
+                            launch_ts = ts_local.get('airborne', ts_local.get('launch', ts_local.get('created')))
+                            if ts_local.get('vector_start_time') is not None:
+                                launch_ts = ts_local.get('vector_start_time')
+                            eta_on = ts_local.get('eta_onstation')
+                            prog = _progress(now, launch_ts, eta_on) if eta_on is not None else None
+                            if prog is None:
+                                prog = 0.0
+                            x = start_xy[0] + (target_xy[0] - start_xy[0]) * prog
+                            y = start_xy[1] + (target_xy[1] - start_xy[1]) * prog
+                            return _xy_to_cell(x, y)
 
                     if status_lc == 'rtb' and origin_xy and target_xy:
                         ts_local = (m.get('timestamps') or {})

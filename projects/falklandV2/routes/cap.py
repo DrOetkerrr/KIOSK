@@ -692,6 +692,8 @@ def cap_convert_to_cap():
         res = L['CAP'].convert_to_cap(mid, cell, minutes=(float(minutes) if minutes is not None else None), follow=follow)
         status = 200 if res.get('ok') else 400
         payload = {"ok": bool(res.get('ok')), "message": res.get('message'), "mission": res.get('mission')}
+        if 'eta_seconds' in res:
+            payload['eta_seconds'] = res['eta_seconds']
         L['record_flight']({"route": route, "method": request.method, "status": status,
                            "duration_ms": int((time.time()-t0)*1000),
                            "request": data, "response": payload})

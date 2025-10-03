@@ -12,9 +12,11 @@ Public surface:
 """
 
 from __future__ import annotations
-import time, json, random
+import time, json, random, math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from projects.falklandV2.grid.mapping import label_to_world
 
 def _read_json(p: Path) -> Dict[str, Any]:
     return json.loads(p.read_text(encoding="utf-8"))
@@ -102,8 +104,13 @@ class CAPMission:
                 self.intercept_speed_kts = float(intercept_speed_kts)
             else:
                 self.intercept_speed_kts = max(self.cruise_speed_kts, 540.0)
+            if intercept_target_kts is not None:
+                self.intercept_target_kts = float(intercept_target_kts)
+            else:
+                self.intercept_target_kts = float(cfg.get("intercept_target_kts", 350.0))
         else:
             self.intercept_speed_kts = self.cruise_speed_kts
+            self.intercept_target_kts = None
         self.station_radius_nm = float(station_radius_nm if station_radius_nm is not None else cfg.get("station_radius_nm", 5))
 
         # Loadout: 'aim9' (Sidewinders) or 'bombs'
@@ -320,6 +327,9 @@ class HermesCAP:
         mission.status = 'rtb'
         mission.ts['rtb'] = now
         mission.ts['eta_recovery'] = now + mission.inbound_s
+        mission.ts.pop('vector_start_xy', None)
+        mission.ts.pop('vector_start_time', None)
+        mission.ts.pop('vector_start_cell', None)
 
     def force_rtb(self, mission_id: int, *, reason: str | None = None, now: Optional[float] = None) -> None:
         mission = self._mission_by_id(mission_id)
@@ -412,6 +422,7 @@ class HermesCAP:
         # Promote immediately: eliminate deck wait between button press and launch
         m.deck_cycle_s = 0
         m.status = 'airborne'
+        m.ts['airborne'] = t
         try:
             m.ts['eta_onstation'] = t + m.outbound_s
         except Exception:
@@ -419,17 +430,92 @@ class HermesCAP:
         dest = target_cell if not follow_norm else f"follow:{follow_norm}"
         return {"ok": True, "message": f"Hermes: CAP pair launching to {dest}", "mission": m.to_dict()}
 
+    def _mission_origin_xy(self, mission: CAPMission) -> Tuple[float, float]:
+        try:
+            if isinstance(mission.origin_xy, (tuple, list)) and len(mission.origin_xy) == 2:
+                return (float(mission.origin_xy[0]), float(mission.origin_xy[1]))
+        except Exception:
+            pass
+        if mission.origin_cell:
+            try:
+                return label_to_world(mission.origin_cell)
+            except Exception:
+                pass
+        default_cell = str(self.cfg.get('default_origin_cell') or 'AQ37')
+        try:
+            return label_to_world(default_cell)
+        except Exception:
+            return (0.0, 0.0)
+
+    def _target_xy(self, cell: str) -> Tuple[float, float]:
+        try:
+            return label_to_world(cell)
+        except Exception:
+            return (0.0, 0.0)
+
+    def _mission_position_xy(self, mission: CAPMission, now: float) -> Tuple[float, float]:
+        target_xy = self._target_xy(mission.target_cell)
+        if mission.status == 'onstation':
+            return target_xy
+        if mission.status == 'recovering':
+            return self._mission_origin_xy(mission)
+
+        origin_xy = self._mission_origin_xy(mission)
+        ts = mission.ts
+
+        if mission.status == 'airborne':
+            vector_xy = ts.get('vector_start_xy')
+            if isinstance(vector_xy, (tuple, list)) and len(vector_xy) == 2:
+                try:
+                    start_x, start_y = float(vector_xy[0]), float(vector_xy[1])
+                except Exception:
+                    start_x = start_y = None
+            else:
+                start_x = start_y = None
+            if start_x is None or start_y is None:
+                start_x, start_y = origin_xy
+                start_time = ts.get('airborne', ts.get('launch', now))
+            else:
+                start_time = ts.get('vector_start_time', ts.get('airborne', now))
+            eta = ts.get('eta_onstation', now)
+            end_xy = target_xy
+        elif mission.status == 'rtb':
+            start_x, start_y = target_xy
+            start_time = ts.get('rtb', now)
+            eta = ts.get('eta_recovery', now)
+            end_xy = self._mission_origin_xy(mission)
+        else:
+            return target_xy
+
+        try:
+            elapsed = max(0.0, float(now) - float(start_time))
+        except Exception:
+            elapsed = 0.0
+        try:
+            duration = max(1e-3, float(eta) - float(start_time))
+        except Exception:
+            duration = 1.0
+        progress = max(0.0, min(1.0, elapsed / duration))
+        end_x, end_y = end_xy
+        x = float(start_x) + (end_x - float(start_x)) * progress
+        y = float(start_y) + (end_y - float(start_y)) * progress
+        return (x, y)
+
     def tick(self, now: Optional[float] = None) -> None:
         t = now or time.time()
         for m in self.missions:
             if m.status == "queued":
                 if t >= m.ts["launch"] + m.deck_cycle_s:
                     m.status = "airborne"
+                    m.ts['airborne'] = t
             elif m.status == "airborne":
                 if t >= m.ts["eta_onstation"]:
                     m.status = "onstation"
                     m.ts["onstation"] = t
                     m.ts["etd_rtb"] = t + m.onstation_s
+                    m.ts.pop('vector_start_xy', None)
+                    m.ts.pop('vector_start_time', None)
+                    m.ts.pop('vector_start_cell', None)
                     self._emit_event('cap.onstation', {'mission_id': m.id, 'cell': m.target_cell})
             elif m.status == "onstation":
                 if m.permission_required and not m.permission_authorized:
@@ -670,7 +756,7 @@ class HermesCAP:
 
         Rules:
         - Only allowed for AIM-9 loadout and missiles_left > 0.
-        - Sets status to 'onstation' immediately with a fresh on-station timer.
+        - Requires the pair to transit before reaching on-station status.
         - If minutes provided, overrides default onstation duration.
         """
         m = self._mission_by_id(mission_id)
@@ -683,26 +769,84 @@ class HermesCAP:
                 return {"ok": False, "error": "winchester"}
         except Exception:
             pass
+        if m.status not in ('airborne', 'onstation'):
+            return {"ok": False, "error": "mission not airborne"}
         t = now or time.time()
-        try:
-            m.target_cell = str(target_cell)
-        except Exception:
-            pass
-        # Optional: set dynamic follow mode
-        try:
-            m.follow = str(follow) if follow else None
-        except Exception:
-            m.follow = None
-        # Set CAP status/timers
-        m.status = 'onstation'
-        m.ts['onstation'] = t
+        previous_cell = m.target_cell
+        current_xy = self._mission_position_xy(m, t)
+        new_cell = str(target_cell).strip().upper()
+        new_xy = self._target_xy(new_cell)
+        dx = float(new_xy[0]) - float(current_xy[0])
+        dy = float(new_xy[1]) - float(current_xy[1])
+        distance_nm = math.hypot(dx, dy)
+
         dur_s = int((float(minutes) * 60.0) if minutes is not None else self.cfg.get('default_onstation_min', 20) * 60)
         m.onstation_s = max(60, int(dur_s))
-        m.ts['etd_rtb'] = t + m.onstation_s
-        self._emit_event('cap.onstation', {'mission_id': m.id, 'cell': m.target_cell})
-        # Reset permission to require authorization again
+
+        travel_speed_kts = float(m.cruise_speed_kts or self.cruise_speed_kts)
+        speed_nmps = max(travel_speed_kts / 3600.0, 0.05)
+        travel_s = int(math.ceil(distance_nm / speed_nmps)) if distance_nm > 0 else 0
+
         try:
-            self.set_permission(m.id, False, now=t)
+            m.follow = str(follow).strip().lower() if follow else None
+            if m.follow == '':
+                m.follow = None
         except Exception:
-            pass
-        return {"ok": True, "message": f"SHAR {m.id} holding CAP at {m.target_cell}", "mission": m.to_dict()}
+            m.follow = None
+
+        m.distance_nm = float(distance_nm)
+        m.target_cell = new_cell
+        m.ts['launch'] = t
+
+        if travel_s <= 0 or distance_nm <= max(0.25, float(m.station_radius_nm or 0.0)):
+            m.status = 'onstation'
+            m.ts['eta_onstation'] = t
+            m.ts['onstation'] = t
+            m.ts['etd_rtb'] = t + m.onstation_s
+            m.ts.pop('vector_start_xy', None)
+            m.ts.pop('vector_start_time', None)
+            m.ts.pop('vector_start_cell', None)
+            m.ts.pop('airborne', None)
+            eta_seconds = 0
+            self._emit_event('cap.onstation', {'mission_id': m.id, 'cell': m.target_cell})
+        else:
+            m.status = 'airborne'
+            m.ts['airborne'] = t
+            m.ts['eta_onstation'] = t + travel_s
+            m.ts['etd_rtb'] = None
+            m.ts.pop('onstation', None)
+            m.ts.pop('rtb', None)
+            m.ts.pop('eta_recovery', None)
+            m.ts['vector_start_xy'] = [float(current_xy[0]), float(current_xy[1])]
+            m.ts['vector_start_time'] = t
+            m.ts['vector_start_cell'] = previous_cell
+            eta_seconds = travel_s
+
+        if m.kind == 'intercept':
+            dash_nmps = max(float(m.intercept_speed_kts) / 3600.0, 0.05)
+            target_kts = getattr(m, 'intercept_target_kts', None)
+            if target_kts is None:
+                target_kts = getattr(self, 'intercept_target_kts', 0.0)
+            tgt_nmps = max(float(target_kts or 0.0) / 3600.0, 0.0)
+            closure = max(dash_nmps + tgt_nmps, dash_nmps)
+            leg = int(max(1.0, distance_nm / closure)) if distance_nm > 0 else 1
+        else:
+            leg = int(max(1.0, (distance_nm / max(float(m.cruise_speed_kts), 1.0)) * 3600.0)) if distance_nm > 0 else 1
+        m.outbound_s = max(1, leg)
+        m.inbound_s = max(1, leg)
+
+        self.set_permission(m.id, False, now=t)
+        rec = self._ensure_meta_record(m.id)
+        if rec is not None:
+            rec['target_cell'] = new_cell
+            rec['target_id'] = None
+            rec['target_name'] = ''
+
+        mission_dict = m.to_dict()
+        mission_dict['cur_cell'] = new_cell if eta_seconds == 0 else previous_cell
+        return {
+            "ok": True,
+            "message": f"SHAR {m.id} retasking to CAP {new_cell}",
+            "eta_seconds": eta_seconds,
+            "mission": mission_dict,
+        }

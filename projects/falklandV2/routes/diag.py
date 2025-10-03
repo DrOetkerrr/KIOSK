@@ -83,9 +83,8 @@ def run_selftest() -> dict:
     except Exception as e:
         res['cap'] = {"ok": False, "error": str(e)}; ok_all = False
 
-    # Radio (best-effort)
+    # Radio (best-effort); no audible ping to avoid startup chatter
     try:
-        L['record_officer']('Ensign', 'Self-test ping received.')
         res['radio'] = {"ok": True}
     except Exception as e:
         res['radio'] = {"ok": False, "error": str(e)}; ok_all = False

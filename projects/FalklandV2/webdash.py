@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os, sys, time, threading, logging, hashlib, math, contextlib, wave
+import os, sys, time, threading, logging, hashlib, math, contextlib, wave, json, faulthandler
 from pathlib import Path
 from typing import Any, Dict, Callable
 from datetime import datetime, timezone
@@ -40,6 +40,12 @@ except Exception:
 # ---- Flask app ----
 TPL_DIR = Path(__file__).parent / "templates"
 app = Flask(__name__, template_folder=str(TPL_DIR))
+
+LOG_DIR = REPO_ROOT / 'logs'
+try:
+    LOG_DIR.mkdir(exist_ok=True)
+except Exception:
+    pass
 
 
 def _bp_safe_register(import_path: str, attr: str = "bp") -> None:
@@ -1082,12 +1088,67 @@ def data_tts(filename: str):
         return jsonify({"ok": False, "error": str(e)}), 404
 
 
+def _status_diag_snapshot(payload: Dict[str, Any], build_ms: int) -> None:
+    try:
+        from projects.falklandV2.subsystems import webcore as core  # local import to avoid circulars
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        path = LOG_DIR / f"status_diag_{stamp}.log"
+        info: Dict[str, Any] = {
+            'ts_iso': datetime.now(timezone.utc).isoformat(),
+            'build_ms': build_ms,
+        }
+        def _len(obj: Any) -> int:
+            try:
+                return len(obj)
+            except Exception:
+                return -1
+        try:
+            info['radio_queue_len'] = _len(RADIO_QUEUE)
+            info['pending_events'] = _len(PENDING_EVENTS)
+            info['audio_state_keys'] = list((AUDIO_STATE or {}).keys())
+            info['cap_missions'] = _len(getattr(CAP, 'missions', [])) if CAP is not None else 0
+            info['radar_contacts'] = _len(getattr(RADAR, 'contacts', []))
+        except Exception:
+            pass
+        snapshot = {
+            'info': info,
+            'payload_keys': list((payload or {}).keys()) if isinstance(payload, dict) else [],
+        }
+        with path.open('w', encoding='utf-8') as fh:
+            json.dump(snapshot, fh, indent=2, default=str)
+            fh.write('\n\n[stacktrace]\n')
+            faulthandler.dump_traceback(file=fh)
+    except Exception:
+        logging.exception("status diag snapshot failed")
+
+
 @app.get("/api/status")
 def api_status():
     t0 = time.time(); route = "/api/status"
     try:
         from projects.falklandV2.subsystems.status import build as build_status
+        build_start = time.time()
         payload = build_status()
+        build_ms = int((time.time() - build_start) * 1000)
+        try:
+            diag = payload.setdefault('diag', {}) if isinstance(payload, dict) else {}
+            if isinstance(diag, dict):
+                diag.setdefault('build_ms', build_ms)
+        except Exception:
+            pass
+        if build_ms > 2000:
+            try:
+                record_flight({
+                    "route": "/api/status.slow",
+                    "method": "INT",
+                    "status": 200,
+                    "duration_ms": build_ms,
+                    "request": {},
+                    "response": {"ok": True, "build_ms": build_ms}
+                })
+            except Exception:
+                logging.exception("/api/status slow-path logging failed")
+            _status_diag_snapshot(payload if isinstance(payload, dict) else {}, build_ms)
         record_flight({"route": route, "method": "GET", "status": 200,
                        "duration_ms": int((time.time()-t0)*1000),
                        "request": {}, "response": payload})
