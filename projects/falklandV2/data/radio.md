@@ -22,7 +22,7 @@ cap.onstation – “CAP on station grid {cell}”
 cap.weapon.fire – “Shar fired {weapon}”
 cap.weapon.hit – “Shar hit target with {weapon}”
 cap.weapon.miss – Shar missed target with {weapon}”
-cap.mission.rtb – “SHAR {mission_id} ordered RTB.”
+cap.mission.rtb – “Roger, Hermes—SHAR {mission_id} returning to base.”
 cap.accident.deck – “Negative—fuel state critical, bird down on deck.”
 cap.accident.inflight – “Hermes, we lost the SHAR en route—no chute spotted.”
 cap.hazard.grounding – “Hermes tower, SHAR reports systems failure—requesting RTB.”

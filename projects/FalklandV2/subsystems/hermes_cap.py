@@ -1022,6 +1022,11 @@ class HermesCAP:
                     m.status = "recovering"
                     m.ts["recovering"] = t
                     m.ts["ready_again"] = t + self.pair_rearm_refuel_s
+                    try:
+                        from . import webcore as _core  # late import to avoid cycles
+                        _core.stamp_cap_recovery()
+                    except Exception:
+                        pass
             elif m.status == "recovering":
                 if t >= (m.ts.get("ready_again") or t):
                     m.status = "complete"

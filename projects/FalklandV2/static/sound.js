@@ -124,6 +124,7 @@
   }catch(_){ }
 
   function _shouldPlay(channel, guard){
+    if(introActive) return false;
     if(IGNORE_MUTE) return true;
     if(guard) return true;
     if(channel === 6) return true;
@@ -179,7 +180,12 @@
   // Require a user gesture once to satisfy autoplay policies
   const unlockOnce = () => {
     unlocked = true;
-    startBridge();
+    if(queuedIntro){
+      try{ queuedIntro(); }catch(_){ }
+      queuedIntro = null;
+    }else if(!introActive && bridgeReady){
+      startBridge();
+    }
     drainRadioQueue();
     window.removeEventListener("pointerdown", unlockOnce);
     window.removeEventListener("keydown", unlockOnce);
@@ -190,8 +196,11 @@
   // Keep ambience alive across visibility changes
   document.addEventListener("visibilitychange", () => {
     if (!unlocked) return;
-    if (document.visibilityState === "visible") startBridge();
-    else stopBridge();
+    if (document.visibilityState === "visible") {
+      if (!introActive && !queuedIntro && bridgeReady) startBridge();
+    } else {
+      stopBridge();
+    }
   });
 
   // ---- Weapon launch/result playback (edge-trigger) ----
@@ -203,7 +212,14 @@
   let lastAlarm = null;
   let alarmAudio = null;
   let lastCapLaunch = null;
+  let lastCapRecovery = null;
+  let lastIntro = null;
+  let queuedIntro = null;
   let lastEnemyBomb = null;
+  let introActive = false;
+  let bridgeReady = true;
+  let introAudio = null;
+  window.__introActive = false;
   let duckUntil = 0;
   let SFX_GAIN = 1.0; // global multiplier for SFX/ambience
 
@@ -347,6 +363,7 @@
   }
 
   function drainRadioQueue(){
+    if(introActive) return;
     if(radioBusy) return;
     if(!radioQueue.length) return;
     const item = radioQueue.shift();
@@ -438,7 +455,7 @@
         const ts = stamp.ts || 0;
         if (!lastStamp || lastStamp.ts !== ts || lastStamp.weapon !== key) {
           lastStamp = { weapon: key, ts };
-          if (unlocked) playOne(SOUND_MAP[key] || SOUND_MAP.weapon_launch);
+          if (!introActive && unlocked) playOne(SOUND_MAP[key] || SOUND_MAP.weapon_launch);
         }
       }
 
@@ -449,10 +466,85 @@
         const ts2 = res.ts || 0;
         if (!lastResult || lastResult.ts !== ts2 || lastResult.event !== evt) {
           lastResult = { event: evt, ts: ts2 };
-          if (unlocked && evt === 'hit') {
+          if (!introActive && unlocked && evt === 'hit') {
             playOne(SOUND_MAP.hit);
           }
         }
+      }
+
+      // Intro sequence (one-shot)
+      const intro = j?.audio?.intro;
+      if (intro) {
+        const tsIntro = intro.ts || 0;
+        if (!lastIntro || lastIntro.ts !== tsIntro) {
+          const file = intro.file || '/data/sounds/intro.wav';
+          const vol = Number.isFinite(Number(intro.vol)) ? Number(intro.vol) : 0.8;
+          const onEndUrl = intro.on_end_url || null;
+          const startBridgeFlag = intro.start_bridge !== false;
+          const playIntro = () => {
+            introActive = true;
+            bridgeReady = false;
+            window.__introActive = true;
+            try{ window.dispatchEvent(new CustomEvent('intro:start')); }catch(_){ }
+            stopBridge();
+            try { if (introAudio) { introAudio.pause(); } } catch(_) {}
+            introAudio = new Audio(file.startsWith('/') ? file : (BASE + file));
+            introAudio.volume = Math.max(0, Math.min(1, vol));
+            introAudio.loop = false;
+            const finish = (() => {
+              let called = false;
+              return () => {
+                if (called) return;
+                called = true;
+                introActive = false;
+                bridgeReady = true;
+                if (introAudio) {
+                  try { introAudio.pause(); introAudio.currentTime = 0; } catch(_) {}
+                  introAudio = null;
+                }
+                window.__introActive = false;
+                try{ window.dispatchEvent(new CustomEvent('intro:end')); }catch(_){ }
+                if (startBridgeFlag) startBridge();
+                if (onEndUrl) { try { fetch(String(onEndUrl), { method:'POST' }); } catch(_) {} }
+                drainRadioQueue();
+              };
+            })();
+            introAudio.addEventListener('ended', finish, { once:true });
+            introAudio.addEventListener('error', finish, { once:true });
+            const playPromise = introAudio.play();
+            if (playPromise && typeof playPromise.catch === 'function') {
+              playPromise.catch(() => finish());
+            }
+          };
+          if (unlocked) {
+            playIntro();
+          } else {
+            window.__introActive = true;
+            try { window.dispatchEvent(new CustomEvent('intro:start')); } catch(_){}
+            queuedIntro = playIntro;
+          }
+          lastIntro = { ts: tsIntro };
+        }
+      } else {
+        const waveInfo = j?.wave;
+        if (waveInfo) {
+          bridgeReady = true;
+          if (window.__introActive) {
+            window.__introActive = false;
+            window.dispatchEvent(new CustomEvent('intro:end'));
+          }
+        } else if (!introActive) {
+          bridgeReady = true;
+          if (window.__introActive) {
+            window.__introActive = false;
+            window.dispatchEvent(new CustomEvent('intro:end'));
+          }
+        }
+      }
+
+      if (queuedIntro && unlocked && !introActive) {
+        queuedIntro();
+        queuedIntro = null;
       }
 
       // 3) Radio speech (serialized)
@@ -514,7 +606,16 @@
         const ts5 = cap.ts || 0;
         if (!lastCapLaunch || lastCapLaunch.ts !== ts5) {
           lastCapLaunch = { ts: ts5 };
-          if (unlocked) playRadio(cap.file || 'SHAR.wav', {vol: Number(cap.vol || 0.1), fadeOutMs: Number(cap.fade_s || 2.0)*1000, fadeInMs: Number(cap.fade_in_ms || 0), onEndUrl: (cap.on_end_url || null)});
+          if (!introActive && unlocked) playRadio(cap.file || 'SHAR.wav', {vol: Number(cap.vol || 0.1), fadeOutMs: Number(cap.fade_s || 2.0)*1000, fadeInMs: Number(cap.fade_in_ms || 0), onEndUrl: (cap.on_end_url || null)});
+        }
+      }
+
+      const capRecovery = j?.audio?.cap_recovery;
+      if (capRecovery) {
+        const tsRecovery = capRecovery.ts || 0;
+        if (!lastCapRecovery || lastCapRecovery.ts !== tsRecovery) {
+          lastCapRecovery = { ts: tsRecovery };
+          if (!introActive && unlocked) playRadio(capRecovery.file || 'SHAR_landing.wav', {vol: Number(capRecovery.vol || 0.12), fadeOutMs: Number(capRecovery.fade_s || 2.0)*1000, fadeInMs: Number(capRecovery.fade_in_ms || 0), onEndUrl: (capRecovery.on_end_url || null)});
         }
       }
 
@@ -524,7 +625,7 @@
         const evtList = Array.isArray(enemyBomb.events) ? enemyBomb.events : [{ event: enemyBomb.event || 'miss', attempt: 1 }];
         if (!lastEnemyBomb || lastEnemyBomb.ts !== ts6) {
           lastEnemyBomb = { ts: ts6 };
-          if (unlocked) {
+          if (!introActive && unlocked) {
             evtList.forEach((ev, idx) => {
               const kind = (ev && (ev.event || ev.result) || '').toLowerCase();
               const delay = idx * 250;
@@ -606,7 +707,7 @@
         nowNear.add(c.id);
         if (!lastNear.has(c.id)) {
           // crossed inward through the threshold: cue flyby
-          playOne(SOUND_MAP.flyby);
+          if (!introActive && unlocked) playOne(SOUND_MAP.flyby);
         }
       }
     }

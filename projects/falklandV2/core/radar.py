@@ -15,7 +15,7 @@ Falklands V3 — Radar & Contacts (integrated module)
 from __future__ import annotations
 import math, random, time
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 
 # --- World constants (match engine) ------------------------------------------
 WORLD_N = 40
@@ -76,7 +76,7 @@ class Radar:
         self.rec = rec
         self.rng = rng or random.Random()
         self.cfg = {
-            "scan_interval_s": 180,
+            "scan_interval_s": 360,
             "no_spawn_nm": [15.0, 20.0],
             "surprise_nm": 10.0,
             "offboard_max_nm": 40.0,
@@ -87,6 +87,7 @@ class Radar:
         if cfg: self.cfg.update(cfg)
         self.contacts: List[Contact] = []
         self._accum = 0.0
+        self._pending_detection: Set[int] = set()
         self._next_id = 1
         self.priority_id: Optional[int] = None
         self._manual_lock = False
@@ -112,11 +113,38 @@ class Radar:
             self.contacts = self.contacts[: self.cfg["max_contacts"]]
 
     def scan(self, own_x: float, own_y: float):
-        if self.rec: self.rec.log("radar.scan", {"interval_s": self.cfg["scan_interval_s"]})
+        if self.rec:
+            self.rec.log("radar.scan", {"interval_s": self.cfg["scan_interval_s"]})
+        self._flush_pending_detections()
         roll = self.rng.randint(1, 6)
         surprise = (roll == 1)
         if roll >= 5 or surprise:
             self._spawn_attempt(own_x, own_y, surprise=surprise)
+
+    def _flush_pending_detections(self) -> None:
+        if not self._pending_detection:
+            return
+        for cid in list(self._pending_detection):
+            contact = next((c for c in self.contacts if int(getattr(c, 'id', -1)) == int(cid)), None)
+            if contact is None:
+                self._pending_detection.discard(cid)
+                continue
+            if self.rec:
+                cls = ''
+                try:
+                    cls = str(contact.meta.get('class')) if isinstance(contact.meta, dict) else ''
+                except Exception:
+                    cls = ''
+                self.rec.log("radar.contact.new", {
+                    "id": contact.id,
+                    "name": contact.name,
+                    "allegiance": contact.allegiance,
+                    "class": cls,
+                    "world_xy": [round(contact.x, 2), round(contact.y, 2)],
+                    "course_deg": contact.course_deg,
+                    "speed_kts": contact.speed_kts * HOSTILE_SPEED_SCALE,
+                })
+            self._pending_detection.discard(cid)
 
     # internals
     def _spawn_attempt(self, own_x: float, own_y: float, surprise: bool = False):
@@ -154,7 +182,10 @@ class Radar:
             id=self._next_id, name=name, allegiance="Hostile",
             x=x, y=y, course_deg=course_deg, speed_kts=float(speed),
             threat="high" if name in ("Super Etendard", "Mirage III") else "medium",
-            meta={"spawn": {"bearing_deg": round(bearing_deg,1), "range_nm": round(r,2), "surprise": surprise}}
+            meta={
+                "spawn": {"bearing_deg": round(bearing_deg,1), "range_nm": round(r,2), "surprise": surprise},
+                "class": name,
+            }
         )
         self._next_id += 1
         self.contacts.append(c)
@@ -174,11 +205,7 @@ class Radar:
                     "max_contacts": self.cfg["max_contacts"]
                 }
             })
-            self.rec.log("radar.contact.new", {
-                "id": c.id, "name": c.name, "allegiance": c.allegiance,
-                "world_xy": [round(c.x,2), round(c.y,2)], "course_deg": c.course_deg,
-                "speed_kts": c.speed_kts * HOSTILE_SPEED_SCALE
-            })
+        self._pending_detection.add(c.id)
 
     def set_manual_lock(self, contact_id: Optional[int]) -> None:
         if contact_id is None:

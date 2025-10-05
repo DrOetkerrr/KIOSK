@@ -665,6 +665,14 @@ class MainWindow(QMainWindow):
                 self._play_sound(file, volume=float(cap.get('vol') or 0.25))
         except Exception:
             pass
+        try:
+            landing = audio.get('cap_recovery')
+            if landing and (self._last_stamps.get('cap_rec_ts') != landing.get('ts')):
+                self._last_stamps['cap_rec_ts'] = landing.get('ts')
+                file = str(landing.get('file') or 'SHAR_landing.wav')
+                self._play_sound(file, volume=float(landing.get('vol') or 0.25))
+        except Exception:
+            pass
 
     def _sound_map(self) -> Dict[str, str]:
         return {

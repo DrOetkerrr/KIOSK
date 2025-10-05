@@ -78,6 +78,7 @@ class GameRuntime:
         self.trigger_alarm = core.trigger_alarm
         self.clear_alarm = core.clear_alarm
         self.stamp_cap_launch = core.stamp_cap_launch
+        self.stamp_cap_recovery = core.stamp_cap_recovery
         self.load_alarm_cfg = core.load_alarm_cfg
         self.log_dir = core.LOG_DIR
         self.flight_path = core.FLIGHT_PATH
@@ -118,6 +119,7 @@ class GameRuntime:
                     self.mission._mission_def['duration_s'] = float(self.wave_schedule.total_duration_s)
             except Exception:
                 pass
+        self._mission_settings_cache = self.mission.current_settings()
         self._last_engine_tick_ts: float = now
         self._last_radar_tick_ts: float = now
         self._mission_settings_cache = self.mission.current_settings()
@@ -216,13 +218,10 @@ class GameRuntime:
         except Exception:
             pass
         try:
-            if self.allow_hostile_contacts():
-                radar.seed_test_contacts(seed_x, seed_y, count=4)
-            else:
-                bearings = (45.0, 315.0, 90.0)
-                for bearing in bearings:
-                    rng_nm = random.uniform(6.0, 12.0)
-                    radar.force_spawn(seed_x, seed_y, 'Friendly', bearing, rng_nm)
+            bearings = (45.0, 315.0, 90.0)
+            for bearing in bearings:
+                rng_nm = random.uniform(6.0, 12.0)
+                radar.force_spawn(seed_x, seed_y, 'Friendly', bearing, rng_nm)
         except Exception:
             pass
         self._apply_mission_contact_filters(radar)
@@ -441,10 +440,13 @@ class GameRuntime:
                 self._apply_mission_contact_filters(self.radar)
             elif not prev_hostiles and new_hostiles:
                 ox, oy = self._own_xy()
-                try:
-                    self.radar.seed_test_contacts(ox, oy, count=4)
-                except Exception:
-                    pass
+                bearings = (45.0, 315.0, 90.0)
+                for bearing in bearings:
+                    try:
+                        rng_nm = random.uniform(6.0, 12.0)
+                        self.radar.force_spawn(ox, oy, 'Friendly', bearing, rng_nm)
+                    except Exception:
+                        continue
         except Exception:
             pass
         self._apply_mission_contact_filters(self.radar)
@@ -513,6 +515,7 @@ class GameRuntime:
                 "radio": None,
                 "alarm": None,
                 "cap_launch": None,
+                "cap_recovery": None,
                 "enemy_bomb": None,
                 "shots_in_flight": [],
             })
@@ -530,6 +533,7 @@ class GameRuntime:
                         self.mission._mission_def['duration_s'] = float(self.wave_schedule.total_duration_s)
                 except Exception:
                     pass
+            self._mission_settings_cache = self.mission.current_settings()
             self._last_radar_tick_ts = now
             self._sync_engine_contacts()
         self._rebind()

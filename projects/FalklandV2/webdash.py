@@ -81,6 +81,7 @@ _bp_safe_register('projects.falklandV2.routes.flight')
 _bp_safe_register('projects.falklandV2.routes.eng')
 _bp_safe_register('projects.falklandV2.routes.resupply')
 _bp_safe_register('projects.falklandV2.routes.mission')
+_bp_safe_register('projects.falklandV2.routes.audio')
 
 # --- Fallbacks for critical routes when a blueprint fails to load ---
 def _ensure_cap_fallbacks():
@@ -357,6 +358,7 @@ def _reset_audio_state() -> None:
         "radio": None,
         "alarm": None,
         "cap_launch": None,
+        "cap_recovery": None,
         "enemy_bomb": None,
         "shots_in_flight": [],
     }
@@ -459,7 +461,7 @@ def _reset_runtime_globals() -> None:
 
 def _bind_runtime(rt: GameRuntime) -> None:
     global ENG, STATE_LOCK, AUDIO_STATE, record_flight, record_radio
-    global trigger_alarm, clear_alarm, stamp_cap_launch
+    global trigger_alarm, clear_alarm, stamp_cap_launch, stamp_cap_recovery
     global LOG_DIR, FLIGHT_PATH, FLIGHT_MAX_BYTES
     global DATA_DIR, STATE_DIR, AMMO_PATH, ARMING_PATH, WEAP_CATALOG_PATH
     global CONTACTS_PATH, CREW_PATH, ALARM_CFG_PATH, HEALTH_PATH
@@ -478,6 +480,7 @@ def _bind_runtime(rt: GameRuntime) -> None:
     trigger_alarm = rt.trigger_alarm
     clear_alarm = rt.clear_alarm
     stamp_cap_launch = rt.stamp_cap_launch
+    stamp_cap_recovery = rt.stamp_cap_recovery
 
     LOG_DIR = rt.log_dir
     FLIGHT_PATH = rt.flight_path
@@ -978,7 +981,7 @@ try:
 except Exception:
     ox0, oy0 = (float(WORLD_N) / 2.0, float(WORLD_N) / 2.0)
 try:
-    RADAR.seed_test_contacts(float(ox0), float(oy0), count=4)
+    core.spawn_initial_friendlies(sys.modules[__name__])  # type: ignore[attr-defined]
 except Exception:
     pass
 
@@ -1350,7 +1353,7 @@ def _audio_key_from_cap_rtb(ctx: Dict[str, Any]) -> str | None:
     reason = str((ctx or {}).get('reason') or '').lower()
     if reason == 'winchester':
         return 'SHAR_WINCHESTER'
-    return 'SHAR_FINAL_APPROACH'
+    return 'SHAR_RETURNING'
 
 
 def _weapon_kind(name: str) -> str:

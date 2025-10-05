@@ -6,6 +6,14 @@ const $ = (sel)=>document.querySelector(sel);
 const $$ = (sel)=>document.querySelectorAll(sel);
 const fmt = (v, d=0)=> (v===undefined||v===null) ? '—' : Number(v).toFixed(d);
 const text = (el, s)=>{ el.textContent = s; };
+const introOverlay = document.getElementById('intro-overlay');
+function showIntroOverlay(){ if(introOverlay) introOverlay.classList.remove('hidden'); }
+function hideIntroOverlay(){ if(introOverlay) introOverlay.classList.add('hidden'); }
+if(introOverlay){
+  if(window.__introActive){ showIntroOverlay(); }
+  window.addEventListener('intro:start', showIntroOverlay);
+  window.addEventListener('intro:end', hideIntroOverlay);
+}
 function rowEl(cells){
   const tr=document.createElement('tr');
   cells.forEach(c=>{

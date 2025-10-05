@@ -52,7 +52,7 @@ let ST = {
   wpn: { lockInput: '' },
   events: [],
   eventHistory: [],
-  eventKeys: { launch: null, result: null, cap: null },
+  eventKeys: { launch: null, result: null, cap: null, capRecover: null },
   power: {},
   radar: {}
 };
@@ -1014,7 +1014,7 @@ function pushEvent(kind, text){
 
 function trackEvents(j){
   try{
-    if(!ST.eventKeys) ST.eventKeys = { launch: null, result: null, cap: null };
+    if(!ST.eventKeys) ST.eventKeys = { launch: null, result: null, cap: null, capRecover: null };
     if(Array.isArray(j.events)){
       ST.eventHistory = j.events.map(function(ev){
         return {
@@ -1044,6 +1044,14 @@ function trackEvents(j){
       if(ST.eventKeys.cap !== key){
         ST.eventKeys.cap = key;
         pushEvent('cap','Aircraft launched (CAP)');
+      }
+    }
+    const capRecovery = audio.cap_recovery;
+    if(capRecovery && capRecovery.ts){
+      const key = 'capRecover:'+String(capRecovery.ts);
+      if(ST.eventKeys.capRecover !== key){
+        ST.eventKeys.capRecover = key;
+        pushEvent('cap','Aircraft recovered (CAP)');
       }
     }
     const result = audio.last_result;
@@ -1112,6 +1120,12 @@ function renderNAV(j){
     if(typeof val === 'number') return String(val);
     return '';
   }
+
+  const waveInfo = (j && j.wave && typeof j.wave === 'object') ? j.wave : null;
+  const waveLabel = cleanText(waveInfo && waveInfo.label);
+  const waveIndex = (waveInfo && typeof waveInfo.index === 'number') ? waveInfo.index : null;
+  const waveCount = (waveInfo && typeof waveInfo.count === 'number') ? waveInfo.count : null;
+  const waveDirection = cleanText(waveInfo && waveInfo.direction);
 
   function statusClassFor(key){
     switch(key){
@@ -1195,7 +1209,7 @@ function renderNAV(j){
   if(missionData){
     const head=document.createElement('div'); head.className='nav-mission-head';
     const title=document.createElement('div'); title.className='nav-mission-title';
-    const labelText = cleanText(missionData.label) || 'Mission';
+    const labelText = waveLabel ? `Mission: ${waveLabel}` : (cleanText(missionData.label) || 'Mission');
     title.textContent = labelText;
     head.appendChild(title);
 
@@ -1229,6 +1243,19 @@ function renderNAV(j){
     }
     if(missionData.id !== undefined && missionData.id !== null){
       const idSpan=document.createElement('span'); idSpan.textContent=`ID ${missionData.id}`; meta.appendChild(idSpan);
+    }
+    if(waveLabel){
+      const waveSpan=document.createElement('span');
+      if(waveIndex !== null && waveCount !== null){
+        waveSpan.textContent = `Wave ${waveIndex + 1} of ${waveCount}`;
+      }else{
+        waveSpan.textContent = waveLabel;
+      }
+      meta.appendChild(waveSpan);
+    }
+    if(waveDirection){
+      const dirSpan=document.createElement('span'); dirSpan.textContent=`Heading ${waveDirection}`;
+      meta.appendChild(dirSpan);
     }
     missionCard.appendChild(meta);
 
@@ -1280,10 +1307,22 @@ function renderNAV(j){
       }
     }
   }else{
-    const emptyTitle=document.createElement('div'); emptyTitle.className='nav-mission-title muted'; emptyTitle.textContent='No active mission';
+    const emptyTitle=document.createElement('div'); emptyTitle.className='nav-mission-title'+(waveLabel? '':' muted');
+    emptyTitle.textContent= waveLabel ? `Mission: ${waveLabel}` : 'No active mission';
     missionCard.appendChild(emptyTitle);
-    const emptyNote=document.createElement('div'); emptyNote.className='nav-mission-empty'; emptyNote.textContent='Mission updates will appear here once an operation begins.';
-    missionCard.appendChild(emptyNote);
+    if(waveLabel){
+      const waveMeta=document.createElement('div'); waveMeta.className='nav-mission-meta mono';
+      if(waveIndex !== null && waveCount !== null){
+        const seq=document.createElement('span'); seq.textContent=`Wave ${waveIndex + 1} of ${waveCount}`; waveMeta.appendChild(seq);
+      }
+      if(waveDirection){
+        const dir=document.createElement('span'); dir.textContent=`Heading ${waveDirection}`; waveMeta.appendChild(dir);
+      }
+      missionCard.appendChild(waveMeta);
+    }else{
+      const emptyNote=document.createElement('div'); emptyNote.className='nav-mission-empty'; emptyNote.textContent='Mission updates will appear here once an operation begins.';
+      missionCard.appendChild(emptyNote);
+    }
   }
 
   p.appendChild(missionCard);
@@ -1464,7 +1503,7 @@ function missionPowerPreset(settings){
   }
   if(settings.stations_offline){
     const defaults={};
-    STATION_KEYS.forEach(function(key){ if(key!=='NAV') defaults[key] = false; });
+    STATION_KEYS.forEach(function(key){ defaults[key] = false; });
     return defaults;
   }
   return null;

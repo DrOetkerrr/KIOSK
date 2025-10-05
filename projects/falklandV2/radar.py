@@ -21,14 +21,13 @@ Falklands V3 — Radar & Contacts (integrated module)
 from __future__ import annotations
 import math, random, time, json, os
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any, Tuple, Callable
+from typing import List, Optional, Dict, Any, Tuple, Callable, Set
 
 try:
-    from projects.falklandV2.subsystems.spawn_waves import WaveSchedule, WaveEnemy, WaveDefinition
+    from projects.falklandV2.subsystems.spawn_waves import WaveSchedule, WaveEnemy
 except Exception:
     WaveSchedule = None  # type: ignore
     WaveEnemy = Any  # type: ignore
-    WaveDefinition = Any  # type: ignore
 
 # --- World constants (match engine) ------------------------------------------
 WORLD_N = 40
@@ -223,7 +222,7 @@ class Radar:
         self.rec = rec
         self.rng = rng or random.Random()
         self.cfg = {
-            "scan_interval_s": 180,
+            "scan_interval_s": 360,
             "no_spawn_nm": [15.0, 20.0],
             "surprise_nm": 10.0,
             "offboard_max_nm": 40.0,
@@ -241,6 +240,7 @@ class Radar:
         if cfg: self.cfg.update(cfg)
         self.contacts: List[Contact] = []
         self._accum = 0.0
+        self._pending_detection: Set[int] = set()
         self._next_id = 1
         self.priority_id: Optional[int] = None
         self._manual_lock = False
@@ -346,7 +346,34 @@ class Radar:
 
     def scan(self, own_x: float, own_y: float):
         # Scans are observational and decoupled from spawns (spawns are time-based in tick)
-        if self.rec: self.rec.log("radar.scan", {"interval_s": self.cfg["scan_interval_s"]})
+        if self.rec:
+            self.rec.log("radar.scan", {"interval_s": self.cfg["scan_interval_s"]})
+        self._flush_pending_detections()
+
+    def _flush_pending_detections(self) -> None:
+        if not self._pending_detection:
+            return
+        for cid in list(self._pending_detection):
+            contact = next((c for c in self.contacts if int(getattr(c, 'id', -1)) == int(cid)), None)
+            if contact is None:
+                self._pending_detection.discard(cid)
+                continue
+            if self.rec:
+                cls = ''
+                try:
+                    cls = str(contact.meta.get('class')) if isinstance(contact.meta, dict) else ''
+                except Exception:
+                    cls = ''
+                self.rec.log("radar.contact.new", {
+                    "id": contact.id,
+                    "name": contact.name,
+                    "allegiance": contact.allegiance,
+                    "class": cls,
+                    "world_xy": [round(contact.x, 2), round(contact.y, 2)],
+                    "course_deg": contact.course_deg,
+                    "speed_kts": contact.speed_kts * HOSTILE_SPEED_SCALE,
+                })
+            self._pending_detection.discard(cid)
 
     # internals
     def _spawn_attempt(self, own_x: float, own_y: float, surprise: bool = False):
@@ -472,7 +499,8 @@ class Radar:
             surface_meta = {'hp': 4.0, 'max_hp': 4.0}
         meta = {
             "spawn": {"bearing_deg": round(bearing_deg,1), "range_nm": round(r,2), "surprise": surprise, "allegiance": allegiance},
-            "cap": self.catalog.details(name)
+            "cap": self.catalog.details(name),
+            "class": klass,
         }
         if surface_meta is not None:
             meta['surface_ship'] = surface_meta
@@ -521,11 +549,20 @@ class Radar:
                     "friendly_prob": self.cfg.get("friendly_prob", 0.3),
                 }
             })
-            self.rec.log("radar.contact.new", {
-                "id": c.id, "name": c.name, "allegiance": c.allegiance, "class": klass,
-                "world_xy": [round(c.x,2), round(c.y,2)], "course_deg": c.course_deg,
-                "speed_kts": c.speed_kts * HOSTILE_SPEED_SCALE
-            })
+        if str(allegiance).lower() == 'hostile':
+            self._pending_detection.add(c.id)
+        else:
+            if self.rec:
+                cls = str(klass)
+                self.rec.log("radar.contact.new", {
+                    "id": c.id,
+                    "name": c.name,
+                    "allegiance": c.allegiance,
+                    "class": cls,
+                    "world_xy": [round(c.x, 2), round(c.y, 2)],
+                    "course_deg": c.course_deg,
+                    "speed_kts": c.speed_kts * HOSTILE_SPEED_SCALE,
+                })
 
     def force_spawn(self, own_x: float, own_y: float, allegiance: str, bearing_deg: float, range_nm: float) -> Contact:
         r = float(range_nm)
@@ -546,7 +583,8 @@ class Radar:
             surface_meta = {'hp': 4.0, 'max_hp': 4.0}
         meta = {
             "spawn": {"bearing_deg": round(float(bearing_deg),1), "range_nm": round(r,2), "surprise": False, "forced": True},
-            "cap": self.catalog.details(name)
+            "cap": self.catalog.details(name),
+            "class": klass,
         }
         if surface_meta is not None:
             meta['surface_ship'] = surface_meta
@@ -558,6 +596,21 @@ class Radar:
         )
         self._next_id += 1
         self.contacts.append(c)
+        if allegiance_norm.lower() == 'hostile':
+            self._pending_detection.add(c.id)
+        elif self.rec:
+            try:
+                self.rec.log("radar.contact.new", {
+                    "id": c.id,
+                    "name": c.name,
+                    "allegiance": c.allegiance,
+                    "class": str(klass),
+                    "world_xy": [round(c.x, 2), round(c.y, 2)],
+                    "course_deg": c.course_deg,
+                    "speed_kts": c.speed_kts * HOSTILE_SPEED_SCALE,
+                })
+            except Exception:
+                pass
         if self.rec:
             try:
                 # include a display cell (board A..Z + 1..26) derived from world (y=row, x=col)

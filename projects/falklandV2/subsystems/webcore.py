@@ -565,6 +565,7 @@ AUDIO_STATE: Dict[str, Any] = {
     "radio": None,
     "alarm": None,
     "cap_launch": None,
+    "cap_recovery": None,
     "enemy_bomb": None,
     "shots_in_flight": []
 }
@@ -600,7 +601,7 @@ def clear_alarm() -> None:
         pass
 
 
-def stamp_cap_launch(sound_file: str = "SHAR.wav", volume: float = 0.10, fade_s: float = 2.0, *, fade_in_ms: int | float | None = None, on_end_url: str | None = None) -> None:
+def _stamp_cap_audio(slot: str, sound_file: str, volume: float, fade_s: float, *, fade_in_ms: int | float | None = None, on_end_url: str | None = None) -> None:
     try:
         from .. import webdash as wd  # type: ignore
         with wd.STATE_LOCK:
@@ -615,9 +616,26 @@ def stamp_cap_launch(sound_file: str = "SHAR.wav", volume: float = 0.10, fade_s:
                     rec['on_end_url'] = str(on_end_url)
             except Exception:
                 pass
-            AUDIO_STATE['cap_launch'] = rec
+            AUDIO_STATE[slot] = rec
     except Exception:
         pass
+
+
+def stamp_cap_launch(sound_file: str = "SHAR.wav", volume: float = 0.10, fade_s: float = 2.0, *, fade_in_ms: int | float | None = None, on_end_url: str | None = None) -> None:
+    _stamp_cap_audio('cap_launch', sound_file, volume, fade_s, fade_in_ms=fade_in_ms, on_end_url=on_end_url)
+
+
+def stamp_cap_recovery(sound_file: str = "SHAR_landing.wav", volume: float = 0.12, fade_s: float = 2.0, *, fade_in_ms: int | float | None = None, on_end_url: str | None = None) -> None:
+    selected = str(sound_file)
+    try:
+        candidate = Path(selected)
+        if not candidate.is_absolute():
+            data_sound = (DATA_DIR / 'sounds' / candidate).resolve()
+            if not data_sound.exists():
+                selected = 'SHAR.wav'
+    except Exception:
+        selected = str(sound_file)
+    _stamp_cap_audio('cap_recovery', selected, volume, fade_s, fade_in_ms=fade_in_ms, on_end_url=on_end_url)
 
 
 # ---- Grid conversion (canonical AA00 on 40×40; captain sub-board 30×30) ----
@@ -1381,8 +1399,7 @@ def spawn_initial_friendlies(wd) -> None:
         if getattr(wd.RADAR, 'contacts', None):
             return
         friend_bearings = (45.0, 315.0)
-        hostile_bearings = (135.0, 225.0)
-        allow_hostiles = _mission_hostiles_allowed(wd)
+        allow_hostiles = False
 
         for b in friend_bearings:
             try:
@@ -1391,14 +1408,14 @@ def spawn_initial_friendlies(wd) -> None:
             except Exception:
                 continue
 
-        for b in hostile_bearings:
-            if not allow_hostiles:
-                break
-            try:
-                r = random.uniform(10.0, 18.0)
-                wd.RADAR.force_spawn(own_x, own_y, 'Hostile', bearing_deg=b, range_nm=r)
-            except Exception:
-                continue
+        if allow_hostiles:
+            hostile_bearings = (135.0, 225.0)
+            for b in hostile_bearings:
+                try:
+                    r = random.uniform(10.0, 18.0)
+                    wd.RADAR.force_spawn(own_x, own_y, 'Hostile', bearing_deg=b, range_nm=r)
+                except Exception:
+                    continue
     except Exception:
         pass
 
@@ -1596,9 +1613,79 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
 
                 rng = None
                 if tx is not None and ty is not None:
-                    dx = float(tx) - float(own_x)
-                    dy = float(ty) - float(own_y)
-                    rng = math.hypot(dx, dy)
+                    # Distance from Hermes to the target/contact
+                    dx_ht = float(tx) - float(own_x)
+                    dy_ht = float(ty) - float(own_y)
+                    rng = math.hypot(dx_ht, dy_ht)
+
+                aircraft_range_nm = None
+                origin_xy = _as_xy(m.get('origin_xy')) or _as_xy((meta_rec or {}).get('origin_xy'))
+                if not origin_xy and origin_cell:
+                    origin_xy = _cell_to_xy(origin_cell)
+                if target_cell and target_cell != '—':
+                    target_xy_from_cell = _cell_to_xy(target_cell)
+                else:
+                    target_xy_from_cell = None
+                target_xy = None
+                if target_contact is not None:
+                    try:
+                        target_xy = (float(getattr(target_contact, 'x', own_x)), float(getattr(target_contact, 'y', own_y)))
+                    except Exception:
+                        target_xy = None
+                if target_xy is None:
+                    target_xy = target_xy_from_cell
+
+                if status_lc in ('queued', 'recovering', 'complete'):
+                    aircraft_range_nm = 0.0 if target_xy is not None else None
+                elif status_lc in ('airborne', 'onstation', 'cap'):
+                    try:
+                        pos_xy = _as_xy((meta_rec or {}).get('cur_xy'))
+                        if pos_xy is None and pos_cell:
+                            pos_xy = _cell_to_xy(pos_cell)
+                        if pos_xy is None:
+                            est_cell = _estimated_pos_cell()
+                            if est_cell and est_cell != '—':
+                                pos_xy = _cell_to_xy(est_cell)
+                    except Exception:
+                        pos_xy = None
+                    if pos_xy is None and origin_xy and target_xy:
+                        try:
+                            ts_local = (m.get('timestamps') or {})
+                            start_xy = _as_xy(ts_local.get('vector_start_xy')) or origin_xy
+                            start_ts = ts_local.get('airborne', ts_local.get('launch', ts_local.get('created')))
+                            if ts_local.get('vector_start_time') is not None:
+                                start_ts = ts_local.get('vector_start_time')
+                            eta_on = ts_local.get('eta_onstation')
+                            prog = _progress(now, start_ts, eta_on) if eta_on is not None else None
+                            if prog is None:
+                                prog = 0.0
+                            px = start_xy[0] + (target_xy[0] - start_xy[0]) * prog
+                            py = start_xy[1] + (target_xy[1] - start_xy[1]) * prog
+                            pos_xy = (px, py)
+                        except Exception:
+                            pos_xy = None
+                    if pos_xy is not None and target_xy is not None:
+                        aircraft_range_nm = math.hypot(float(target_xy[0]) - float(pos_xy[0]), float(target_xy[1]) - float(pos_xy[1]))
+                elif status_lc == 'rtb':
+                    if origin_xy is not None:
+                        try:
+                            ts_local = (m.get('timestamps') or {})
+                            start_ts = ts_local.get('rtb', ts_local.get('etd_rtb'))
+                            eta_rec = ts_local.get('eta_recovery')
+                            prog = _progress(now, start_ts, eta_rec) if eta_rec is not None else None
+                            if prog is None:
+                                prog = 0.0
+                            mid_xy = target_xy if target_xy is not None else target_xy_from_cell or origin_xy
+                            px = mid_xy[0] + (origin_xy[0] - mid_xy[0]) * prog
+                            py = mid_xy[1] + (origin_xy[1] - mid_xy[1]) * prog
+                            aircraft_range_nm = math.hypot(float(origin_xy[0]) - float(px), float(origin_xy[1]) - float(py))
+                            target_xy = mid_xy
+                        except Exception:
+                            aircraft_range_nm = None
+
+                display_range_nm = rng
+                if aircraft_range_nm is not None:
+                    display_range_nm = aircraft_range_nm
 
                 if loadout_lower == 'aim9' and status_lc in ('queued', 'airborne', 'onstation', 'rtb', 'recovering'):
                     try:
@@ -1762,7 +1849,7 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
                     "target_name": target_name,
                     "target_label": target_label,
                     "target_id": target_id,
-                    "range_nm": (round(float(rng), 1) if isinstance(rng, (int, float)) and rng is not None else None),
+                    "range_nm": (round(float(display_range_nm), 1) if isinstance(display_range_nm, (int, float)) and display_range_nm is not None else None),
                     "status": status,
                     "tot_s": tot_s,
                     "tos_s": tos_s,
