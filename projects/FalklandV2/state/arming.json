@@ -1,7 +1,10 @@
 {
   "MM38 Exocet": "Safe",
   "4.5 inch Mk.8 gun": "Safe",
-  "Sea Dart SAM": "Safe",
+  "Sea Dart SAM": {
+    "armed": true,
+    "arming_until": 0.0
+  },
   "20mm Oerlikon": "Safe",
   "20mm GAM-BO1 (twin)": "Safe",
   "Corvus chaff": "Safe"

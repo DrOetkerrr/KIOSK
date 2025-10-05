@@ -1233,26 +1233,33 @@ def _tts_synthesize(text: str, role: str) -> str | None:
     except Exception:
         pass
 
-    if provider == 'macos':  # pragma: no cover
+    import shutil, subprocess
+
+    def _macos_try(voice_hint: str) -> str | None:  # pragma: no cover
         try:
+            if not shutil.which('say'):
+                return None
+            voice_name = voice_hint or os.environ.get('TTS_MACOS_VOICE', 'Daniel')
             fname, aiff = _hash_name('aiff')
-            if (TTS_DIR / (fname[:-5] + 'm4a')).exists():
-                return f"/data/tts/{fname[:-5] + 'm4a'}"
-            if not aiff.exists():
-                import subprocess
-                subprocess.run(["say", "-v", voice_id or 'Daniel', "-o", str(aiff), txt], check=True, timeout=20)
             m4a = TTS_DIR / (fname[:-5] + 'm4a')
-            try:
-                import subprocess
-                subprocess.run(["afconvert", str(aiff), str(m4a), "-f", "mp4f", "-d", "aac"], check=True, timeout=20)
+            if m4a.exists():
                 return f"/data/tts/{m4a.name}"
+            if not aiff.exists():
+                subprocess.run(["say", "-v", voice_name, "-o", str(aiff), txt], check=True, timeout=20)
+            try:
+                if shutil.which('afconvert'):
+                    subprocess.run(["afconvert", str(aiff), str(m4a), "-f", "mp4f", "-d", "aac"], check=True, timeout=20)
+                    return f"/data/tts/{m4a.name}"
             except Exception:
-                return f"/data/tts/{fname}"
+                logging.warning("macOS afconvert failed; falling back to AIFF", exc_info=True)
+            return f"/data/tts/{aiff.name}"
         except Exception as e:
             logging.warning("macOS TTS error: %s", e)
             return None
+
+    if provider == 'macos':
+        return _macos_try(voice_id or 'Daniel')
     if provider == 'piper':  # pragma: no cover
-        import shutil, subprocess
         try:
             piper_bin = os.environ.get('TTS_PIPER_BIN', 'piper')
             if not shutil.which(piper_bin):
@@ -1330,6 +1337,9 @@ def _tts_synthesize(text: str, role: str) -> str | None:
         return None
     key = os.environ.get('OPENAI_API_KEY')
     if not key or requests is None:
+        fallback = _macos_try(voice_id or 'Daniel')
+        if fallback:
+            return fallback
         return None
     model = os.environ.get('OPENAI_TTS_MODEL', 'gpt-4o-mini-tts')
     voice = voice_id or os.environ.get('OPENAI_TTS_VOICE', 'alloy')
@@ -1359,10 +1369,16 @@ def _tts_synthesize(text: str, role: str) -> str | None:
             return f"/data/tts/{fname}"
         else:
             logging.warning("OpenAI TTS failed %s: %s", r.status_code, r.text[:200])
+            fallback = _macos_try(voice_id or 'Daniel')
+            if fallback:
+                return fallback
             return None
     except Exception as e:
         logging.warning("OpenAI TTS error: %s", e)
-        return None
+        fallback = _macos_try(voice_id or 'Daniel')
+        if fallback:
+            return fallback
+    return None
 
 
 # ---- Debug contacts storage ----
