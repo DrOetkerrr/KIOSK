@@ -53,11 +53,10 @@
     {
       "id": "Hull",
       "name": "Hull",
-      "status": "Offline",
+      "status": "OK",
       "timer_s": 0,
       "team_assigned": false,
-      "last_damaged_ts": 1759492855.614731,
-      "response_deadline_ts": 1759492975.614731
+      "last_damaged_ts": 0.0
     }
   ]
 }

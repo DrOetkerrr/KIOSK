@@ -132,6 +132,19 @@ class CAPMission:
         self.permission_last_prompt_ts: float = 0.0
         self.permission_hold_since_ts: Optional[float] = None
 
+        # Operational hazard tracking (set by HermesCAP)
+        self.sortie_index: Optional[int] = None
+        self.hazard_state: Optional[str] = None
+        self.hazard_outcome: Optional[str] = None
+        self.hazard_note: Optional[str] = None
+        self.hazard_prob: float = 0.0
+        self.hazard_last_roll_ts: float = 0.0
+        self.hazard_roll_value: Optional[float] = None
+        self.hazard_event_ts: Optional[float] = None
+        self.hazard_ghost_until_ts: Optional[float] = None
+        self.hazard_airborne_minutes: float = 0.0
+        self.hazard_ineffective: bool = False
+
         # Transit times from distance (one way)
         if self.kind == "intercept":
             dash_kts = float(self.intercept_speed_kts)
@@ -178,6 +191,19 @@ class CAPMission:
                 "authorized": self.permission_authorized,
                 "last_prompt_ts": self.permission_last_prompt_ts,
                 "hold_since_ts": self.permission_hold_since_ts,
+            },
+            "sortie_index": self.sortie_index,
+            "hazard": {
+                "state": self.hazard_state,
+                "outcome": self.hazard_outcome,
+                "note": self.hazard_note,
+                "prob_per_roll": self.hazard_prob,
+                "last_roll_ts": self.hazard_last_roll_ts,
+                "roll": self.hazard_roll_value,
+                "event_ts": self.hazard_event_ts,
+                "ghost_until_ts": self.hazard_ghost_until_ts,
+                "airborne_minutes": self.hazard_airborne_minutes,
+                "ineffective": self.hazard_ineffective,
             }
         }
 
@@ -186,6 +212,10 @@ class HermesCAP:
     def __init__(self, data_path: Path, event_hook=None):
         self.data_path = data_path
         self.cfg = self._load_cfg()
+        self.hazard_cfg = self._load_hazard_cfg()
+        self._hazard_last_roll_ts: float = 0.0
+        self._hazard_sortie_count: int = 0
+        self._hazard_wave_id: Optional[str] = None
         self.airframe_pool_total = int(self.cfg.get("airframe_pool_total", 8))
         self.airframe_pool_max = max(0, self.airframe_pool_total)
         self.ready_pairs_max = int(self.cfg.get("max_ready_pairs", 2))
@@ -194,7 +224,7 @@ class HermesCAP:
         self.pair_rearm_refuel_s = int(self.cfg.get("pair_rearm_refuel_min", 25)) * 60
         self.scramble_cooldown_s = int(self.cfg.get("scramble_cooldown_min", 10)) * 60
         self.min_launch_interval_s = int(self.cfg.get("min_launch_interval_s", 30))
-        self.last_scramble: float = 0.0
+        self.last_scramble: float = float('-inf')
         self.missions: List[CAPMission] = []
         self._next_id = 1
         self._event_hook = event_hook
@@ -202,6 +232,7 @@ class HermesCAP:
         self.surge_pairs_on_task = int(self.cfg.get("surge_pairs_on_task", max(self.max_pairs_on_task, 4)))
         self.permission_timeout_s = int(self.cfg.get("permission_timeout_s", 600))
         self._permission_meta: Optional[Dict[int, Dict[str, Any]]] = None
+        self._deck_ready_ts: float = 0.0
 
         # Intercept tuning defaults
         self.intercept_speed_kts = float(self.cfg.get("intercept_speed_kts", 600))
@@ -231,6 +262,26 @@ class HermesCAP:
                 self._event_hook(event_id, data or {})
             except Exception:
                 pass
+
+    def _log_flight(self, event_id: str, data: Dict[str, Any] | None = None) -> None:
+        try:
+            from . import webcore as _core  # type: ignore
+        except Exception:
+            return
+        try:
+            payload: Dict[str, Any] = {"event": event_id}
+            if isinstance(data, dict):
+                payload.update(data)
+            _core.record_flight(payload)
+        except Exception:
+            pass
+
+    def set_wave_context(self, wave_id: Optional[str]) -> None:
+        try:
+            value = None if wave_id is None else str(wave_id).strip()
+        except Exception:
+            value = None
+        self._hazard_wave_id = value or None
 
     # ---------- runtime hooks for resolving targets and applying effects
     def bind_target_resolver(self, fn) -> None:
@@ -280,7 +331,7 @@ class HermesCAP:
         mission = self._mission_by_id(mission_id)
         if mission is None:
             return
-        t = now or time.time()
+        t = time.time() if now is None else float(now)
         mission.permission_authorized = bool(authorized)
         if authorized:
             mission.permission_hold_since_ts = None
@@ -356,18 +407,225 @@ class HermesCAP:
         except Exception:
             return {}
 
+    def _load_hazard_cfg(self) -> Dict[str, Any]:
+        f = self.data_path / "cap_hazards.json"
+        if not f.exists():
+            return {}
+        try:
+            obj = _read_json(f)
+            if isinstance(obj, dict):
+                cfg = obj.get("hazard_config", obj)
+                if isinstance(cfg, dict):
+                    return cfg
+        except Exception:
+            return {}
+        return {}
+
+    # ---------- hazard helpers
+    def _hazard_base_prob(self) -> float:
+        try:
+            return float(self.hazard_cfg.get("base_prob_per_roll", 0.0)) if self.hazard_cfg else 0.0
+        except Exception:
+            return 0.0
+
+    def _hazard_active(self) -> bool:
+        return self._hazard_base_prob() > 0.0
+
+    def _hazard_interval_s(self) -> float:
+        try:
+            minutes = float(self.hazard_cfg.get("roll_interval_min", 2.0))
+        except Exception:
+            minutes = 2.0
+        return max(30.0, minutes * 60.0)
+
+    def _hazard_ghost_window_s(self) -> float:
+        try:
+            return max(0.0, float(self.hazard_cfg.get("ghost_window_s", 120.0)))
+        except Exception:
+            return 120.0
+
+    def _hazard_wave_bonus(self) -> float:
+        mods = self.hazard_cfg.get("wave_modifiers", {})
+        if not mods:
+            return 0.0
+        key = self._hazard_wave_id
+        if not key:
+            return 0.0
+        try:
+            if isinstance(mods, dict):
+                direct = mods.get(key)
+                if direct is not None:
+                    return float(direct)
+                lowered = mods.get(str(key).lower())
+                if lowered is not None:
+                    return float(lowered)
+                titled = mods.get(str(key).title())
+                if titled is not None:
+                    return float(titled)
+        except Exception:
+            return 0.0
+        return 0.0
+
+    def _hazard_sortie_bonus(self) -> float:
+        tiers = self.hazard_cfg.get("sortie_tiers", [])
+        if not isinstance(tiers, list):
+            return 0.0
+        bonus = 0.0
+        count = int(max(0, self._hazard_sortie_count))
+        for tier in tiers:
+            if not isinstance(tier, dict):
+                continue
+            try:
+                threshold = int(tier.get("count", 0))
+                extra = float(tier.get("extra_prob", 0.0))
+            except Exception:
+                continue
+            if threshold <= 0:
+                continue
+            if count >= threshold:
+                bonus += extra
+        return bonus
+
+    def _hazard_fatigue_bonus(self, mission: CAPMission, now: float) -> float:
+        fatigue_cfg = self.hazard_cfg.get("fatigue", {})
+        if not isinstance(fatigue_cfg, dict):
+            fatigue_cfg = {}
+        try:
+            threshold_min = float(fatigue_cfg.get("airborne_minutes_threshold", 0.0))
+        except Exception:
+            threshold_min = 0.0
+        try:
+            extra_prob = float(fatigue_cfg.get("extra_prob", 0.0))
+        except Exception:
+            extra_prob = 0.0
+        try:
+            airborne_ts = float(mission.ts.get("airborne", 0.0) or 0.0)
+        except Exception:
+            airborne_ts = 0.0
+        if airborne_ts <= 0.0:
+            mission.hazard_airborne_minutes = 0.0
+            return 0.0
+        elapsed_min = max(0.0, (now - airborne_ts) / 60.0)
+        mission.hazard_airborne_minutes = elapsed_min
+        if threshold_min <= 0.0:
+            return 0.0
+        return extra_prob if elapsed_min >= threshold_min else 0.0
+
+    def _hazard_probability(self, mission: CAPMission, now: float) -> float:
+        try:
+            base = float(self.hazard_cfg.get("base_prob_per_roll", 0.0))
+        except Exception:
+            base = 0.0
+        prob = base
+        prob += self._hazard_sortie_bonus()
+        prob += self._hazard_wave_bonus()
+        prob += self._hazard_fatigue_bonus(mission, now)
+        prob = min(max(prob, 0.0), 0.5)
+        mission.hazard_prob = prob
+        return prob
+
+    def _hazard_should_keep(self, mission: CAPMission, now: float) -> bool:
+        if getattr(mission, 'status', None) != 'lost':
+            return True
+        expire = getattr(mission, 'hazard_ghost_until_ts', None)
+        if expire is None:
+            return True
+        return now < float(expire)
+
+    def _hazard_snapshot(self, now: float) -> Dict[str, Any]:
+        base = self._hazard_base_prob()
+        active = self._hazard_active()
+        interval = self._hazard_interval_s() if active else None
+        last_roll = self._hazard_last_roll_ts if self._hazard_last_roll_ts > 0 else None
+
+        next_roll_in_s = None
+        next_roll_at_ts = None
+        if active and interval:
+            if last_roll is None:
+                next_roll_in_s = interval
+                next_roll_at_ts = now + interval
+            else:
+                remaining = max(0.0, interval - (now - last_roll))
+                next_roll_in_s = remaining
+                next_roll_at_ts = now + remaining
+
+        eligible: List[Dict[str, Any]] = []
+        ghosts: List[Dict[str, Any]] = []
+        max_prob = 0.0
+        prob_sum = 0.0
+        prob_count = 0
+        ineffective_count = 0
+        losses = 0
+
+        for m in self.missions:
+            state = getattr(m, 'hazard_state', None)
+            status = getattr(m, 'status', None)
+            if state in ('deck_accident', 'inflight_loss'):
+                losses += 1
+            if getattr(m, 'hazard_ineffective', False):
+                ineffective_count += 1
+
+            if state is None and status in ('airborne', 'onstation', 'rtb'):
+                prob = self._hazard_probability(m, now)
+            else:
+                prob = getattr(m, 'hazard_prob', 0.0)
+
+            detail = {
+                "id": m.id,
+                "status": status,
+                "state": state,
+                "prob_per_roll": prob,
+                "airborne_minutes": getattr(m, 'hazard_airborne_minutes', 0.0),
+                "note": getattr(m, 'hazard_note', None),
+                "event_ts": getattr(m, 'hazard_event_ts', None),
+                "ghost_until_ts": getattr(m, 'hazard_ghost_until_ts', None),
+            }
+
+            if state is None and status in ('airborne', 'onstation', 'rtb'):
+                eligible.append(detail)
+                max_prob = max(max_prob, prob)
+                prob_sum += prob
+                prob_count += 1
+            elif state is not None:
+                ghosts.append(detail)
+
+        avg_prob = (prob_sum / prob_count) if prob_count else 0.0
+        display_prob = max_prob if max_prob > 0.0 else avg_prob
+
+        return {
+            "active": active,
+            "base_prob": base,
+            "sorties_launched": self._hazard_sortie_count,
+            "wave": self._hazard_wave_id,
+            "roll_interval_s": interval,
+            "last_roll_ts": last_roll,
+            "next_roll_in_s": next_roll_in_s,
+            "next_roll_at_ts": next_roll_at_ts,
+            "eligible": eligible,
+            "ghosts": ghosts,
+            "max_prob": max_prob,
+            "avg_prob": avg_prob,
+            "display_prob": display_prob,
+            "ineffective_count": ineffective_count,
+            "losses": losses,
+        }
+
+
     # ---------- weapon-like surface
     def readiness(self, now: Optional[float] = None) -> Dict[str, Any]:
-        t = now or time.time()
-        cd_left = max(0, int(self.scramble_cooldown_s - (t - self.last_scramble)))
-        deck_left = max(0, int(getattr(self, 'min_launch_interval_s', 0) - (t - self.last_scramble)))
+        t = time.time() if now is None else float(now)
+        cooldown_ready_ts = self.last_scramble + self.scramble_cooldown_s
+        deck_left = max(0, int(math.ceil(max(0.0, self._deck_ready_ts - t))))
+        cd_left = max(0, int(math.ceil(max(0.0, cooldown_ready_ts - t))))
+        hazard = self._hazard_snapshot(float(t))
         return {
             "available": (self.ready_pairs >= 1 and self.airframe_pool_total >= 2 and cd_left == 0),
             "ready_pairs": self.ready_pairs,
             "airframes": self.airframe_pool_total,
             "cooldown_s": cd_left,
             "launch_interval_left_s": deck_left,
-            "station_radius_nm": float(self.cfg.get("station_radius_nm", 5))
+            "station_radius_nm": float(self.cfg.get("station_radius_nm", 5)),
+            "hazard": hazard,
         }
 
     def request_cap_to_cell(self, target_cell: str, *, distance_nm: float, now: Optional[float] = None,
@@ -377,11 +635,7 @@ class HermesCAP:
                             mission_kind: str = "cap",
                             loadout: str = "aim9",
                             follow: Optional[str] = None) -> Dict[str, Any]:
-        t = now or time.time()
-        if (t - self.last_scramble) < self.min_launch_interval_s:
-            return {"ok": False, "message": "Deck cycle in progress"}
-        if (t - self.last_scramble) < self.scramble_cooldown_s:
-            return {"ok": False, "message": "Scramble cooldown active"}
+        t = time.time() if now is None else float(now)
         if self.ready_pairs < 1:
             return {"ok": False, "message": "No ready pairs on deck"}
         if self.airframe_pool_total < 2:
@@ -391,6 +645,14 @@ class HermesCAP:
             return {"ok": False, "message": "All CAP sorties committed"}
         if len(active_pairs) >= self.max_pairs_on_task and mission_kind != 'intercept':
             return {"ok": False, "message": "Max CAP stations active"}
+
+        launch_ready_ts = max(
+            t,
+            self._deck_ready_ts,
+            self.last_scramble + self.scramble_cooldown_s,
+        )
+        delay_s = int(math.ceil(max(0.0, launch_ready_ts - t)))
+        launch_ts = t + delay_s
 
         follow_norm = None
         if isinstance(follow, str):
@@ -414,21 +676,38 @@ class HermesCAP:
                        intercept_deck_cycle_s=self.intercept_deck_cycle_s if mission_kind == 'intercept' else None)
         self._next_id += 1
         self.missions.append(m)
+        self._hazard_sortie_count += 1
+        m.sortie_index = self._hazard_sortie_count
+        if self._hazard_last_roll_ts <= 0.0:
+            self._hazard_last_roll_ts = t
         self.ready_pairs -= 1
         self.airframe_pool_total -= 2
-        self.last_scramble = t
         self._ensure_meta_record(m.id)
         self.set_permission(m.id, False, now=t)
-        # Promote immediately: eliminate deck wait between button press and launch
-        m.deck_cycle_s = 0
-        m.status = 'airborne'
-        m.ts['airborne'] = t
+        m.deck_cycle_s = max(0, int(delay_s))
         try:
-            m.ts['eta_onstation'] = t + m.outbound_s
+            m.ts['eta_onstation'] = launch_ts + m.outbound_s
         except Exception:
-            m.ts['eta_onstation'] = t + 1.0
+            m.ts['eta_onstation'] = launch_ts + 1.0
+        if delay_s <= 0:
+            m.deck_cycle_s = 0
+            m.status = 'airborne'
+            m.ts['airborne'] = t
+            try:
+                m.ts['eta_onstation'] = t + m.outbound_s
+            except Exception:
+                m.ts['eta_onstation'] = t + 1.0
+            self.last_scramble = t
+            self._deck_ready_ts = max(self._deck_ready_ts, t + self.min_launch_interval_s)
+        else:
+            m.status = 'queued'
+            self._deck_ready_ts = max(self._deck_ready_ts, launch_ts + self.min_launch_interval_s)
         dest = target_cell if not follow_norm else f"follow:{follow_norm}"
-        return {"ok": True, "message": f"Hermes: CAP pair launching to {dest}", "mission": m.to_dict()}
+        if delay_s <= 0:
+            msg = f"Hermes: CAP pair launching to {dest}"
+        else:
+            msg = f"Hermes: CAP pair queued for launch to {dest}"
+        return {"ok": True, "message": msg, "mission": m.to_dict()}
 
     def _mission_origin_xy(self, mission: CAPMission) -> Tuple[float, float]:
         try:
@@ -501,13 +780,216 @@ class HermesCAP:
         y = float(start_y) + (end_y - float(start_y)) * progress
         return (x, y)
 
+    def _apply_hazard_rolls(self, now: float) -> None:
+        if not self._hazard_active():
+            return
+        interval = self._hazard_interval_s()
+        eligible = [
+            m for m in self.missions
+            if getattr(m, 'status', None) in ('airborne', 'onstation', 'rtb')
+            and getattr(m, 'hazard_state', None) is None
+        ]
+        if not eligible:
+            return
+
+        for mission in eligible:
+            self._hazard_probability(mission, now)
+
+        do_roll = interval <= 0.0 or (now - max(0.0, self._hazard_last_roll_ts)) >= interval
+        if not do_roll:
+            return
+
+        self._hazard_last_roll_ts = now
+        for mission in list(eligible):
+            prob = getattr(mission, 'hazard_prob', 0.0)
+            if prob <= 0.0:
+                mission.hazard_last_roll_ts = now
+                mission.hazard_roll_value = None
+                continue
+            roll = random.random()
+            mission.hazard_last_roll_ts = now
+            mission.hazard_roll_value = roll
+            if roll < prob:
+                self._resolve_hazard(mission, now, prob, roll)
+
+    def _hazard_payload(self, mission: CAPMission, now: float, *, prob: float, roll: float, outcome: str) -> Dict[str, Any]:
+        return {
+            "mission_id": mission.id,
+            "target_cell": mission.target_cell,
+            "distance_nm": mission.distance_nm,
+            "status": mission.status,
+            "outcome": outcome,
+            "prob": prob,
+            "roll": roll,
+            "airborne_minutes": getattr(mission, 'hazard_airborne_minutes', 0.0),
+            "sortie_index": getattr(mission, 'sortie_index', None),
+            "sorties_launched": self._hazard_sortie_count,
+            "wave": self._hazard_wave_id,
+            "timestamp": now,
+        }
+
+    def _resolve_hazard(self, mission: CAPMission, now: float, prob: float, roll: float) -> None:
+        if getattr(mission, 'hazard_state', None) is not None:
+            return
+
+        status = getattr(mission, 'status', None)
+        if status in ('airborne', 'onstation'):
+            weights = [
+                ('inflight_loss', 0.45),
+                ('weather_abort', 0.30),
+                ('grounding', 0.25),
+            ]
+        elif status == 'rtb':
+            weights = [
+                ('deck_accident', 0.30),
+                ('grounding', 0.40),
+                ('weather_abort', 0.30),
+            ]
+        else:
+            weights = [
+                ('grounding', 0.50),
+                ('weather_abort', 0.50),
+            ]
+
+        roll_outcome = random.random()
+        cumulative = 0.0
+        outcome = weights[-1][0]
+        for opt, weight in weights:
+            cumulative += max(0.0, weight)
+            if roll_outcome <= cumulative:
+                outcome = opt
+                break
+
+        if outcome == 'deck_accident':
+            self._apply_deck_accident(mission, now, prob, roll)
+        elif outcome == 'weather_abort':
+            self._apply_weather_abort(mission, now, prob, roll)
+        elif outcome == 'inflight_loss':
+            self._apply_inflight_loss(mission, now, prob, roll)
+        else:
+            self._apply_grounding(mission, now, prob, roll)
+
+    def _apply_deck_accident(self, mission: CAPMission, now: float, prob: float, roll: float) -> None:
+        mission.hazard_state = 'deck_accident'
+        mission.hazard_outcome = 'deck_accident'
+        mission.hazard_note = 'Deck accident on recovery; airframe lost.'
+        mission.hazard_event_ts = now
+        mission.hazard_ghost_until_ts = now + self._hazard_ghost_window_s()
+        mission.hazard_ineffective = True
+        mission.ts['hazard'] = now
+        mission.status = 'lost'
+        mission.missiles_left = 0
+        mission.permission_authorized = False
+        mission.permission_required = False
+        mission.permission_hold_since_ts = None
+        mission.hazard_prob = prob
+        mission.hazard_last_roll_ts = now
+        mission.hazard_roll_value = roll
+        self._drop_meta(mission.id)
+
+        for other in self.missions:
+            if other is mission:
+                continue
+            if getattr(other, 'status', None) in ('airborne', 'onstation'):
+                self.force_rtb(other.id, reason='hazard_reset', now=now)
+
+        self.ready_pairs = max(0, self.ready_pairs - 1)
+        self.last_scramble = now
+
+        payload = self._hazard_payload(mission, now, prob=prob, roll=roll, outcome='deck_accident')
+        self._emit_event('cap.accident', payload)
+        self._log_flight('cap.accident', payload)
+        try:
+            self._pilot_call('cap.accident.deck', payload)
+        except Exception:
+            pass
+
+    def _apply_grounding(self, mission: CAPMission, now: float, prob: float, roll: float) -> None:
+        mission.hazard_state = 'grounding'
+        mission.hazard_outcome = 'grounding'
+        mission.hazard_note = 'Pilot reports systems issue; RTB ordered.'
+        mission.hazard_event_ts = now
+        mission.hazard_ghost_until_ts = now + self._hazard_ghost_window_s()
+        mission.hazard_ineffective = True
+        mission.ts['hazard'] = now
+        mission.hazard_prob = prob
+        mission.hazard_last_roll_ts = now
+        mission.hazard_roll_value = roll
+        mission.missiles_left = 0
+        self.force_rtb(mission.id, reason='hazard_grounding', now=now)
+
+        payload = self._hazard_payload(mission, now, prob=prob, roll=roll, outcome='grounding')
+        self._emit_event('cap.hazard.grounding', payload)
+        self._log_flight('cap.hazard.grounding', payload)
+        try:
+            self._pilot_call('cap.hazard.grounding', payload)
+        except Exception:
+            pass
+
+    def _apply_inflight_loss(self, mission: CAPMission, now: float, prob: float, roll: float) -> None:
+        mission.hazard_state = 'inflight_loss'
+        mission.hazard_outcome = 'inflight_loss'
+        mission.hazard_note = 'Lost contact en route; no chute spotted.'
+        mission.hazard_event_ts = now
+        mission.hazard_ghost_until_ts = now + self._hazard_ghost_window_s()
+        mission.hazard_ineffective = True
+        mission.ts['hazard'] = now
+        mission.status = 'lost'
+        mission.missiles_left = 0
+        mission.permission_authorized = False
+        mission.permission_required = False
+        mission.permission_hold_since_ts = None
+        mission.hazard_prob = prob
+        mission.hazard_last_roll_ts = now
+        mission.hazard_roll_value = roll
+        self._drop_meta(mission.id)
+
+        payload = self._hazard_payload(mission, now, prob=prob, roll=roll, outcome='inflight_loss')
+        self._emit_event('cap.accident.inflight', payload)
+        self._log_flight('cap.accident.inflight', payload)
+        try:
+            self._pilot_call('cap.accident.inflight', payload)
+        except Exception:
+            pass
+
+    def _apply_weather_abort(self, mission: CAPMission, now: float, prob: float, roll: float) -> None:
+        mission.hazard_state = 'weather_abort'
+        mission.hazard_outcome = 'weather_abort'
+        mission.hazard_note = 'Weather abort; sortie ineffective until RTB.'
+        mission.hazard_event_ts = now
+        mission.hazard_ghost_until_ts = now + self._hazard_ghost_window_s()
+        mission.hazard_ineffective = True
+        mission.ts['hazard'] = now
+        mission.hazard_prob = prob
+        mission.hazard_last_roll_ts = now
+        mission.hazard_roll_value = roll
+        mission.permission_authorized = False
+        etd = mission.ts.get('etd_rtb')
+        if etd is None or etd > now + 300:
+            mission.ts['etd_rtb'] = now + min(300.0, getattr(mission, 'onstation_s', 600))
+
+        payload = self._hazard_payload(mission, now, prob=prob, roll=roll, outcome='weather_abort')
+        self._emit_event('cap.hazard.weather_abort', payload)
+        self._log_flight('cap.hazard.weather_abort', payload)
+        try:
+            self._pilot_call('cap.hazard.weather_abort', payload)
+        except Exception:
+            pass
+
+
     def tick(self, now: Optional[float] = None) -> None:
-        t = now or time.time()
+        t = time.time() if now is None else float(now)
         for m in self.missions:
             if m.status == "queued":
                 if t >= m.ts["launch"] + m.deck_cycle_s:
                     m.status = "airborne"
                     m.ts['airborne'] = t
+                    try:
+                        m.ts['eta_onstation'] = t + m.outbound_s
+                    except Exception:
+                        m.ts['eta_onstation'] = t + 1.0
+                    self.last_scramble = t
+                    self._deck_ready_ts = max(self._deck_ready_ts, t + self.min_launch_interval_s)
             elif m.status == "airborne":
                 if t >= m.ts["eta_onstation"]:
                     m.status = "onstation"
@@ -554,10 +1036,20 @@ class HermesCAP:
                         pass
                     self._drop_meta(m.id)
 
+        self._apply_hazard_rolls(t)
+
         if self.missions:
-            self.missions = [m for m in self.missions if m.status != "complete"]
-            if len(self.missions) > 12:
-                self.missions = self.missions[-12:]
+            kept: List[CAPMission] = []
+            for mission in self.missions:
+                if mission.status == "complete":
+                    continue
+                if not self._hazard_should_keep(mission, t):
+                    self._drop_meta(mission.id)
+                    continue
+                kept.append(mission)
+            if len(kept) > 12:
+                kept = kept[-12:]
+            self.missions = kept
 
     # ---------- engagement logic
     def _pk_for_range(self, range_nm: float) -> float:
@@ -567,13 +1059,14 @@ class HermesCAP:
         """Engage using current mission loadout. Sidewinder vs air (2–5 nm). Bombs vs ships (≤1 nm)."""
         if distance_nm is None or locked_target_id is None:
             return None
-        t = now or time.time()
+        t = time.time() if now is None else float(now)
 
         onst = [
             m for m in self.missions
             if m.status == "onstation"
             and m.missiles_left > 0
             and (not m.permission_required or m.permission_authorized)
+            and not getattr(m, 'hazard_ineffective', False)
         ]
         if not onst:
             return None
@@ -721,6 +1214,8 @@ class HermesCAP:
     def snapshot(self, now: Optional[float] = None) -> Dict[str, Any]:
         r = self.readiness(now=now)
         t_now = now if now is not None else time.time()
+        hazard_summary = r.get('hazard') if isinstance(r, dict) else None
+        hazard_copy = hazard_summary.copy() if isinstance(hazard_summary, dict) else None
         missions = []
         for m in self.missions:
             item = m.to_dict()
@@ -748,7 +1243,7 @@ class HermesCAP:
             if 'range_nm' not in item:
                 item['range_nm'] = item.get('distance_nm')
             missions.append(item)
-        return {"readiness": r, "missions": missions}
+        return {"readiness": r, "missions": missions, "hazard": hazard_copy}
 
     # ---------- retask helpers
     def convert_to_cap(self, mission_id: int, target_cell: str, *, minutes: Optional[float] = None, now: Optional[float] = None, follow: Optional[str] = None) -> Dict[str, Any]:

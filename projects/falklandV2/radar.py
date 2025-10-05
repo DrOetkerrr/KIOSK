@@ -23,6 +23,13 @@ import math, random, time, json, os
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Tuple, Callable
 
+try:
+    from projects.falklandV2.subsystems.spawn_waves import WaveSchedule, WaveEnemy, WaveDefinition
+except Exception:
+    WaveSchedule = None  # type: ignore
+    WaveEnemy = Any  # type: ignore
+    WaveDefinition = Any  # type: ignore
+
 # --- World constants (match engine) ------------------------------------------
 WORLD_N = 40
 BOARD_N = 26
@@ -90,6 +97,7 @@ class Catalog:
                     'max_range_nm': it.get('max_range_nm'),
                     'class': klass,
                     'allegiance': allegiance,
+                    'speed_kts': speed,
                 }
                 self._details[name] = cap
                 if allegiance == 'Hostile':
@@ -121,6 +129,13 @@ class Catalog:
 
     def pick_friendly(self) -> Tuple[str, float, Optional[str]]:
         return self._pick_weighted(self._friendly)
+
+    def pick_hostile_by_name(self, name: str) -> Tuple[str, float, Optional[str]]:
+        target = str(name)
+        for n, s, _w, k in self._hostile:
+            if n == target:
+                return (n, float(s), k)
+        return self.pick_hostile()
 
     def pick_hostile_weighted(self, mult_by_name: Optional[Dict[str, float]]) -> Tuple[str, float, Optional[str]]:
         """Pick a hostile applying name-based multipliers (0..1) to base weights.
@@ -229,6 +244,8 @@ class Radar:
         self._next_id = 1
         self.priority_id: Optional[int] = None
         self._manual_lock = False
+        self.wave_schedule: Optional[WaveSchedule] = None  # type: ignore[assignment]
+        self._wave_elapsed = 0.0
         # Optional CAP effects provider (callable returning dict with keys: active, effects)
         self.cap_effects_provider: Optional[Callable[[], Dict[str, Any]]] = None
         # Optional CAP missions provider for placing friendly CAP flights on radar
@@ -251,6 +268,10 @@ class Radar:
     def tick(self, dt_s: float, own_x: float, own_y: float):
         # cadence
         self._accum += dt_s
+        try:
+            self._wave_elapsed += max(0.0, float(dt_s))
+        except Exception:
+            self._wave_elapsed = 0.0
         if self._accum >= self.cfg["scan_interval_s"]:
             self._accum = 0.0
             self.scan(own_x, own_y)
@@ -313,6 +334,16 @@ class Radar:
             allow = max(0, max_contacts - len(caps))
             self.contacts = caps + ordered[:allow]
 
+    def bind_wave_schedule(self, schedule: Optional[WaveSchedule]) -> None:  # type: ignore[override]
+        self.wave_schedule = schedule
+        if schedule is None:
+            self._wave_elapsed = 0.0
+        else:
+            try:
+                self._wave_elapsed = float(schedule.start_elapsed_s)
+            except Exception:
+                self._wave_elapsed = 0.0
+
     def scan(self, own_x: float, own_y: float):
         # Scans are observational and decoupled from spawns (spawns are time-based in tick)
         if self.rec: self.rec.log("radar.scan", {"interval_s": self.cfg["scan_interval_s"]})
@@ -324,24 +355,49 @@ class Radar:
             return
 
         if surprise:
-            r_min, r_max = self.cfg["surprise_nm"], 14.0
+            base_min, base_max = self.cfg["surprise_nm"], 14.0
         else:
             r0, _r1 = self.cfg["no_spawn_nm"]
-            r_min, r_max = float(r0), float(self.cfg.get("offboard_max_nm", 30.0))
+            base_min = float(r0)
+            base_max = float(self.cfg.get("offboard_max_nm", 30.0))
 
-        r = self.rng.uniform(r_min, r_max)
-        bearing_deg = self.rng.uniform(0.0, 360.0)
-        rad = math.radians(bearing_deg)
-        dx = math.sin(rad) * r
-        dy = -math.cos(rad) * r
-        x = max(0.0, min(float(WORLD_N), own_x + dx))
-        y = max(0.0, min(float(WORLD_N), own_y + dy))
+        wave = None
+        if self.wave_schedule is not None:
+            try:
+                wave = self.wave_schedule.current(self._wave_elapsed)
+            except Exception:
+                wave = None
+
+        def _sample_bearing() -> float:
+            if self.wave_schedule is not None and wave is not None:
+                try:
+                    return self.wave_schedule.sample_bearing(wave, self.rng)
+                except Exception:
+                    pass
+            return self.rng.uniform(0.0, 360.0)
 
         # Decide allegiance: surprise always Hostile; otherwise Friendly with configured probability
         if surprise:
             allegiance = "Hostile"
         else:
             allegiance = ("Friendly" if (self.rng.random() < float(self.cfg.get("friendly_prob", 0.3))) else "Hostile")
+
+        wave_enemy = None
+        if allegiance == "Hostile" and wave is not None:
+            enemies = getattr(wave, 'enemies', ())
+            if not enemies:
+                if self.rec: self.rec.log("radar.spawn_skip", {"reason": "wave_suppressed"})
+                return
+            try:
+                wave_enemy = self.wave_schedule.pick_enemy(wave, self.rng)  # type: ignore[arg-type]
+            except Exception:
+                wave_enemy = None
+            if wave_enemy is None:
+                if self.rec: self.rec.log("radar.spawn_skip", {"reason": "wave_chance"})
+                return
+
+        enemy_min_nm: Optional[float] = None
+        enemy_max_nm: Optional[float] = None
 
         # Pick from catalog based on allegiance (apply CAP spawn multipliers if provided and active)
         if allegiance == "Friendly":
@@ -359,18 +415,56 @@ class Radar:
             # Pick hostiles, respecting the Étendard exception for surprise spawns
             def _pick_hostile():
                 return (self.catalog.pick_hostile_weighted(mult_map) if mult_map else self.catalog.pick_hostile())
-            name, speed, klass = _pick_hostile()
+            if wave_enemy is not None:
+                name, speed, klass = self.catalog.pick_hostile_by_name(wave_enemy.name)
+                enemy_min_nm = wave_enemy.min_range_nm
+                enemy_max_nm = wave_enemy.max_range_nm
+            else:
+                name, speed, klass = _pick_hostile()
             if surprise:
                 tries = 0
                 while name == 'Super Etendard' and tries < 10:
                     name, speed, klass = _pick_hostile()
                     tries += 1
-            # Ensure Super Étendard starts at >= 20 nm (never uses 10 nm surprise)
-            if name == 'Super Etendard' and r < 20.0:
-                r = max(20.0, r)
-            # Ensure hostile surface ships appear outside radar horizon (>= 20 nm)
-            if klass and str(klass).lower() == 'ship' and r < 20.0:
-                r = max(20.0, self.cfg.get("surface_spawn_min_nm", 20.0))
+
+        min_nm = base_min
+        max_nm = base_max
+        if enemy_min_nm is not None:
+            min_nm = max(min_nm, float(enemy_min_nm))
+        if enemy_max_nm is not None:
+            max_nm = min(max_nm, float(enemy_max_nm))
+        if max_nm <= min_nm:
+            max_nm = min_nm + 0.1
+
+        r = self.rng.uniform(min_nm, max_nm)
+
+        bearing_deg = _sample_bearing()
+        rad = math.radians(bearing_deg)
+        dx = math.sin(rad) * r
+        dy = -math.cos(rad) * r
+        x = max(0.0, min(float(WORLD_N), own_x + dx))
+        y = max(0.0, min(float(WORLD_N), own_y + dy))
+
+        # Ensure Super Étendard starts at >= 20 nm (never uses 10 nm surprise)
+        if allegiance == 'Hostile' and name == 'Super Etendard' and r < 20.0:
+            r = max(20.0, r)
+            dist = r
+            bearing_deg = _sample_bearing()
+            rad = math.radians(bearing_deg)
+            dx = math.sin(rad) * dist
+            dy = -math.cos(rad) * dist
+            x = max(0.0, min(float(WORLD_N), own_x + dx))
+            y = max(0.0, min(float(WORLD_N), own_y + dy))
+        # Ensure hostile surface ships appear outside radar horizon (>= 20 nm)
+        if allegiance == 'Hostile' and klass and str(klass).lower() == 'ship' and r < 20.0:
+            r = max(20.0, self.cfg.get("surface_spawn_min_nm", 20.0))
+            dist = r
+            bearing_deg = _sample_bearing()
+            rad = math.radians(bearing_deg)
+            dx = math.sin(rad) * dist
+            dy = -math.cos(rad) * dist
+            x = max(0.0, min(float(WORLD_N), own_x + dx))
+            y = max(0.0, min(float(WORLD_N), own_y + dy))
 
         course_deg = (bearing_deg + 180.0) % 360.0
         surface_meta: Optional[Dict[str, Any]] = None
@@ -687,6 +781,17 @@ class Radar:
                         self.rec.log('radar.retreat', {'id': hostile.id, 'name': hostile.name, 'range_nm': round(nearest_nm, 2)})
                     except Exception:
                         pass
+                try:
+                    from projects.falklandV2 import webdash as wd  # type: ignore
+                    if hasattr(wd, 'record_event'):
+                        wd.record_event('pilot.bandit.retreat', {
+                            'id': getattr(hostile, 'id', None),
+                            'name': getattr(hostile, 'name', 'Bandit'),
+                            'range_nm': round(nearest_nm, 2) if nearest_nm is not None else None,
+                            'heading_deg': round(retreat_heading, 1)
+                        })
+                except Exception:
+                    pass
             except Exception:
                 continue
 

@@ -25,6 +25,7 @@ from projects.falklandV2.subsystems.hermes_cap import HermesCAP
 from projects.falklandV2.subsystems import webcore as core
 from projects.falklandV2.subsystems import ui_snapshot as ui_snap
 from projects.falklandV2.subsystems.mission import MissionController
+from projects.falklandV2.subsystems.spawn_waves import load_wave_schedule, WaveSchedule
 from projects.falklandV2.engine_adapter import contact_to_ui, _scale_legacy
 
 
@@ -104,16 +105,24 @@ class GameRuntime:
         self._engine_state_cache: Dict[str, Any] = {}
         self.engine: Engine = self._create_engine()
         self.cap: Optional[HermesCAP] = self._create_cap()
+        self.wave_schedule: Optional[WaveSchedule] = load_wave_schedule(self.data_dir / "attack_waves.json")
         self._mission_settings_cache: Dict[str, Any] = {}
         self.radar: Radar = self._create_radar()
         self._install_engine_compat(self.engine)
         self._update_engine_state_view()
         now = time.time()
         self.mission: MissionController = MissionController(self.data_dir, now=now)
+        if self.wave_schedule is not None:
+            try:
+                if self.mission and getattr(self.mission, '_mission_def', None) is not None:
+                    self.mission._mission_def['duration_s'] = float(self.wave_schedule.total_duration_s)
+            except Exception:
+                pass
         self._last_engine_tick_ts: float = now
         self._last_radar_tick_ts: float = now
         self._mission_settings_cache = self.mission.current_settings()
         self._apply_mission_contact_filters(self.radar)
+        self._sync_cap_wave()
 
     # ---------- creation helpers
     def _read_port(self) -> int:
@@ -192,6 +201,10 @@ class GameRuntime:
                     except Exception:
                         pass
                 self.cap.bind_hit_callback(_cap_hit)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        try:
+            radar.bind_wave_schedule(self.wave_schedule)
         except Exception:
             pass
         seed_x = float(WORLD_N) / 2.0
@@ -351,6 +364,37 @@ class GameRuntime:
             "state": state,
         }
 
+    def _derive_cap_wave(self, settings: Dict[str, Any]) -> Optional[str]:
+        wave: Optional[str] = None
+        if isinstance(settings, dict):
+            for key in ("wave_id", "wave", "phase_id", "phase", "stage", "segment"):
+                val = settings.get(key)
+                if isinstance(val, str):
+                    candidate = val.strip()
+                    if candidate:
+                        wave = candidate
+                        break
+        if not wave:
+            active = getattr(self.mission, '_active_id', None)
+            if isinstance(active, str):
+                candidate = active.strip()
+                if candidate:
+                    wave = candidate
+        return wave
+
+    def _sync_cap_wave(self) -> None:
+        cap = getattr(self, 'cap', None)
+        if cap is None or not hasattr(cap, 'set_wave_context'):
+            return
+        try:
+            wave = self._derive_cap_wave(self._mission_settings_cache or {})
+        except Exception:
+            wave = None
+        try:
+            cap.set_wave_context(wave)
+        except Exception:
+            pass
+
     def mission_snapshot(self) -> Dict[str, Any]:
         if not self.mission:
             return {}
@@ -358,6 +402,7 @@ class GameRuntime:
             ctx = self._mission_context()
             snap = self.mission.update(ctx, now=ctx["now"])
             self._mission_settings_cache = self.mission.current_settings()
+            self._sync_cap_wave()
             return snap
 
     def apply_mission_decision(self, decision_id: str, choice: str) -> Dict[str, Any]:
@@ -403,6 +448,7 @@ class GameRuntime:
         except Exception:
             pass
         self._apply_mission_contact_filters(self.radar)
+        self._sync_cap_wave()
 
     def reset_engine_and_cap(self) -> None:
         with self.state_lock:
@@ -416,6 +462,7 @@ class GameRuntime:
             self._last_engine_tick_ts = now
             self._last_radar_tick_ts = now
             self._sync_engine_contacts()
+            self._sync_cap_wave()
         self._rebind()
 
     def reset_state(self, *, clear_tts: bool = False) -> None:
@@ -477,6 +524,12 @@ class GameRuntime:
             self.radar = self._create_radar()
             now = time.time()
             self.mission = MissionController(self.data_dir, now=now)
+            if self.wave_schedule is not None:
+                try:
+                    if self.mission and getattr(self.mission, '_mission_def', None) is not None:
+                        self.mission._mission_def['duration_s'] = float(self.wave_schedule.total_duration_s)
+                except Exception:
+                    pass
             self._last_radar_tick_ts = now
             self._sync_engine_contacts()
         self._rebind()

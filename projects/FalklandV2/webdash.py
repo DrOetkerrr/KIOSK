@@ -364,9 +364,44 @@ def _reset_audio_state() -> None:
     AUDIO_STATE.update(base)
 
 
-def _reset_runtime_globals() -> None:
+def _coerce_contact_id(val: Any) -> int | None:
+    try:
+        return int(val)
+    except Exception:
+        return None
+
+
+def set_primary_contact(contact_id: Any, *, manual: bool = True) -> None:
+    """Persist the current radar lock, optionally driving the radar module too."""
     global PRIMARY_ID
-    PRIMARY_ID = None
+    cid = _coerce_contact_id(contact_id)
+    PRIMARY_ID = cid
+    if not manual:
+        return
+    radar = globals().get('RADAR')
+    try:
+        if radar is None:
+            return
+        if cid is None:
+            if hasattr(radar, 'clear_manual_lock'):
+                radar.clear_manual_lock()  # type: ignore[attr-defined]
+            else:
+                radar.priority_id = None  # type: ignore[attr-defined]
+        else:
+            if hasattr(radar, 'set_manual_lock'):
+                radar.set_manual_lock(cid)  # type: ignore[attr-defined]
+            else:
+                radar.priority_id = cid  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
+def clear_primary_contact(*, manual: bool = True) -> None:
+    set_primary_contact(None, manual=manual)
+
+
+def _reset_runtime_globals() -> None:
+    clear_primary_contact(manual=False)
     _ensure_audio_flags().clear()
     try:
         _reset_audio_state()
@@ -481,6 +516,11 @@ def _bind_runtime(rt: GameRuntime) -> None:
 
     RADAR = rt.radar
     CAP = rt.cap
+    try:
+        if RADAR is not None and hasattr(RADAR, 'bind_wave_schedule'):
+            RADAR.bind_wave_schedule(getattr(rt, 'wave_schedule', None))  # type: ignore[arg-type]
+    except Exception:
+        pass
     # Resupply state (Sea King)
     if 'RESUPPLY' not in globals():
         RESUPPLY = {"active": False, "eta_ts": 0.0, "started_ts": 0.0, "stage": None}
@@ -539,6 +579,8 @@ RADIO_STATE: Dict[str, Any] = {"busy_until": 0.0}
 RADIO_HISTORY: deque[Dict[str, Any]] = deque(maxlen=32)
 AUDIO_FLAGS: Dict[str, Any] = {}
 PRIMARY_ID: int | None = None
+
+
 RADIO_RECENT_WINDOW_S = 4.0
 RADIO_RECENT_MESSAGES: Dict[tuple[str, str], float] = {}
 
@@ -1444,7 +1486,11 @@ RADIO_EVENT_AUDIO_MAP: Dict[str, Callable[[Dict[str, Any]], str | None]] = {
     'cap.weapon.miss': lambda ctx: 'SHAR_TARGET_MISSED',
     'cap.mission.rtb': _audio_key_from_cap_rtb,
     'cap.permission.timeout': lambda ctx: 'SHAR_FINAL_APPROACH',
-    'cap.permission.authorized': lambda ctx: 'SHAR_ENGAGGING',
+    'cap.permission.authorized': lambda ctx: 'SHAR_ENGAGING',
+    'cap.accident.deck': lambda ctx: 'SHAR_RECOVERY_CRASH',
+    'cap.accident.inflight': lambda ctx: 'SHAR_DOWN',
+    'cap.hazard.grounding': lambda ctx: 'SHAR_FAILURES_RTB',
+    'cap.hazard.weather_abort': lambda ctx: 'SHAR_MISSION_ABORT',
     'pilot.intercept.launch': lambda ctx: 'SHAR_TAKING_OFF',
     'pilot.cap.launch': lambda ctx: 'SHAR_TAKING_OFF',
     'pilot.vector': lambda ctx: 'SHAR_ENGAGING',
@@ -1453,6 +1499,7 @@ RADIO_EVENT_AUDIO_MAP: Dict[str, Callable[[Dict[str, Any]], str | None]] = {
     'pilot.bombsaway': lambda ctx: 'SHAR_BOMBS_AWAY',
     'pilot.target_hit': lambda ctx: 'SHAR_SPLASH_BANDIT',
     'pilot.target_miss': lambda ctx: 'SHAR_TARGET_MISSED',
+    'pilot.bandit.retreat': lambda ctx: 'SHAR_BANDIT_RETREAT',
     'weapon.arm': lambda ctx: _weapon_audio_for_arm(_weapon_name_from_ctx(ctx)),
     'weapon.safe': lambda ctx: _weapon_audio_for_safe(_weapon_name_from_ctx(ctx)),
     'weapon.target.locked': lambda ctx: 'RDR_PRIMARY_TARGET_LOCKED',

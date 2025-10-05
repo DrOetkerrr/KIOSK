@@ -529,13 +529,18 @@
               const kind = (ev && (ev.event || ev.result) || '').toLowerCase();
               const delay = idx * 250;
               setTimeout(() => {
-                if (kind === 'hit') playOne(SOUND_MAP.enemy_bomb_hit || SOUND_MAP.hit);
-                else playOne(SOUND_MAP.enemy_bomb_miss || SOUND_MAP.miss);
+                if (kind === 'hit') {
+                  const first = SOUND_MAP.enemy_bomb_hit || SOUND_MAP.hit;
+                  playOne(first);
+                  setTimeout(() => playOne(SOUND_MAP.hit || first), 2000);
+                } else {
+                  playOne(SOUND_MAP.enemy_bomb_miss || SOUND_MAP.miss);
+                }
               }, delay);
             });
-          }
-        }
-      }
+         }
+       }
+     }
 
       // 6) Fly-by trigger (any aircraft within 0.3 nm crossing inward)
       updateFlyby(j);

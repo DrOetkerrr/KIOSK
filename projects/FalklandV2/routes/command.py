@@ -31,6 +31,8 @@ def api_command():
         contact_to_ui,
         radar_xy_from_state,
         _radar_summary_ctx,
+        set_primary_contact,
+        clear_primary_contact,
     )
 
     t0 = time.time()
@@ -168,10 +170,7 @@ def api_command():
         # Radar lock/unlock helpers
         if s.lower().startswith("/radar unlock"):
             try:
-                if hasattr(RADAR, 'clear_manual_lock'):
-                    RADAR.clear_manual_lock()  # type: ignore[attr-defined]
-                else:
-                    RADAR.priority_id = None  # type: ignore[attr-defined]
+                clear_primary_contact()
             except Exception:
                 pass
             try:
@@ -198,25 +197,6 @@ def api_command():
                     if int(getattr(c, "id", -1)) == cid_i:
                         return c
                 return None
-            # enforce exclusive lock (must unlock before different target)
-            try:
-                existing = getattr(RADAR, 'priority_id', None)
-                if existing is not None and str(arg).lower() not in ("nearest", "primary"):
-                    try:
-                        existing_i = int(existing)
-                        requested_i = int(arg)
-                        if requested_i != existing_i:
-                            if hasattr(RADAR, 'clear_manual_lock'):
-                                RADAR.clear_manual_lock()  # type: ignore[attr-defined]
-                            else:
-                                RADAR.priority_id = None
-                    except Exception:
-                        if hasattr(RADAR, 'clear_manual_lock'):
-                            RADAR.clear_manual_lock()  # type: ignore[attr-defined]
-                        else:
-                            RADAR.priority_id = None
-            except Exception:
-                pass
             # allow '/radar lock nearest' or 'primary'
             if str(arg).lower() in ("nearest","primary"):
                 # Always recompute the nearest contact to allow switching
@@ -261,14 +241,7 @@ def api_command():
                     return jsonify(payload), 404
             tid = int(getattr(target, 'id', 0))
             try:
-                globals()['PRIMARY_ID'] = tid
-            except Exception:
-                pass
-            try:
-                if hasattr(RADAR, 'set_manual_lock'):
-                    RADAR.set_manual_lock(tid)  # type: ignore[attr-defined]
-                else:
-                    RADAR.priority_id = tid  # type: ignore[attr-defined]
+                set_primary_contact(tid)
             except Exception:
                 pass
             try:

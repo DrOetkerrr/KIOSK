@@ -1,0 +1,17 @@
+{
+  "hazard_config": {
+    "base_prob_per_roll": 0.003,
+    "roll_interval_min": 2,
+    "fatigue": {
+      "airborne_minutes_threshold": 15,
+      "extra_prob": 0.002
+    },
+    "sortie_tiers": [
+      { "count": 4, "extra_prob": 0.001 },
+      { "count": 8, "extra_prob": 0.002 }
+    ],
+    "wave_modifiers": {
+      "Climax": 0.003
+    }
+  }
+}

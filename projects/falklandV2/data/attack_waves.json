@@ -1,0 +1,45 @@
+{
+  "total_game_time_min": 60,
+  "start_wave": 1,
+  "waves": [
+    {
+      "label": "Calm Seas",
+      "duration_min": 10,
+      "direction": "ALL",
+      "spawns": {}
+    },
+    {
+      "label": "First Sortie",
+      "duration_min": 15,
+      "direction": "NE",
+      "spawns": {
+        "Mirage III": { "chance": 0.35, "min_range_nm": 18 },
+        "Pucará": { "chance": 0.25, "min_range_nm": 16 }
+      }
+    },
+    {
+      "label": "Missile Threat",
+      "duration_min": 15,
+      "direction": "E",
+      "spawns": {
+        "Mirage III": { "chance": 0.30, "min_range_nm": 16 },
+        "Pucará": { "chance": 0.20, "min_range_nm": 14 },
+        "Super Étendard": { "chance": 0.25, "min_range_nm": 22 },
+        "AM39 Exocet": { "chance": 0.10, "min_range_nm": 25 }
+      }
+    },
+    {
+      "label": "Final Push",
+      "duration_min": 20,
+      "direction": "SE",
+      "spawns": {
+        "Mirage III": { "chance": 0.25, "min_range_nm": 14 },
+        "Pucará": { "chance": 0.20, "min_range_nm": 12 },
+        "Super Étendard": { "chance": 0.20, "min_range_nm": 20 },
+        "AM39 Exocet": { "chance": 0.15, "min_range_nm": 24 },
+        "ARA Buenos Aires": { "chance": 0.05, "min_range_nm": 30 },
+        "Destroyer": { "chance": 0.05, "min_range_nm": 28 }
+      }
+    }
+  ]
+}

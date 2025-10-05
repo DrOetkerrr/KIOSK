@@ -6,15 +6,7 @@
     "arming_until": 0.0,
     "cooldown_until": 0.0
   },
-  "20mm Oerlikon": {
-    "armed": true,
-    "arming_until": 0.0,
-    "cooldown_until": 0.0
-  },
-  "20mm GAM-BO1 (twin)": {
-    "armed": true,
-    "arming_until": 0.0,
-    "cooldown_until": 0.0
-  },
+  "20mm Oerlikon": "Safe",
+  "20mm GAM-BO1 (twin)": "Safe",
   "Corvus chaff": "Safe"
 }

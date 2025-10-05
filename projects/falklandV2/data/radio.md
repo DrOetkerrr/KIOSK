@@ -23,6 +23,11 @@ cap.weapon.fire – “Shar fired {weapon}”
 cap.weapon.hit – “Shar hit target with {weapon}”
 cap.weapon.miss – Shar missed target with {weapon}”
 cap.mission.rtb – “SHAR {mission_id} ordered RTB.”
+cap.accident.deck – “Negative—fuel state critical, bird down on deck.”
+cap.accident.inflight – “Hermes, we lost the SHAR en route—no chute spotted.”
+cap.hazard.grounding – “Hermes tower, SHAR reports systems failure—requesting RTB.”
+cap.hazard.weather_abort – “Hermes, weather’s blown us off station—aborting mission.”
+pilot.bandit.retreat – “Bandit breaking off—Harrier pressure worked.”
 enemy.bomb.hit – “Captain, we are hit!”
 enemy.bomb.miss – “Captain, bomb missed”
 enemy.attack.hit – “Captain, we are hit by {attack_kind}!”

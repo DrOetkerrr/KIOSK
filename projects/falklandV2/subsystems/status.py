@@ -66,6 +66,35 @@ def build() -> Dict[str, Any]:
     except Exception:
         pass
 
+    # Wave schedule snapshot (enemy spawn waves)
+    try:
+        schedule = getattr(wd.RUNTIME, 'wave_schedule', None)
+        if schedule is not None:
+            try:
+                elapsed = float(getattr(wd.RADAR, '_wave_elapsed', 0.0))
+            except Exception:
+                elapsed = 0.0
+            try:
+                current_wave = schedule.current(elapsed)
+                waves = list(schedule.waves)
+                index = waves.index(current_wave) if waves else 0
+                payload['wave'] = {
+                    'label': getattr(current_wave, 'label', f"Wave {index+1}"),
+                    'index': index,
+                    'count': len(waves),
+                    'direction': getattr(current_wave, 'direction', 'ALL'),
+                    'wave_start_s': getattr(current_wave, 'start_s', 0.0),
+                    'wave_end_s': getattr(current_wave, 'end_s', schedule.total_duration_s),
+                    'elapsed_s': elapsed,
+                    'total_s': schedule.total_duration_s,
+                    'start_index': getattr(schedule, 'start_wave_index', 0),
+                    'start_elapsed_s': getattr(schedule, 'start_elapsed_s', 0.0),
+                }
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # State snapshot (robust against minimal engines)
     if hasattr(wd.ENG, "public_state"):
         try:

@@ -18,5 +18,10 @@
   {"event": "nav.set.speed.ack", "role": "Navigation", "intent": "Speed change acknowledged", "hint": "Speed now {spd} knots; heading {hdg}°."},
   {"event": "nav.hermes.close_in.request", "role": "Navigation", "intent": "Close on Hermes", "hint": "Recommend closing on Hermes: bearing {ref_brg}°, range {ref_rng} nm. New course {rec_hdg}°."},
   {"event": "nav.hermes.stand_off.request", "role": "Navigation", "intent": "Hermes stand-off", "hint": "Recommend Hermes stand-off {standoff_nm} nm; current bearing {ref_brg}°, range {ref_rng} nm."},
-  {"event": "cap.engage.denied", "role": "Pilot", "intent": "Engagement denied", "hint": "Negative, captain — wrong payload."}
+  {"event": "cap.engage.denied", "role": "Pilot", "intent": "Engagement denied", "hint": "Negative, captain — wrong payload."},
+  {"event": "cap.accident.deck", "role": "Pilot", "intent": "Deck accident", "hint": "Negative—fuel state critical, bird down on deck."},
+  {"event": "cap.accident.inflight", "role": "Pilot", "intent": "In-flight loss", "hint": "Hermes, we lost the SHAR en route—no chute spotted."},
+  {"event": "cap.hazard.grounding", "role": "Pilot", "intent": "Systems fault RTB", "hint": "Hermes tower, SHAR reports systems failure—requesting RTB."},
+  {"event": "cap.hazard.weather_abort", "role": "Pilot", "intent": "Weather abort", "hint": "Hermes, weather’s blown us off station—aborting mission."},
+  {"event": "pilot.bandit.retreat", "role": "Pilot", "intent": "Enemy disengaging", "hint": "Bandit breaking off—Harrier pressure worked."}
 ]
