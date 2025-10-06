@@ -8,7 +8,13 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/crt.css', v=app_version|default('dev')) }}" />
 </head>
 <body>
-  <div id="intro-overlay" class="intro-overlay hidden"></div>
+  <div id="intro-overlay" class="intro-overlay{% if not intro_active %} hidden{% endif %}" role="presentation" aria-hidden="true">
+    <div class="intro-overlay__inner">
+      <img class="intro-overlay__art" src="{{ url_for('static', filename='img/intro/intro_bridge.jpg', v=app_version|default('dev')) }}" alt="Bridge view" />
+      <div class="intro-overlay__title">Falklands Tactical Console</div>
+      <div class="intro-overlay__cta mono">Tap or press any key to begin</div>
+    </div>
+  </div>
   <div class="wrap">
     <div class="hud">
       <div class="left row"><div id="hud-dot" class="dot"></div><div>Falklands V2 — Stations</div></div>
@@ -32,7 +38,28 @@
     </div>
 
   </div>
-
+  <script>
+    (function(){
+      const introActive = {{ 'true' if intro_active else 'false' }};
+      window.__introActive = introActive;
+      const overlay = document.getElementById('intro-overlay');
+      if(!overlay) return;
+      const show = () => overlay.classList.remove('hidden');
+      const hide = () => {
+        overlay.classList.add('hidden');
+      };
+      overlay.addEventListener('transitionend', (ev) => {
+        if(ev.propertyName === 'opacity' && overlay.classList.contains('hidden')){
+          try{ overlay.remove(); }catch(_){ overlay.style.display = 'none'; }
+        }
+      });
+      if(introActive) {
+        show();
+      }
+      window.addEventListener('intro:start', show);
+      window.addEventListener('intro:end', hide);
+    })();
+  </script>
   <script src="{{ url_for('static', filename='sound.js', v=app_version|default('dev')) }}"></script>
   <script src="{{ url_for('static', filename='stations.js', v=app_version|default('dev')) }}" defer></script>
   <script>

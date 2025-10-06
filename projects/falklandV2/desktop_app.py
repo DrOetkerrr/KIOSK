@@ -7,20 +7,26 @@ import time
 from dataclasses import dataclass
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 try:
-    from PySide6.QtCore import QTimer, Qt, QLibraryInfo, QCoreApplication
-    from PySide6.QtGui import QFont, QFontDatabase
+    from PySide6.QtCore import QTimer, Qt, QLibraryInfo, QCoreApplication, QUrl
+    from PySide6.QtGui import QFont, QFontDatabase, QPixmap
     from PySide6.QtWidgets import (
         QApplication, QWidget, QMainWindow, QLabel, QTableWidget, QTableWidgetItem,
         QHBoxLayout, QVBoxLayout, QPushButton, QTabWidget, QHeaderView,
-        QDialog, QDialogButtonBox, QListWidget, QListWidgetItem, QComboBox
+        QDialog, QDialogButtonBox, QListWidget, QListWidgetItem, QComboBox,
+        QSplashScreen
     )
 except Exception as e:  # pragma: no cover
     raise SystemExit("PySide6 not installed. Run: pip install PySide6")
 
 import requests
+
+try:
+    from PySide6.QtMultimedia import QSoundEffect
+except Exception:  # pragma: no cover - optional dependency, fallback handled later
+    QSoundEffect = None  # type: ignore
 
 
 def _env_port() -> int:
@@ -789,6 +795,128 @@ class MainWindow(QMainWindow):
         self._post('/eng/release', {'id': sysid}); self._eng_refresh()
 
 
+class _IntroWindow(QWidget):
+    """Borderless window that scales the intro image to the screen."""
+
+    def __init__(self, pixmap: QPixmap) -> None:
+        super().__init__(None, Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setStyleSheet('background-color: black;')
+        self._pixmap = pixmap
+        self._label = QLabel(self)
+        self._label.setAlignment(Qt.AlignCenter)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._label)
+        self._update_pixmap()
+        self._close_hook: Optional[Callable[[], None]] = None
+
+    def _update_pixmap(self) -> None:
+        if self._pixmap.isNull() or self.size().isEmpty():
+            self._label.clear()
+            return
+        scaled = self._pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self._label.setPixmap(scaled)
+
+    def resizeEvent(self, event):  # type: ignore[override]
+        super().resizeEvent(event)
+        self._update_pixmap()
+
+    def closeEvent(self, event):  # type: ignore[override]
+        super().closeEvent(event)
+        hook = getattr(self, '_close_hook', None)
+        if callable(hook):
+            hook()
+
+
+_INTRO_IMAGE = Path(__file__).resolve().parent / 'static' / 'img' / 'intro' / 'intro_bridge.jpg'
+_INTRO_AUDIO = Path(__file__).resolve().parent / 'data' / 'sounds' / 'intro.wav'
+_INTRO_MIN_DURATION_MS = 2200
+
+
+def _wav_duration_ms(path: Path) -> int:
+    try:
+        import wave
+
+        with wave.open(str(path), 'rb') as wf:
+            frames = wf.getnframes()
+            rate = wf.getframerate() or 1
+            if rate <= 0:
+                return _INTRO_MIN_DURATION_MS
+            return max(int(frames * 1000 / rate), _INTRO_MIN_DURATION_MS)
+    except Exception:
+        return _INTRO_MIN_DURATION_MS
+
+
+def _show_intro(app: QApplication, win: MainWindow, show_main: Callable[[], None]) -> bool:
+    if os.environ.get('SKIP_INTRO', '0') == '1':
+        return False
+    if not _INTRO_IMAGE.exists():
+        return False
+    pixmap = QPixmap(str(_INTRO_IMAGE))
+    if pixmap.isNull():
+        return False
+
+    intro = _IntroWindow(pixmap)
+    screen = app.primaryScreen()
+    if screen:
+        intro.setGeometry(screen.availableGeometry())
+    else:
+        intro.resize(pixmap.size())
+    intro.show()
+    app.processEvents()
+
+    duration_ms = _INTRO_MIN_DURATION_MS
+    if _INTRO_AUDIO.exists():
+        duration_ms = max(duration_ms, _wav_duration_ms(_INTRO_AUDIO))
+
+    sound_effect = None
+    if _INTRO_AUDIO.exists() and QSoundEffect is not None:
+        try:
+            sound_effect = QSoundEffect(intro)
+            sound_effect.setSource(QUrl.fromLocalFile(str(_INTRO_AUDIO)))
+            sound_effect.setVolume(0.9)
+            sound_effect.setLoopCount(1)
+            sound_effect.play()
+        except Exception:
+            sound_effect = None
+    elif _INTRO_AUDIO.exists():
+        try:
+            import pygame  # type: ignore
+
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+            snd = pygame.mixer.Sound(str(_INTRO_AUDIO))
+            snd.play()
+            intro._pygame_sound = snd  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    timer = QTimer(intro)
+    timer.setSingleShot(True)
+    done = {'value': False}
+
+    def finish_intro() -> None:
+        if done['value']:
+            return
+        done['value'] = True
+        if sound_effect is not None:
+            try:
+                sound_effect.stop()
+            except Exception:
+                pass
+        intro.close()
+        show_main()
+
+    timer.timeout.connect(finish_intro)
+    timer.start(duration_ms + 200)
+    intro._timer = timer  # type: ignore[attr-defined]
+    intro._sound_effect = sound_effect  # type: ignore[attr-defined]
+    intro._close_hook = finish_intro  # type: ignore[attr-defined]
+
+    return True
+
+
 def _log_setup() -> str:
     """Create a simple desktop log file and configure logging.
     // Invariant guard: consistency suite — add robust logging bootstrap for desktop app
@@ -945,10 +1073,14 @@ def main(argv: List[str]) -> int:
     base = f"http://127.0.0.1:{_env_port()}"
     win = MainWindow(base)
     # Fullscreen on small panels if requested
-    if os.environ.get('FULLSCREEN', '0') == '1':
-        win.showFullScreen()
-    else:
-        win.show()
+    def _show_main() -> None:
+        if os.environ.get('FULLSCREEN', '0') == '1':
+            win.showFullScreen()
+        else:
+            win.show()
+
+    if not _show_intro(app, win, _show_main):
+        _show_main()
     return app.exec()
 
 

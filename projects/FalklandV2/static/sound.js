@@ -216,10 +216,12 @@
   let lastIntro = null;
   let queuedIntro = null;
   let lastEnemyBomb = null;
-  let introActive = false;
+  let introActive = Boolean(window.__introActive);
   let bridgeReady = true;
   let introAudio = null;
-  window.__introActive = false;
+  if (typeof window.__introActive !== 'boolean') {
+    window.__introActive = introActive;
+  }
   let duckUntil = 0;
   let SFX_GAIN = 1.0; // global multiplier for SFX/ambience
 

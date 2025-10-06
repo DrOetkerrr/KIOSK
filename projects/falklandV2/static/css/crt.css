@@ -27,17 +27,48 @@ body{
 .intro-overlay{
   position:fixed;
   inset:0;
-  background:#000 url('/static/img/intro_bridge.jpg') center center/cover no-repeat;
+  background:#000;
   display:flex;
   align-items:center;
   justify-content:center;
   z-index:1500;
   opacity:1;
-  transition:opacity .6s ease;
+  transition:opacity .6s ease, visibility 0s linear .6s;
+  color:#e9ffee;
+  text-shadow:0 0 16px rgba(92,255,191,0.65);
 }
 .intro-overlay.hidden{
   pointer-events:none;
   opacity:0;
+  visibility:hidden;
+}
+.intro-overlay__inner{
+  padding:24px 32px 28px;
+  background:rgba(0,0,0,0.55);
+  border:1px solid rgba(92,255,191,0.45);
+  border-radius:14px;
+  box-shadow:0 0 50px rgba(0,0,0,0.7);
+  text-align:center;
+  backdrop-filter:blur(2px);
+}
+.intro-overlay__art{
+  width:420px;
+  max-width:72vw;
+  border-radius:10px;
+  display:block;
+  margin:0 auto 18px;
+  box-shadow:0 0 30px rgba(0,0,0,0.6);
+}
+.intro-overlay__title{
+  font-size:26px;
+  letter-spacing:2px;
+  text-transform:uppercase;
+  margin-bottom:16px;
+}
+.intro-overlay__cta{
+  font-size:14px;
+  letter-spacing:1px;
+  text-transform:uppercase;
 }
 .wrap{max-width:940px;margin:0 auto;padding:14px;display:flex;flex-direction:column;gap:10px}
 .hud{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--panel);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow)}

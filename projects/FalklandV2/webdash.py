@@ -22,7 +22,7 @@ from projects.falklandV2.subsystems import webcore as core
 from projects.falklandV2.runtime_service import GameRuntime
 
 # Engine + Radar
-from projects.falklands.core.engine import Engine
+from projects.falklandV2.core.engine import Engine
 from projects.falklandV2.radar import Radar, Contact, HOSTILES, WORLD_N, HOSTILE_SPEED_SCALE  # noqa: F401
 from projects.falklandV2.subsystems.hermes_cap import HermesCAP
 try:
@@ -352,6 +352,15 @@ def _ensure_audio_flags() -> Dict[str, Any]:
 
 
 def _reset_audio_state() -> None:
+    try:
+        existing_intro = AUDIO_STATE.get('intro')
+    except Exception:
+        existing_intro = None
+    if not existing_intro:
+        try:
+            existing_intro = core.build_intro_payload()
+        except Exception:
+            existing_intro = None
     base = {
         "last_launch": None,
         "last_result": None,
@@ -361,6 +370,7 @@ def _reset_audio_state() -> None:
         "cap_recovery": None,
         "enemy_bomb": None,
         "shots_in_flight": [],
+        "intro": existing_intro,
     }
     AUDIO_STATE.clear()
     AUDIO_STATE.update(base)
@@ -1525,6 +1535,10 @@ RADIO_EVENT_AUDIO_MAP: Dict[str, Callable[[Dict[str, Any]], str | None]] = {
     'eng.hermes.outofaction': lambda ctx: 'ENG_HEMERS_OUTOFACTION',
     'eng.abandon_ship': lambda ctx: 'ENG_ABANDON_SHIP',
     'ship.alarm.threat_close': lambda ctx: 'RDR_ENEMY_CONTACT_CLOSING_IN',
+    'nav.set.course.ack': lambda ctx: 'NAV_COURSE_SET',
+    'nav.set.speed.ack': lambda ctx: 'NAV_SPEED_SET',
+    'nav.hermes.close_in.request': lambda ctx: 'NAV_HERMES_IN',
+    'nav.hermes.stand_off.request': lambda ctx: 'NAV_HERMES_OUT',
     'resupply.launch': lambda ctx: _resupply_audio('resupply.launch', ctx),
     'resupply.ready': lambda ctx: _resupply_audio('resupply.ready', ctx),
     'resupply.complete': lambda ctx: _resupply_audio('resupply.complete', ctx),

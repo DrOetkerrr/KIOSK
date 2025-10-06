@@ -19,7 +19,7 @@ from pathlib import Path
 from types import MethodType, SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 
-from projects.falklands.core.engine import Engine
+from projects.falklandV2.core.engine import Engine
 from projects.falklandV2.radar import Radar, WORLD_N
 from projects.falklandV2.subsystems.hermes_cap import HermesCAP
 from projects.falklandV2.subsystems import webcore as core
@@ -123,6 +123,10 @@ class GameRuntime:
         self._last_engine_tick_ts: float = now
         self._last_radar_tick_ts: float = now
         self._mission_settings_cache = self.mission.current_settings()
+        try:
+            core.AUDIO_STATE['intro'] = core.build_intro_payload()
+        except Exception:
+            core.AUDIO_STATE['intro'] = None
         self._apply_mission_contact_filters(self.radar)
         self._sync_cap_wave()
 
@@ -138,7 +142,7 @@ class GameRuntime:
             self.core.reset_damage_state()
         except Exception:
             pass
-        return Engine(state_path=self.state_path)
+        return Engine()
 
     def _create_cap(self) -> Optional[HermesCAP]:
         try:
@@ -518,7 +522,12 @@ class GameRuntime:
                 "cap_recovery": None,
                 "enemy_bomb": None,
                 "shots_in_flight": [],
+                "intro": None,
             })
+            try:
+                core.AUDIO_STATE['intro'] = core.build_intro_payload()
+            except Exception:
+                core.AUDIO_STATE['intro'] = None
             self.audio_state = core.AUDIO_STATE
 
             # Rebuild runtime components

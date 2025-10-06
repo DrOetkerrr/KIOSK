@@ -12,7 +12,7 @@ def _clear_intro_state() -> None:
         return
     try:
         with wd.STATE_LOCK:
-            wd.AUDIO_STATE.pop('intro', None)
+            wd.AUDIO_STATE['intro'] = None
     except Exception:
         pass
 

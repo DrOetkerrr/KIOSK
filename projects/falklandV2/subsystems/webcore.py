@@ -567,7 +567,8 @@ AUDIO_STATE: Dict[str, Any] = {
     "cap_launch": None,
     "cap_recovery": None,
     "enemy_bomb": None,
-    "shots_in_flight": []
+    "shots_in_flight": [],
+    "intro": None,
 }
 
 # Enemy hit throttle to avoid clustered multiple system offlines in a single instant
@@ -599,6 +600,78 @@ def clear_alarm() -> None:
                        "request": {}, "response": {"ok": True}})
     except Exception:
         pass
+
+
+def _skip_intro_flag() -> bool:
+    try:
+        flag = str(os.environ.get('SKIP_INTRO', '0')).strip().lower()
+    except Exception:
+        flag = '0'
+    return flag in {'1', 'true', 'yes', 'on'}
+
+
+def build_intro_payload(
+    sound_file: str = "intro.wav",
+    *,
+    volume: float = 0.85,
+    start_bridge: bool = True,
+    on_end_url: str | None = "/audio/intro_complete",
+    ts: float | None = None,
+) -> Dict[str, Any] | None:
+    if _skip_intro_flag():
+        return None
+    try:
+        file_val = str(sound_file).strip() or "intro.wav"
+    except Exception:
+        file_val = "intro.wav"
+    if not file_val.startswith('/'):
+        try:
+            candidate = (DATA_DIR / 'sounds' / file_val).resolve()
+            if not candidate.exists():
+                file_val = "intro.wav"
+        except Exception:
+            file_val = "intro.wav"
+    try:
+        vol = float(volume)
+    except Exception:
+        vol = 0.85
+    payload: Dict[str, Any] = {
+        "file": file_val,
+        "vol": max(0.0, min(1.0, vol)),
+        "start_bridge": bool(start_bridge),
+        "ts": float(ts if ts is not None else time.time()),
+    }
+    if on_end_url:
+        try:
+            payload['on_end_url'] = str(on_end_url)
+        except Exception:
+            payload['on_end_url'] = "/audio/intro_complete"
+    return payload
+
+
+def stamp_intro(
+    sound_file: str = "intro.wav",
+    *,
+    volume: float = 0.85,
+    start_bridge: bool = True,
+    on_end_url: str | None = "/audio/intro_complete",
+    ts: float | None = None,
+) -> None:
+    payload = build_intro_payload(sound_file, volume=volume, start_bridge=start_bridge, on_end_url=on_end_url, ts=ts)
+    try:
+        from .. import webdash as wd  # type: ignore
+        lock = getattr(wd, 'STATE_LOCK', None)
+    except Exception:
+        lock = None
+    target = payload if payload else None
+    if lock:
+        try:
+            with lock:
+                AUDIO_STATE['intro'] = target
+        except Exception:
+            AUDIO_STATE['intro'] = target
+    else:
+        AUDIO_STATE['intro'] = target
 
 
 def _stamp_cap_audio(slot: str, sound_file: str, volume: float, fade_s: float, *, fade_in_ms: int | float | None = None, on_end_url: str | None = None) -> None:
@@ -1945,6 +2018,7 @@ def get_tick_seconds(wd) -> float:
 
 def engine_thread_run(wd) -> None:
     import random as _rand
+    last_heartbeat = time.time()
     while True:  # minimal, resilient loop
         try:
             dt = clamp(float(get_tick_seconds(wd)), 0.05, 1.0)
@@ -2724,6 +2798,20 @@ def engine_thread_run(wd) -> None:
             eng = load_eng_sys()
             if _advance_eng_repairs(eng, dt, now):
                 save_eng_sys(eng)
+        except Exception:
+            pass
+        try:
+            now = time.time()
+            if (now - last_heartbeat) >= 10.0:
+                last_heartbeat = now
+                record_flight({
+                    'route': '/engine.heartbeat',
+                    'method': 'INT',
+                    'status': 200,
+                    'duration_ms': 0,
+                    'request': {},
+                    'response': {'ts': now}
+                })
         except Exception:
             pass
         time.sleep(dt)
