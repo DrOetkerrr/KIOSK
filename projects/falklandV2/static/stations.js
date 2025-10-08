@@ -729,28 +729,6 @@ function renderStationSwitches(){
   updateToolbarPowerClasses();
 }
 
-function insertVoiceToggle(parent, stationKey){
-  const row=document.createElement('div'); row.className='voice-toggle-row';
-  const label=document.createElement('span'); label.className='voice-label'; label.textContent='Voice control';
-  row.appendChild(label);
-  const selectWrap=document.createElement('label'); selectWrap.className='voice-device';
-  const selectCaption=document.createElement('span'); selectCaption.className='voice-device-caption'; selectCaption.textContent='Mic';
-  selectWrap.appendChild(selectCaption);
-  const select=document.createElement('select'); select.className='voice-device-select'; select.disabled = true;
-  select.addEventListener('change', function(ev){
-    const value = ev && ev.target ? ev.target.value : '';
-    Voice.setDevice(value);
-  });
-  selectWrap.appendChild(select);
-  row.appendChild(selectWrap);
-  const btn=document.createElement('button'); btn.className='btn voice-btn'; btn.dataset.station = stationKey;
-  btn.onclick = function(){ Voice.toggle(stationKey); };
-  row.appendChild(btn);
-  parent.appendChild(row);
-  Voice.attachDeviceSelect(select);
-  Voice.updateButtons();
-}
-
 function _normalizeHeading(val){
   let hdg = Number(val);
   if(!Number.isFinite(hdg)) return null;
@@ -1074,12 +1052,10 @@ function renderNAV(j){
     if(aid==='nav-speed' || aid==='nav-course') return;
   }catch(_){ }
   const p=$('#station-panel'); p.innerHTML='';
-  insertVoiceToggle(p,'NAV');
 
   const missionData = (j && j.mission && typeof j.mission === 'object' && Object.keys(j.mission).length) ? j.mission : null;
   const missionSettings = currentMissionSettings(j) || {};
   const missionId = missionData && missionData.id ? String(missionData.id) : '';
-  const missionOptions = (missionData && Array.isArray(missionData.available)) ? missionData.available.slice() : [];
   const missionSequence = (missionData && missionData.sequence && typeof missionData.sequence === 'object') ? missionData.sequence : null;
 
   if(!ST._missionPowerApplied || typeof ST._missionPowerApplied !== 'object') ST._missionPowerApplied = {};
@@ -1146,63 +1122,6 @@ function renderNAV(j){
       default:
         return 'idle';
     }
-  }
-
-  if(missionOptions.length || missionId){
-    if(missionId && missionOptions.every(function(opt){ return String(opt && opt.id) === missionId ? false : true; })){
-      missionOptions.push({id: missionId, label: (missionData && missionData.label) ? missionData.label : missionId});
-    }
-
-    const missionSelectRow=document.createElement('div'); missionSelectRow.className='row section nav-mission-selector';
-    const missionLabel=document.createElement('span'); missionLabel.className='nav-mission-label'; missionLabel.textContent='Mission'; missionLabel.style.marginRight='8px';
-    missionSelectRow.appendChild(missionLabel);
-    const missionSelect=document.createElement('select'); missionSelect.className='input'; missionSelect.id='nav-mission-select';
-    missionOptions.forEach(function(opt){
-      if(!opt) return;
-      const option=document.createElement('option');
-      option.value=String(opt.id || '');
-      option.textContent=opt.label ? String(opt.label) : String(opt.id || '');
-      missionSelect.appendChild(option);
-    });
-    if(missionId) missionSelect.value=missionId;
-    const missionSelectMsg=document.createElement('span'); missionSelectMsg.className='nav-msg muted'; missionSelectMsg.style.marginLeft='8px';
-
-    async function switchMission(targetId){
-      const trimmed=(targetId||'').trim();
-      if(!trimmed || trimmed===missionId){
-        missionSelect.value = missionId;
-        missionSelectMsg.textContent='';
-        missionSelectMsg.className='nav-msg muted';
-        return;
-      }
-      missionSelect.disabled = true;
-      missionSelectMsg.textContent='Switching…';
-      missionSelectMsg.className='nav-msg muted';
-      try{
-        const res=await fetch('/mission/select',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: trimmed})});
-        const data=await res.json();
-        if(data && data.ok){
-          missionSelectMsg.textContent='Mission updated';
-          missionSelectMsg.className='nav-msg ok';
-          try{ await poll(); }catch(_){ }
-        }else{
-          missionSelectMsg.textContent = (data && (data.error || data.message)) ? String(data.error || data.message) : 'Mission update failed';
-          missionSelectMsg.className='nav-msg err';
-          missionSelect.value = missionId;
-        }
-      }catch(_){
-        missionSelectMsg.textContent='Mission update failed';
-        missionSelectMsg.className='nav-msg err';
-        missionSelect.value = missionId;
-      }finally{
-        missionSelect.disabled = false;
-      }
-    }
-
-    missionSelect.addEventListener('change', function(){ switchMission(missionSelect.value); });
-    missionSelectRow.appendChild(missionSelect);
-    missionSelectRow.appendChild(missionSelectMsg);
-    p.appendChild(missionSelectRow);
   }
 
   const missionCard=document.createElement('div'); missionCard.className='nav-mission-card';
@@ -1544,7 +1463,6 @@ function applyMissionPowerPreset(missionId, settings){
 
 function renderRADAR(j){
   const p=$('#station-panel'); p.innerHTML='';
-  insertVoiceToggle(p,'RADAR');
   const radarStatus = engSystemStatus(j,'Radar');
   if(radarStatus && radarStatus.toLowerCase()!=='ok'){
     renderStationOffline(p,'SYSTEM OFFLINE','RADAR');
@@ -1646,8 +1564,13 @@ function renderRADAR(j){
     const tdId=document.createElement('td'); tdId.className='num'; tdId.textContent=(c.id!==undefined&&c.id!==null)?String(c.id).padStart(2,'0'):'—';
     const tdLock=document.createElement('td');
     const btn=document.createElement('button'); btn.className='btn'; btn.textContent='LOCK';
-    if(c.id===undefined||c.id===null){ btn.disabled=true; }
-    btn.onclick=function(){ lockContact(c.id); };
+    const numericId = Number(c.id);
+    const isNumericId = Number.isFinite(numericId);
+    if(!isNumericId){ btn.disabled = true; }
+    btn.onclick=function(){
+      if(!isNumericId) return;
+      lockContact(numericId);
+    };
     tdLock.appendChild(btn);
     [tdIdx,tdStatus,tdType,tdName,tdCell,tdRange,tdSpeed,tdTTI,tdId,tdLock].forEach(function(td){ tr.appendChild(td); });
     tb.appendChild(tr);
@@ -1687,7 +1610,6 @@ function computeTTI(contact){
 
 function renderWPN(j){
   const p=$('#station-panel'); p.innerHTML='';
-  insertVoiceToggle(p,'WPN');
   const weaponsStatus = engSystemStatus(j,'FireControl_Weapons');
   if(weaponsStatus && weaponsStatus.toLowerCase()!=='ok'){
     renderStationOffline(p,'SYSTEM OFFLINE','WPN');
@@ -1968,7 +1890,6 @@ function renderRADIO(j){
     }
   }catch(_){ }
   p.innerHTML='';
-  insertVoiceToggle(p,'RADIO');
   const commsStatus = engSystemStatus(j,'COMMS');
   if(commsStatus && commsStatus.toLowerCase()!=='ok'){
     renderStationOffline(p,'SYSTEM OFFLINE','RADIO');
@@ -2246,6 +2167,15 @@ function renderRADIO(j){
     }
   }
 
+  function capStationRadius(){
+    try{
+      const readiness = (j.cap && j.cap.readiness) || {};
+      const val = Number(readiness.station_radius_nm);
+      if(Number.isFinite(val) && val > 0) return val;
+    }catch(_){ }
+    return 10;
+  }
+
 function currentMissionConfig(){
   const rawCell = (capCellInput.value || '').trim().toUpperCase();
   const missionType = missionTypeSelect.value || 'intercept';
@@ -2258,6 +2188,7 @@ function currentMissionConfig(){
     target: targetValue,
     capCell: rawCell,
     capCellNorm: normalizeCell(rawCell),
+    capRadius: capStationRadius(),
   };
 }
 
@@ -2340,7 +2271,8 @@ let missionValid=false;
         const cellLabel = cfg.capCellNorm || cfg.capCell;
         pieces.push(cellLabel ? `CAP ${cellLabel}` : 'CAP cell needed');
       }
-      pieces.push('5 nm diameter circle');
+      const radiusLabel = (cfg.capRadius && Number.isFinite(cfg.capRadius)) ? `${cfg.capRadius} nm radius` : 'CAP station';
+      pieces.push(`${radiusLabel} circle`);
       pieces.push('10 min station');
     }
     return pieces.join(' • ');
@@ -2413,10 +2345,10 @@ let missionValid=false;
     }
     if(cfg.target==='hermes'){
       if(!flagshipCell || flagshipCell==='—') return {ok:false, error:'Hermes position unknown.'};
-      return {ok:true, data:{missionType:'cap', loadout: 'aim9', target:'hermes', cell:flagshipCell, follow:'hermes'}};
+      return {ok:true, data:{missionType:'cap', loadout: 'aim9', target:'hermes', cell:flagshipCell, follow:'hermes', capRadius: capStationRadius()}};
     }
     if(!cfg.capCellNorm) return {ok:false, error:'Enter CAP grid cell.'};
-    return {ok:true, data:{missionType:'cap', loadout: cfg.loadout, target:'cap_cell', cell: cfg.capCellNorm}};
+    return {ok:true, data:{missionType:'cap', loadout: cfg.loadout, target:'cap_cell', cell: cfg.capCellNorm, capRadius: capStationRadius()}};
   }
 
   loadoutSelect.addEventListener('change', function(){
@@ -2479,7 +2411,7 @@ let missionValid=false;
           setStatus((data && (data.message || data.error))? String(data.message || data.error) : 'Intercept request failed','err');
         }
       }else{
-        const payload={ cell: mission.cell, station_minutes: 10, radius_nm: 2.5, loadout: mission.loadout };
+        const payload={ cell: mission.cell, station_minutes: 10, radius_nm: mission.capRadius || capStationRadius(), loadout: mission.loadout };
         if(mission.follow==='hermes') payload.follow='hermes';
         const res=await fetch('/cap/launch_to',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
         const data=await res.json();
@@ -2554,7 +2486,8 @@ let missionValid=false;
             }catch(_){ }
           }
         }
-        res = await fetch('/cap/vector',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mission_id: missionId})});
+        const body = { mission_id: missionId, loadout: mission.loadout };
+        res = await fetch('/cap/vector',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
       }else{
         const payload={ mission_id: missionId, cell: mission.cell, minutes: 10 };
         if(mission.follow==='hermes') payload.follow='hermes';
@@ -2737,7 +2670,6 @@ let missionValid=false;
 }
 function renderENG(j){
   const p=$('#station-panel'); p.innerHTML='';
-  insertVoiceToggle(p,'ENG');
   const eng = j.eng || {};
   const capReady = (j.cap && j.cap.readiness) || {};
   const systems = Array.isArray(eng.systems) ? eng.systems : [];

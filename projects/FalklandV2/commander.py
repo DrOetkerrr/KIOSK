@@ -21,12 +21,12 @@ for p in (str(REPO_ROOT), str(ROOT)):
         sys.path.insert(0, p)
 
 try:
-    from projects.falklandV2.engine import Engine  # type: ignore
+    from projects.falklandV2.core.engine import Engine  # type: ignore
     from projects.falklandV2.subsystems import radar as rdar  # type: ignore
     from projects.falklandV2.subsystems import nav as navi  # type: ignore
     from projects.falklandV2.subsystems import weapons as weap  # type: ignore
 except Exception:  # pragma: no cover - fallback for direct script execution
-    from engine import Engine
+    from core.engine import Engine
     from subsystems import radar as rdar
     from subsystems import nav as navi
     from subsystems import weapons as weap

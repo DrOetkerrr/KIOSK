@@ -15,13 +15,16 @@ def _lazy():
         RADAR, PENDING_EVENTS, STATE_LOCK, AUDIO_STATE,
         compute_in_range, get_own_xy, contact_to_ui, save_ammo,
         TARGET_CLASS_BY_NAME, ENG,
-        load_ammo, load_arming, voice_emit, officer_say,
-        record_event
+        load_ammo, load_arming, save_arming, voice_emit, officer_say,
+        record_event, EVENT_QUEUE
     )
     try:
         _sound_key_for_weapon = getattr(_wd, '_sound_key_for_weapon')
     except AttributeError:
         from ..subsystems.webcore import _sound_key_for_weapon  # type: ignore
+    mark_weapon_arming = getattr(_wd, 'mark_weapon_arming', lambda *args, **kwargs: None)
+    clear_weapon_arming = getattr(_wd, 'clear_weapon_arming', lambda *args, **kwargs: None)
+    pending_arming_left = getattr(_wd, 'pending_arming_left', lambda *_args, **_kwargs: 0)
     return locals()
 
 
@@ -60,10 +63,13 @@ def weapons_arm():
         if not isinstance(raw, dict):
             raw = {}
         arm_delay = 5.0
+        now = time.time()
         if state == 'Armed':
-            rec = {'armed': False, 'arming_until': time.time() + arm_delay}
+            due_ts = now + arm_delay
+            rec = {'armed': False, 'arming_until': due_ts}
             disp_state = 'Arming'
         else:
+            due_ts = 0.0
             rec = {'armed': False, 'arming_until': 0}
             disp_state = 'Safe'
         raw[name] = rec
@@ -74,28 +80,58 @@ def weapons_arm():
             pass
         if state == 'Armed':
             try:
-                L['PENDING_EVENTS'].append({'due': time.time()+arm_delay, 'kind': 'arming_ready', 'weapon': name})
+                L['PENDING_EVENTS'].append({'due': due_ts, 'kind': 'arming_ready', 'weapon': name})
             except Exception:
                 pass
             def _complete():
+                armed_updated = False
                 try:
                     with L['STATE_LOCK']:
                         raw_local = L['_load_json'](L['ARMING_PATH'], {})
                         if isinstance(raw_local, dict):
                             rec_local = raw_local.get(name)
-                            if isinstance(rec_local, dict):
-                                rec_local['armed'] = True
-                                rec_local['arming_until'] = 0.0
-                                raw_local[name] = rec_local
-                                L['_save_json'](L['ARMING_PATH'], raw_local)
+                            if not isinstance(rec_local, dict):
+                                rec_local = {}
+                            rec_local['armed'] = True
+                            rec_local['arming_until'] = 0.0
+                            raw_local[name] = rec_local
+                            L['_save_json'](L['ARMING_PATH'], raw_local)
+                            armed_updated = True
                 except Exception:
                     return
+                if armed_updated:
+                    try:
+                        current = L['load_arming']() if 'load_arming' in L else {}
+                        if isinstance(current, dict):
+                            current[name] = 'Armed'
+                            if 'save_arming' in L:
+                                L['save_arming'](current)
+                                try:
+                                    L['_save_json'](L['ARMING_PATH'], raw_local)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                try:
+                    L['clear_weapon_arming'](name)
+                except Exception:
+                    pass
                 try:
                     L['record_event']('weapon.reload.complete', {'name': name, 'source': 'arming'})
                 except Exception:
                     pass
+            # Start arming completion timer (avoid daemon kw for wider Python compat)
             try:
-                threading.Timer(arm_delay + 0.1, _complete, daemon=True).start()
+                _t = threading.Timer(arm_delay + 0.1, _complete)
+                try:
+                    _t.daemon = True  # best-effort; safe on CPython
+                except Exception:
+                    pass
+                _t.start()
+            except Exception:
+                pass
+            try:
+                L['mark_weapon_arming'](name, due_ts)
             except Exception:
                 pass
         try:
@@ -105,6 +141,19 @@ def weapons_arm():
                 L['record_event']('weapon.safe', {'name': name})
         except Exception:
             pass
+        if state != 'Armed':
+            try:
+                L['clear_weapon_arming'](name)
+            except Exception:
+                pass
+            try:
+                pending = L['PENDING_EVENTS']
+                with L['STATE_LOCK']:
+                    to_keep = [ev for ev in pending if not (str(ev.get('kind')) == 'arming_ready' and str(ev.get('weapon')) == name)]
+                    if len(to_keep) != len(pending):
+                        pending[:] = to_keep
+            except Exception:
+                pass
         return jsonify({'ok': True, 'name': name, 'state': disp_state})
     except Exception as e:
         logging.exception("/weapons/arm error: %s", e)
@@ -169,12 +218,104 @@ def weapons_fire():
             return jsonify({'ok': False, 'error': 'COOLDOWN'}), 400
         # Enforce ARMED state for both test and real
         arming_state = L['load_arming']() if 'load_arming' in L else {}
-        if arming_state.get(name) != 'Armed':
+        try:
+            pending_left = L['pending_arming_left'](name)
+        except Exception:
+            pending_left = 0
+        if pending_left > 0:
             try:
-                L['record_event']('weapon.fire.rejected', {'name': name, 'reason': 'NOT_ARMED', 'mode': mode})
+                L['record_event']('weapon.fire.rejected', {'name': name, 'reason': 'NOT_ARMED', 'mode': mode, 'pending_s': pending_left})
             except Exception:
                 pass
-            return jsonify({'ok': False, 'error': 'NOT_ARMED'}), 400
+            return jsonify({'ok': False, 'error': 'NOT_ARMED', 'pending_s': pending_left}), 400
+
+        recent_ready = False
+        if arming_state.get(name) != 'Armed':
+            recovered = False
+            try:
+                raw = L['_load_json'](L['ARMING_PATH'], {})
+                container = None
+                record = None
+                if isinstance(raw, dict):
+                    weapons_section = raw.get('weapons')
+                    if isinstance(weapons_section, dict):
+                        container = weapons_section
+                        record = weapons_section.get(name)
+                    else:
+                        container = raw
+                        record = container.get(name)
+                armed_flag = False
+                sanitized_record = None
+                if isinstance(record, dict):
+                    now_local = time.time()
+                    armed_flag = bool(record.get('armed', False))
+                    if not armed_flag:
+                        try:
+                            until = float(record.get('arming_until', 0.0) or 0.0)
+                            if until > 0.0 and until <= now_local:
+                                armed_flag = True
+                        except Exception:
+                            pass
+                    if armed_flag:
+                        sanitized_record = dict(record)
+                        sanitized_record['armed'] = True
+                        sanitized_record['arming_until'] = 0.0
+                elif isinstance(record, str):
+                    armed_flag = record.strip().lower().startswith('armed')
+
+                if armed_flag:
+                    arming_state[name] = 'Armed'
+                    recovered = True
+                    try:
+                        if isinstance(container, dict):
+                            if sanitized_record is not None:
+                                container[name] = sanitized_record
+                            else:
+                                container[name] = 'Armed'
+                            L['_save_json'](L['ARMING_PATH'], raw)
+                    except Exception:
+                        pass
+                    try:
+                        if 'save_arming' in L:
+                            L['save_arming'](dict(arming_state))
+                    except Exception:
+                        pass
+            except Exception:
+                recovered = False
+
+            if arming_state.get(name) != 'Armed':
+                recovered = False
+                try:
+                    now_local = time.time()
+                    queue = list(L['EVENT_QUEUE']) if 'EVENT_QUEUE' in L else []
+                    for ev in reversed(queue):
+                        if str(ev.get('id') or '') != 'weapon.reload.complete':
+                            continue
+                        data = ev.get('data') or {}
+                        if str(data.get('name') or data.get('weapon') or '') != name:
+                            continue
+                        ts = float(ev.get('ts', 0.0) or 0.0)
+                        if ts and now_local - ts <= 30.0:
+                            recovered = True
+                            break
+                    if recovered:
+                        recent_ready = True
+                        arming_state[name] = 'Armed'
+                        try:
+                            if 'save_arming' in L:
+                                L['save_arming'](dict(arming_state))
+                        except Exception:
+                            pass
+                except Exception:
+                    recovered = False
+
+            if arming_state.get(name) != 'Armed':
+                logging.info("weapon.fire blocked: NOT_ARMED name=%s pending=%s recent_ready=%s state=%s", name, pending_left, recent_ready, arming_state.get(name))
+                try:
+                    L['record_event']('weapon.fire.rejected', {'name': name, 'reason': 'NOT_ARMED', 'mode': mode})
+                except Exception:
+                    pass
+                return jsonify({'ok': False, 'error': 'NOT_ARMED', 'state': arming_state.get(name)}), 400
         if mode == 'test':
             if int(ammo.get(name, 0)) <= 0:
                 try:

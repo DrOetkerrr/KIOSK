@@ -97,24 +97,27 @@ fi
 
 # --- Lock/Unlock test driven by top_threat_id ------------------------------
 sec "Auto Lock/Unlock (using top_threat_id)"
-# fetch top_threat_id
-TOP_ID="$(curl -sS "$BASE/api/status" | ${PY:-python3} - <<'PY'
+# fetch top_threat_id (read JSON from stdin; python -c keeps stdin free)
+TOP_ID="$(
+  curl -sS "$BASE/api/status" |
+  ${PY:-python3} -c '
 import sys, json
 try:
-    j=json.load(sys.stdin)
-    ttid = j.get("top_threat_id") or None
-    if not ttid:
-        threats = j.get("threats") or []
-        if threats:
-            ttid = threats[0].get("id")
-    if not ttid:
-        contacts = j.get("contacts") or []
-        if contacts:
-            ttid = contacts[0].get("id")
-    print(ttid or "")
+    payload = json.load(sys.stdin)
 except Exception:
     print("")
-PY
+    sys.exit(0)
+ttid = payload.get("top_threat_id") if isinstance(payload, dict) else None
+if not ttid and isinstance(payload, dict):
+    threats = payload.get("threats") or []
+    if threats:
+        ttid = threats[0].get("id")
+if not ttid and isinstance(payload, dict):
+    contacts = payload.get("contacts") or []
+    if contacts:
+        ttid = contacts[0].get("id")
+print(ttid or "")
+'
 )"
 {
   echo '```'

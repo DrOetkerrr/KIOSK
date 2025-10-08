@@ -9,8 +9,9 @@ Usage from webdash:
     payload = build_status()
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 from datetime import datetime, timezone
+from pathlib import Path
 
 from . import webcore as core
 
@@ -70,10 +71,23 @@ def build() -> Dict[str, Any]:
     try:
         schedule = getattr(wd.RUNTIME, 'wave_schedule', None)
         if schedule is not None:
+            # Guard: ensure radar starts from configured start wave.
             try:
                 elapsed = float(getattr(wd.RADAR, '_wave_elapsed', 0.0))
             except Exception:
                 elapsed = 0.0
+            try:
+                start_elapsed = float(getattr(schedule, 'start_elapsed_s', 0.0))
+            except Exception:
+                start_elapsed = 0.0
+            # If config requests a later start and radar hasn't advanced past it, rebind.
+            if start_elapsed > 0.0 and elapsed < start_elapsed:
+                try:
+                    if hasattr(wd.RADAR, 'bind_wave_schedule'):
+                        wd.RADAR.bind_wave_schedule(schedule)  # type: ignore[arg-type]
+                        elapsed = float(getattr(wd.RADAR, '_wave_elapsed', elapsed))
+                except Exception:
+                    pass
             try:
                 current_wave = schedule.current(elapsed)
                 waves = list(schedule.waves)
@@ -394,6 +408,29 @@ def build() -> Dict[str, Any]:
             if nm == 'MM38 Exocet': return (0, nm)
             cls_rank = {'Missile':1, 'SAM':2, 'Gun':3, 'Decoy':4}.get(cls, 5)
             return (cls_rank, nm)
+        try:
+            pending_map = wd.pending_arming_snapshot(now)  # type: ignore[attr-defined]
+        except Exception:
+            pending_map = {}
+        # Robustness: infer recent arming completions from event queue (in case
+        # persistence races temporarily report 'Safe').
+        recent_ready: set[str] = set()
+        try:
+            events_raw = list(getattr(wd, 'EVENT_QUEUE', []))
+            for ev in events_raw:
+                try:
+                    if str(ev.get('id') or '') != 'weapon.reload.complete':
+                        continue
+                    data = ev.get('data') or {}
+                    nm = str(data.get('name') or data.get('weapon') or '')
+                    src = str(data.get('source') or '')
+                    ts = float(ev.get('ts') or 0.0)
+                    if nm and src == 'arming' and (now - ts) <= 15.0:
+                        recent_ready.add(nm)
+                except Exception:
+                    continue
+        except Exception:
+            recent_ready = set()
         arming_raw = wd._load_json(wd.ARMING_PATH, {})
 
         def _arming_record(nm: str) -> Dict[str, Any]:
@@ -432,17 +469,24 @@ def build() -> Dict[str, Any]:
         weaps = []
         for w in wd.WEAP_CATALOG:
             nm = w.get('name'); cls = w.get('class')
+            pending_left = int(pending_map.get(nm, 0)) if pending_map else 0
             rec = {
                 'name': nm,
                 'class': cls,
                 'min_nm': w.get('min_nm'),
                 'max_nm': w.get('max_nm'),
                 'armed': arming.get(nm, 'Safe'),
-                'arming_s': _arming_left_s(nm),
+                'arming_s': pending_left if pending_left > 0 else _arming_left_s(nm),
                 'ammo': ammo.get(nm, 0),
                 'in_range': wd.compute_in_range(nm, primary_ui),
                 'cooldown_s': _cooldown_left_s(nm),
             }
+            if nm in recent_ready:
+                rec['armed'] = 'Armed'
+            if pending_left > 0:
+                rec['armed'] = 'Arming'
+            elif rec['arming_s'] > 0 and rec['armed'] != 'Armed':
+                rec['armed'] = 'Arming'
             weaps.append(rec)
         weaps.sort(key=_order_key)
         payload['weapons'] = weaps
@@ -485,6 +529,115 @@ def build() -> Dict[str, Any]:
     # Audio snapshot
     try:
         pending_radio: Dict[str, Any] | None = None
+        def _resolve_radio_file(ref: str | None) -> Path | None:
+            if not ref:
+                return None
+            try:
+                ref_str = str(ref).strip()
+            except Exception:
+                return None
+            if not ref_str:
+                return None
+            base_dir: Path | None = None
+            remainder = ref_str
+            def _base_path(attr_name: str, default_rel: str | None = None) -> Path:
+                base_val = getattr(wd, attr_name, None)
+                if not base_val:
+                    if attr_name != 'DATA_DIR':
+                        base_val = getattr(wd, 'DATA_DIR', None)
+                if not base_val:
+                    base_val = getattr(wd, 'STATE_DIR', None)
+                if not base_val:
+                    base_val = '/tmp'
+                base_path = Path(base_val)
+                if default_rel:
+                    base_path = base_path / default_rel
+                return base_path
+
+            if ref_str.startswith('/data/'):
+                remainder = ref_str[6:]
+                head, _, tail = remainder.partition('/')
+                if not tail:
+                    return None
+                remainder = tail
+                if head == 'tts':
+                    tts_root = getattr(wd, 'TTS_DIR', None) or getattr(wd, 'STATE_DIR', None) or '/tmp'
+                    base_dir = Path(tts_root)
+                elif head == 'radiomsg':
+                    base_dir = _base_path('DATA_DIR', 'radiomsg')
+                elif head == 'sounds':
+                    base_dir = _base_path('DATA_DIR', 'sounds')
+                else:
+                    base_dir = _base_path('DATA_DIR') / head
+            else:
+                # Try TTS then radiomsg fallbacks
+                tts_dir = getattr(wd, 'TTS_DIR', None) or getattr(wd, 'STATE_DIR', None)
+                if tts_dir:
+                    candidate = Path(tts_dir) / remainder
+                    if candidate.exists():
+                        return candidate
+                radio_dir = _base_path('DATA_DIR', 'radiomsg')
+                candidate = radio_dir / remainder
+                if candidate.exists():
+                    return candidate
+                base_dir = None
+            if base_dir is None:
+                return None
+            path = base_dir / remainder
+            return path if path.exists() else None
+
+        def _estimate_radio_duration(text: str, hint: Any, file_ref: str | None) -> float:
+            candidates: List[float] = []
+            try:
+                if hint is not None:
+                    val = float(hint)
+                    if val > 0:
+                        candidates.append(val)
+            except Exception:
+                pass
+            path = _resolve_radio_file(file_ref)
+            if path is not None:
+                suffix = path.suffix.lower()
+                try:
+                    if suffix in ('.wav', '.wave'):
+                        import wave
+                        with wave.open(str(path), 'rb') as wf:  # type: ignore[attr-defined]
+                            frames = wf.getnframes()
+                            rate = wf.getframerate() or 1
+                            if frames > 0 and rate > 0:
+                                candidates.append(frames / rate)
+                    elif suffix in ('.aiff', '.aif', '.aifc'):
+                        import aifc
+                        with aifc.open(str(path), 'rb') as af:  # type: ignore[attr-defined]
+                            frames = af.getnframes()
+                            rate = af.getframerate() or 1
+                            if frames > 0 and rate > 0:
+                                candidates.append(frames / rate)
+                    else:
+                        size_bytes = float(path.stat().st_size or 0)
+                        if size_bytes > 0:
+                            if suffix in ('.m4a', '.aac'):
+                                bitrate = 12000.0  # ~96 kbps
+                            elif suffix in ('.ogg', '.opus'):
+                                bitrate = 11000.0
+                            else:
+                                bitrate = 16000.0  # ~128 kbps
+                            candidates.append(size_bytes / max(bitrate, 1000.0))
+                except Exception:
+                    pass
+            if not candidates:
+                words = max(1, len(text.split()))
+                commas = text.count(',') + text.count(';') + text.count('—')
+                pauses = text.count('.') + text.count('!') + text.count('?') + text.count(':')
+                hyphen_pauses = text.count('-')
+                chars = len(text)
+                est = 0.32 * words + 0.18 * commas + 0.16 * pauses + 0.04 * hyphen_pauses + 0.45
+                if chars > 90:
+                    est += 0.0025 * (chars - 90)
+                candidates.append(est)
+            duration = max(candidates)
+            return float(max(0.95, min(8.5, duration)))
+
         with wd.STATE_LOCK:
             audio_state = dict(wd.AUDIO_STATE)
             try:
@@ -551,9 +704,7 @@ def build() -> Dict[str, Any]:
                     file_path = wd._tts_synthesize(text, role)
                 except Exception:
                     file_path = None
-            if duration_s is None or duration_s <= 0:
-                words = max(1, len(text.split()))
-                duration_s = max(1.8, min(8.0, 0.45 * words))
+            duration_s = _estimate_radio_duration(text, duration_s, file_path)
             radio_payload = {
                 'ts': time.time(),
                 'role': role,
@@ -570,7 +721,7 @@ def build() -> Dict[str, Any]:
                     pass
                 audio_state['radio'] = dict(radio_payload)
                 try:
-                    wd.RADIO_STATE['busy_until'] = radio_payload['ts'] + duration_s + 0.5
+                    wd.RADIO_STATE['busy_until'] = radio_payload['ts'] + duration_s + 0.25
                 except Exception:
                     pass
         shots_raw = audio_state.get('shots_in_flight')

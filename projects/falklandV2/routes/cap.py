@@ -265,17 +265,41 @@ def cap_request():
             return jsonify({"ok": False, "error": "no locked/selected target"}), 400
         st = L['ENG'].public_state() if hasattr(L['ENG'], "public_state") else {}
         own_x, own_y = L['radar_xy_from_state'](st)
+        ship_cell_label = None
+        try:
+            ship_cell_label = L['ship_cell_from_state'](st)
+        except Exception:
+            ship_cell_label = None
+        if ship_cell_label:
+            try:
+                sx, sy = L['cell_to_world'](ship_cell_label)
+                own_x, own_y = float(sx), float(sy)
+            except Exception:
+                pass
         ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
         try:
             course_deg = float(ship.get('heading', 0.0) or 0.0)
         except Exception:
             course_deg = 0.0
         convoy = L.get('CONVOY')
+        hermes_cell = None
         if convoy is not None:
-            hx, hy, hermes_cell = convoy.escort_world_cell('hermes', own_x, own_y, course_deg)
+            try:
+                hx, hy, hermes_cell = convoy.escort_world_cell('hermes', own_x, own_y, course_deg)
+                hx, hy = float(hx), float(hy)
+            except Exception:
+                hx, hy = own_x, own_y
+                hermes_cell = None
         else:
             hx, hy = own_x, own_y
-            hermes_cell = L['ship_cell_from_state'](st)
+        if not hermes_cell:
+            hermes_cell = ship_cell_label
+        try:
+            if hermes_cell:
+                hx_cell, hy_cell = L['cell_to_world'](hermes_cell)
+                hx, hy = float(hx_cell), float(hy_cell)
+        except Exception:
+            pass
         if tgt is not None:
             dx = float(getattr(tgt, 'x', 0.0)) - float(hx)
             dy = float(getattr(tgt, 'y', 0.0)) - float(hy)
@@ -570,17 +594,26 @@ def cap_launch_to():
             return jsonify(payload), 400
         st = L['ENG'].public_state() if hasattr(L['ENG'], "public_state") else {}
         own_x, own_y = L['radar_xy_from_state'](st)
-        ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
         try:
-            course_deg = float(ship.get('heading', 0.0) or 0.0)
+            ship_cell_label = L['ship_cell_from_state'](st)
+            if ship_cell_label:
+                sx, sy = L['cell_to_world'](ship_cell_label)
+                own_x, own_y = float(sx), float(sy)
         except Exception:
-            course_deg = 0.0
-        convoy = L.get('CONVOY')
-        if convoy is not None:
-            hx, hy, hermes_cell = convoy.escort_world_cell('hermes', own_x, own_y, course_deg)
-        else:
-            hx, hy = own_x, own_y
+            pass
+        _ = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
+        hermes_cell = None
+        try:
             hermes_cell = L['ship_cell_from_state'](st)
+        except Exception:
+            hermes_cell = None
+        try:
+            if hermes_cell:
+                hx, hy = L['cell_to_world'](hermes_cell)
+            else:
+                hx, hy = own_x, own_y
+        except Exception:
+            hx, hy = own_x, own_y
         tx, ty = L['cell_to_world'](cell)
         dx, dy = float(tx) - float(hx), float(ty) - float(hy)
         rng_nm = (dx*dx + dy*dy) ** 0.5
@@ -728,6 +761,7 @@ def cap_vector():
             mid = int(data.get('mission_id'))
         except Exception:
             mid = 0
+        requested_loadout = _normalize_loadout(data.get('loadout'))
         if mid <= 0:
             payload = {"ok": False, "error": "missing mission_id"}
             L['record_flight']({"route": route, "method": request.method, "status": 400,
@@ -737,18 +771,37 @@ def cap_vector():
 
         # Determine current primary lock target
         st = L['ENG'].public_state() if hasattr(L['ENG'], "public_state") else {}
-        own_x, own_y = L['radar_xy_from_state'](st)
-        ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
+        ship_cell_label = None
         try:
-            course_deg = float(ship.get('heading', 0.0) or 0.0)
+            ship_cell_label = L['ship_cell_from_state'](st)
         except Exception:
-            course_deg = 0.0
+            ship_cell_label = None
+        own_x, own_y = L['radar_xy_from_state'](st)
+        if ship_cell_label:
+            try:
+                sx, sy = L['cell_to_world'](ship_cell_label)
+                own_x, own_y = float(sx), float(sy)
+            except Exception:
+                pass
         convoy = L.get('CONVOY')
+        hermes_cell = None
         if convoy is not None:
-            hx, hy, hermes_cell = convoy.escort_world_cell('hermes', own_x, own_y, course_deg)
+            try:
+                hx, hy, hermes_cell = convoy.escort_world_cell('hermes', own_x, own_y, float((st.get('ship') or {}).get('heading', 0.0) if isinstance(st, dict) else 0.0))
+                hx, hy = float(hx), float(hy)
+            except Exception:
+                hx, hy = own_x, own_y
+                hermes_cell = None
         else:
             hx, hy = own_x, own_y
-            hermes_cell = L['ship_cell_from_state'](st)
+        if not hermes_cell:
+            hermes_cell = ship_cell_label
+        try:
+            if hermes_cell:
+                hx_cell, hy_cell = L['cell_to_world'](hermes_cell)
+                hx, hy = float(hx_cell), float(hy_cell)
+        except Exception:
+            pass
         pid = getattr(L['RADAR'], 'priority_id', None)
         tgt = next((c for c in L['RADAR'].contacts if int(getattr(c,'id',-1)) == int(pid)), None) if pid is not None else None
         if tgt is None:
@@ -767,6 +820,30 @@ def cap_vector():
                                "duration_ms": int((time.time()-t0)*1000),
                                "request": data, "response": payload})
             return jsonify(payload), 404
+
+        # Determine desired loadout; default to current
+        current_loadout = str(getattr(mission, 'loadout', 'aim9')).lower() or 'aim9'
+        desired_loadout = requested_loadout or current_loadout
+        if desired_loadout not in ('aim9', 'bombs'):
+            desired_loadout = current_loadout
+
+        # Apply loadout change if requested
+        if desired_loadout != current_loadout:
+            cfg = getattr(L['CAP'], 'cfg', {}) if isinstance(getattr(L['CAP'], 'cfg', None), dict) else {}
+            weapons_cfg = cfg.get('weapons') or {}
+            if desired_loadout == 'bombs':
+                bombs_cfg = weapons_cfg.get('bombs') or {}
+                total = int(bombs_cfg.get('bombs_total', bombs_cfg.get('missiles_total', getattr(mission, 'missiles_total', 4))))
+                cooldown = int(bombs_cfg.get('engagement_cooldown_s', getattr(mission, 'engagement_cooldown_s', 5)))
+            else:
+                aim_cfg = weapons_cfg.get('aim9') or {}
+                total = int(aim_cfg.get('missiles_total', getattr(mission, 'missiles_total', 2)))
+                cooldown = int(aim_cfg.get('engagement_cooldown_s', getattr(mission, 'engagement_cooldown_s', 5)))
+            setattr(mission, 'loadout', desired_loadout)
+            setattr(mission, 'missiles_total', max(0, total))
+            setattr(mission, 'engagement_cooldown_s', max(1, cooldown))
+            if getattr(mission, 'missiles_left', total) > total:
+                mission.missiles_left = total
 
         # Estimate mission current position along its existing leg
         def _mission_pos(m) -> tuple[float,float]:
@@ -803,6 +880,14 @@ def cap_vector():
         # Retarget in place: ensure mission transitions back to airborne with new ETA
         setattr(mission, 'target_cell', cell)
         try:
+            setattr(mission, 'follow', None)
+        except Exception:
+            pass
+        try:
+            setattr(mission, 'kind', 'intercept')
+        except Exception:
+            pass
+        try:
             mission.ts['eta_onstation'] = time.time() + eta_s  # type: ignore[attr-defined]
             mission.ts['vector'] = True
             try:
@@ -825,12 +910,19 @@ def cap_vector():
             meta['authorized'] = False
             meta['last_request_ts'] = 0.0
             meta['hold_since_ts'] = None
+            meta['follow'] = None
+            meta['loadout'] = desired_loadout
             L['CAP_META'][mid] = meta
             L['CAP'].set_permission(mid, False)
         except Exception:
             pass
 
-        payload = {"ok": True, "message": f"Vectoring SHAR {mid} to {cell}", "mission": {"id": mid, "target_cell": cell}}
+        payload = {
+            "ok": True,
+            "message": f"Vectoring SHAR {mid} to {cell}",
+            "mission": {"id": mid, "target_cell": cell, "loadout": desired_loadout},
+            "loadout": desired_loadout,
+        }
         try:
             L['voice_emit']('pilot.vector', {'cell': cell}, fallback='Vectoring to %s.' % (cell,), role='Pilot')
         except Exception:
@@ -841,7 +933,7 @@ def cap_vector():
             pass
         L['record_flight']({"route": route, "method": request.method, "status": 200,
                            "duration_ms": int((time.time()-t0)*1000),
-                           "request": {"mission_id": mid, "cell": cell}, "response": payload})
+                           "request": {"mission_id": mid, "cell": cell, "loadout": desired_loadout}, "response": payload})
         return jsonify(payload)
     except Exception as e:
         logging.exception("/cap/vector error: %s", e)

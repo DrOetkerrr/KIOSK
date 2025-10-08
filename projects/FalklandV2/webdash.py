@@ -6,7 +6,7 @@ from typing import Any, Dict, Callable
 from datetime import datetime, timezone
 from collections import deque
 
-from flask import Flask, jsonify, send_from_directory  # type: ignore
+from flask import jsonify, send_from_directory  # type: ignore
 
 # Repo root for absolute imports
 HERE = Path(__file__).resolve()
@@ -20,6 +20,7 @@ import requests  # noqa: F401
 # Core helpers (paths, JSON, weapons, audio, grid, voice, recorders)
 from projects.falklandV2.subsystems import webcore as core
 from projects.falklandV2.runtime_service import GameRuntime
+from projects.falklandV2.web import create_app, runtime as runtime_mgr, fallbacks as fallback_mgr
 
 # Engine + Radar
 from projects.falklandV2.core.engine import Engine
@@ -39,7 +40,7 @@ except Exception:
 
 # ---- Flask app ----
 TPL_DIR = Path(__file__).parent / "templates"
-app = Flask(__name__, template_folder=str(TPL_DIR))
+app = create_app()
 
 LOG_DIR = REPO_ROOT / 'logs'
 try:
@@ -47,258 +48,8 @@ try:
 except Exception:
     pass
 
-
-def _bp_safe_register(import_path: str, attr: str = "bp") -> None:
-    """Register a blueprint, logging import/registration failures instead of failing silently.
-    This makes missing-route bugs (404) easier to diagnose.
-    """
-    try:
-        mod = __import__(import_path, fromlist=[attr])
-        bp = getattr(mod, attr)
-        app.register_blueprint(bp)
-    except Exception as e:
-        try:
-            logging.exception("Failed to register blueprint %s.%s: %s", import_path, attr, e)
-        except Exception:
-            pass
-
-
-# Register blueprints
-_bp_safe_register('projects.falklandV2.routes.command')
-_bp_safe_register('projects.falklandV2.routes.radar')
-_bp_safe_register('projects.falklandV2.routes.radar_dev')
-_bp_safe_register('projects.falklandV2.routes.weapons')
-_bp_safe_register('projects.falklandV2.routes.cap')
-_bp_safe_register('projects.falklandV2.routes.radio')
-_bp_safe_register('projects.falklandV2.routes.interpreter')
-_bp_safe_register('projects.falklandV2.routes.nav')
-_bp_safe_register('projects.falklandV2.routes.skirmish')
-_bp_safe_register('projects.falklandV2.routes.roadmap')
-_bp_safe_register('projects.falklandV2.routes.contacts')
-_bp_safe_register('projects.falklandV2.routes.pages')
-_bp_safe_register('projects.falklandV2.routes.diag')
-_bp_safe_register('projects.falklandV2.routes.flight')
-_bp_safe_register('projects.falklandV2.routes.eng')
-_bp_safe_register('projects.falklandV2.routes.resupply')
-_bp_safe_register('projects.falklandV2.routes.mission')
-_bp_safe_register('projects.falklandV2.routes.audio')
-
-# --- Fallbacks for critical routes when a blueprint fails to load ---
-def _ensure_cap_fallbacks():
-    try:
-        from flask import request, jsonify  # local import to avoid top-level dependency
-        existing = {r.rule for r in app.url_map.iter_rules()}
-        # Fallback for POST /cap/request (Intercept)
-        if '/cap/request' not in existing:
-            @app.post('/cap/request')
-            def _cap_request_fallback():
-                try:
-                    if CAP is None:
-                        return jsonify({"ok": False, "error": "CAP unavailable"}), 503
-                    data = request.get_json(silent=True) or {}
-                    # Resolve target: prefer explicit id -> PRIMARY_ID -> radar.priority_id
-                    tid = data.get('id')
-                    try:
-                        tid = int(tid) if tid is not None else tid
-                    except Exception:
-                        tid = None
-                    if tid is None:
-                        pid = globals().get('PRIMARY_ID')
-                        try:
-                            tid = int(pid) if pid is not None else None
-                        except Exception:
-                            tid = None
-                    if tid is None:
-                        tid = getattr(RADAR, 'priority_id', None)
-                    tgt = next((c for c in getattr(RADAR, 'contacts', []) if int(getattr(c,'id',-1)) == int(tid)), None) if tid is not None else None
-                    # Accept client-provided cell when the exact target object no longer exists
-                    cs = data.get('cell'); fallback_cell = (str(cs).strip().upper() if cs else None)
-                    if tgt is None and not fallback_cell:
-                        return jsonify({"ok": False, "error": "no locked/selected target"}), 400
-                    st = ENG.public_state() if hasattr(ENG, 'public_state') else {}
-                    own_x, own_y = radar_xy_from_state(st)
-                    ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
-                    try:
-                        course_deg = float(ship.get('heading', 0.0) or 0.0)
-                    except Exception:
-                        course_deg = 0.0
-                    convoy = globals().get('CONVOY')
-                    if convoy is not None:
-                        hx, hy, hermes_cell = convoy.escort_world_cell('hermes', own_x, own_y, course_deg)
-                    else:
-                        hx, hy = own_x, own_y
-                        hermes_cell = ship_cell_from_state(st)
-                    def _contact_class(contact):
-                        if contact is None:
-                            return None
-                        try:
-                            meta = getattr(contact, 'meta', {}) or {}
-                            if isinstance(meta, dict):
-                                cap_meta = meta.get('cap') or {}
-                                cls = cap_meta.get('class') if isinstance(cap_meta, dict) else None
-                                if not cls:
-                                    cls = meta.get('class') or meta.get('type')
-                                if cls:
-                                    return str(cls).title()
-                        except Exception:
-                            pass
-                        try:
-                            cls = getattr(contact, 'class', None)
-                            if cls:
-                                return str(cls).title()
-                        except Exception:
-                            pass
-                        try:
-                            cls = getattr(contact, 'type', None)
-                            if cls:
-                                return str(cls).title()
-                        except Exception:
-                            pass
-                        try:
-                            name = getattr(contact, 'name', None)
-                            if name:
-                                cls = TARGET_CLASS_BY_NAME.get(str(name))
-                                if cls:
-                                    return str(cls).title()
-                        except Exception:
-                            pass
-                        return None
-                    def _normalize_loadout(value):
-                        if not value:
-                            return ''
-                        v = str(value).strip().lower()
-                        if v in ('aim9','aim-9','sidewinder','missile'):
-                            return 'aim9'
-                        if v in ('bomb','bombs','mk82','iron'):
-                            return 'bombs'
-                        if v == 'auto':
-                            return ''
-                        return ''
-                    if tgt is not None:
-                        dx = float(getattr(tgt,'x',0.0)) - float(hx)
-                        dy = float(getattr(tgt,'y',0.0)) - float(hy)
-                        rng_nm = (dx*dx + dy*dy) ** 0.5
-                        try:
-                            cell = world_to_cell(float(getattr(tgt,'x',0.0)), float(getattr(tgt,'y',0.0)))
-                        except Exception:
-                            cell = 'K13'
-                    else:
-                        tx, ty = cell_to_world(fallback_cell)
-                        dx, dy = float(tx) - float(hx), float(ty) - float(hy)
-                        rng_nm = (dx*dx + dy*dy) ** 0.5
-                        cell = fallback_cell
-                    target_class = _contact_class(tgt)
-                    requested_loadout = _normalize_loadout(data.get('loadout'))
-                    surface_classes = {'Ship', 'Surface', 'Carrier', 'Escort', 'Landing Craft', 'Merchant', 'Convoy'}
-                    air_classes = {'Aircraft', 'Helicopter', 'Missile', 'Bomber', 'Fighter'}
-                    auto_default = 'aim9'
-                    if target_class and target_class in surface_classes:
-                        auto_default = 'bombs'
-                    loadout = requested_loadout or auto_default
-                    if loadout == 'bombs' and target_class and target_class in air_classes:
-                        loadout = 'aim9'
-                    elif loadout == 'aim9' and target_class and target_class in surface_classes and not requested_loadout:
-                        loadout = 'bombs'
-                    res = CAP.request_cap_to_cell(
-                        cell,
-                        distance_nm=float(rng_nm),
-                        origin_xy=(hx, hy),
-                        origin_cell=hermes_cell,
-                        mission_kind='intercept',
-                        loadout=loadout,
-                    )
-                    status = 200 if res.get('ok') else 400
-                    payload = {"ok": bool(res.get('ok')), "message": res.get('message'), "mission": res.get('mission'), "loadout": loadout, "target_class": target_class}
-                    try:
-                        record_flight({"route": '/cap/request.fallback', "method": request.method, "status": status,
-                                       "duration_ms": 0, "request": {"cell": cell, "range_nm": round(rng_nm,2), "loadout": loadout, "target_class": target_class}, "response": payload})
-                    except Exception:
-                        pass
-                    return jsonify(payload), status
-                except Exception as e:
-                    try:
-                        record_flight({"route": '/cap/request.fallback', "method": request.method, "status": 500,
-                                       "duration_ms": 0, "request": {}, "response": {"ok": False, "error": str(e)}})
-                    except Exception:
-                        pass
-                    return jsonify({"ok": False, "error": str(e)}), 500
-        # Fallback for POST /cap/launch_to (CAP station)
-        if '/cap/launch_to' not in existing:
-            @app.post('/cap/launch_to')
-            def _cap_launch_to_fallback():
-                try:
-                    if CAP is None:
-                        return jsonify({"ok": False, "error": "CAP unavailable"}), 503
-                    data = request.get_json(silent=True) or {}
-                    cell = str(data.get('cell') or '').strip().upper()
-                    if not cell:
-                        return jsonify({"ok": False, "error": "missing cell"}), 400
-                    st = ENG.public_state() if hasattr(ENG, 'public_state') else {}
-                    own_x, own_y = radar_xy_from_state(st)
-                    ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
-                    try:
-                        course_deg = float(ship.get('heading', 0.0) or 0.0)
-                    except Exception:
-                        course_deg = 0.0
-                    convoy = globals().get('CONVOY')
-                    if convoy is not None:
-                        hx, hy, hermes_cell = convoy.escort_world_cell('hermes', own_x, own_y, course_deg)
-                    else:
-                        hx, hy = own_x, own_y
-                        hermes_cell = ship_cell_from_state(st)
-                    tx, ty = cell_to_world(cell)
-                    dx, dy = float(tx) - float(hx), float(ty) - float(hy)
-                    rng_nm = (dx*dx + dy*dy) ** 0.5
-                    sm = data.get('station_minutes', 20)
-                    rm = data.get('radius_nm', 5)
-                    follow = None
-                    try:
-                        f = data.get('follow')
-                        follow = str(f).strip().lower() if f else None
-                    except Exception:
-                        follow = None
-                    try:
-                        loadout_raw = str((data.get('loadout') or 'aim9')).lower()
-                    except Exception:
-                        loadout_raw = 'aim9'
-                    loadout = 'bombs' if loadout_raw in ('bomb', 'bombs') else 'aim9'
-                    loadout_forced = None
-                    if follow == 'hermes' and loadout != 'aim9':
-                        loadout = 'aim9'
-                        loadout_forced = 'hermes_follow'
-                    res = CAP.request_cap_to_cell(
-                        cell,
-                        distance_nm=float(rng_nm),
-                        station_minutes=float(sm),
-                        radius_nm=float(rm),
-                        origin_xy=(hx, hy),
-                        origin_cell=hermes_cell,
-                        loadout=loadout,
-                        follow=follow,
-                    )
-                    status = 200 if res.get('ok') else 400
-                    mission = res.get('mission') or {}
-                    actual_loadout = str(mission.get('loadout') or loadout)
-                    payload = {"ok": bool(res.get('ok')), "message": res.get('message'), "mission": mission, "loadout": actual_loadout}
-                    if loadout_forced and actual_loadout == 'aim9':
-                        payload['loadout_forced'] = loadout_forced
-                    try:
-                        record_flight({"route": '/cap/launch_to.fallback', "method": request.method, "status": status,
-                                       "duration_ms": 0, "request": {"cell": cell, "range_nm": round(rng_nm,2), "loadout": loadout, "follow": follow}, "response": payload})
-                    except Exception:
-                        pass
-                    return jsonify(payload), status
-                except Exception as e:
-                    try:
-                        record_flight({"route": '/cap/launch_to.fallback', "method": request.method, "status": 500,
-                                       "duration_ms": 0, "request": {}, "response": {"ok": False, "error": str(e)}})
-                    except Exception:
-                        pass
-                    return jsonify({"ok": False, "error": str(e)}), 500
-    except Exception:
-        pass
-
-_ensure_cap_fallbacks()
+# Ensure CAP fallbacks remain available when imported via webdash module
+fallback_mgr.ensure_cap_fallbacks(app, sys.modules[__name__])
 
 
 # One-shot startup selftest
@@ -332,12 +83,9 @@ try:
 except Exception:
     APP_VERSION = "dev"
 
-RUNTIME = GameRuntime(port=PORT)
+RUNTIME = runtime_mgr.init_runtime(port=PORT, reset=True)
+runtime_mgr.attach_runtime(app, RUNTIME)
 APP_STARTED = RUNTIME.app_started
-try:
-    RUNTIME.reset_state()
-except Exception:
-    pass
 
 
 def _ensure_audio_flags() -> Dict[str, Any]:
@@ -450,6 +198,10 @@ def _reset_runtime_globals() -> None:
             except Exception:
                 pass
             try:
+                ARMING_PENDING.clear()
+            except Exception:
+                pass
+            try:
                 ENEMY_SURFACE_STATE.clear()
             except Exception:
                 pass
@@ -480,6 +232,11 @@ def _bind_runtime(rt: GameRuntime) -> None:
     global load_ammo, save_ammo, load_arming, save_arming, compute_in_range
     global RADAR, CAP
     global RESUPPLY
+
+    try:
+        runtime_mgr.attach_runtime(app, rt)
+    except Exception:
+        pass
 
     ENG = rt.engine
     STATE_LOCK = rt.state_lock
@@ -523,7 +280,27 @@ def _bind_runtime(rt: GameRuntime) -> None:
 
     load_ammo = rt.load_ammo
     save_ammo = rt.save_ammo
-    load_arming = rt.load_arming
+    rt_load_arming = rt.load_arming
+
+    def _load_arming_with_pending() -> Dict[str, str]:
+        base = rt_load_arming()
+        now = time.time()
+        try:
+            pending = pending_arming_snapshot(now)
+        except Exception:
+            pending = {}
+        if not isinstance(base, dict):
+            base = {}
+        for nm, left in (pending or {}).items():
+            try:
+                if left > 0:
+                    base[nm] = 'Arming'
+            except Exception:
+                continue
+        _prune_arming_pending(now)
+        return base
+
+    load_arming = _load_arming_with_pending
     save_arming = rt.save_arming
     compute_in_range = rt.compute_in_range
 
@@ -898,6 +675,71 @@ if CAP is not None:
 PENDING_EVENTS: list[Dict[str, Any]] = []
 ATTACK_STATE: Dict[int, float] = {}
 ENEMY_SURFACE_STATE: Dict[int, Dict[str, Any]] = {}
+
+ARMING_PENDING: Dict[str, float] = {}
+
+
+def _prune_arming_pending(now: float) -> None:
+    lock = globals().get('STATE_LOCK')
+    if lock is None:
+        return
+    with lock:
+        expired = [nm for nm, until in ARMING_PENDING.items() if until <= now]
+        for nm in expired:
+            ARMING_PENDING.pop(nm, None)
+
+
+def mark_weapon_arming(name: str, until_ts: float) -> None:
+    if not name:
+        return
+    now = time.time()
+    lock = globals().get('STATE_LOCK')
+    if lock is None:
+        return
+    with lock:
+        if until_ts > now:
+            ARMING_PENDING[name] = float(until_ts)
+        else:
+            ARMING_PENDING.pop(name, None)
+
+
+def clear_weapon_arming(name: str) -> None:
+    if not name:
+        return
+    lock = globals().get('STATE_LOCK')
+    if lock is None:
+        return
+    with lock:
+        ARMING_PENDING.pop(name, None)
+
+
+def pending_arming_snapshot(now: float | None = None) -> Dict[str, int]:
+    now = float(now if now is not None else time.time())
+    lock = globals().get('STATE_LOCK')
+    if lock is None:
+        return {}
+    with lock:
+        snapshot = dict(ARMING_PENDING)
+    out: Dict[str, int] = {}
+    prune: list[str] = []
+    for nm, until in snapshot.items():
+        if until <= now:
+            prune.append(nm)
+            continue
+        out[nm] = max(0, int(round(until - now)))
+    if prune:
+        with lock:
+            for nm in prune:
+                ARMING_PENDING.pop(nm, None)
+    return out
+
+
+def pending_arming_left(name: str, now: float | None = None) -> int:
+    snap = pending_arming_snapshot(now)
+    try:
+        return int(snap.get(name, 0))
+    except Exception:
+        return 0
 
 # Debug contacts
 DEBUG_CONTACTS = core.DEBUG_CONTACTS
@@ -1491,8 +1333,8 @@ RADIO_EVENT_AUDIO_MAP: Dict[str, Callable[[Dict[str, Any]], str | None]] = {
     'radar.target.locked': lambda ctx: 'RDR_PRIMARY_TARGET_LOCKED',
     'radar.target.unlocked': lambda ctx: 'RDR_PRIMARY_TARGET_UNLOCKED',
     'radar.contact.spawn': _audio_key_from_contact_spawn,
-    'cap.launch': lambda ctx: 'SHAR_TAKING_OFF',
-    'cap.intercept.launch': lambda ctx: 'SHAR_TAKING_OFF',
+    'cap.launch': lambda ctx: 'SHAR2_TAKING_OFF',
+    'cap.intercept.launch': lambda ctx: 'SHAR2_TAKING_OFF',
     'cap.onstation': lambda ctx: 'SHAR_ON_STATION',
     'cap.weapon.fire': _audio_key_from_cap_weapon_fire,
     'cap.weapon.hit': _audio_key_from_cap_weapon_hit,

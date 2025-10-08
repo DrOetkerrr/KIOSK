@@ -219,9 +219,55 @@
   let introActive = Boolean(window.__introActive);
   let bridgeReady = true;
   let introAudio = null;
+  let introShouldStartBridge = true;
+  let introEndUrl = null;
+  let introFinalizeListener = null;
+  let introFinishing = false;
   if (typeof window.__introActive !== 'boolean') {
     window.__introActive = introActive;
   }
+  function finishIntro(opts) {
+    const skip = !!(opts && opts.skip);
+    if (!introActive && !queuedIntro && !window.__introActive) {
+      return;
+    }
+    if (introFinishing) {
+      return;
+    }
+    introFinishing = true;
+    try {
+      const audio = introAudio;
+      if (audio && introFinalizeListener) {
+        try { audio.removeEventListener('ended', introFinalizeListener); } catch(_) {}
+        try { audio.removeEventListener('error', introFinalizeListener); } catch(_) {}
+      }
+      introFinalizeListener = null;
+      queuedIntro = null;
+      introAudio = null;
+      if (audio) {
+        try { audio.pause(); } catch(_) {}
+        try { audio.currentTime = 0; } catch(_) {}
+      }
+      introActive = false;
+      bridgeReady = true;
+      window.__introActive = false;
+      try { window.dispatchEvent(new CustomEvent('intro:end', { detail: { skipped: skip } })); } catch(_) {}
+      if (introShouldStartBridge && unlocked) {
+        startBridge();
+      }
+      if (introEndUrl) {
+        try { fetch(String(introEndUrl), { method:'POST' }); } catch(_) {}
+      }
+      introEndUrl = null;
+      introShouldStartBridge = true;
+      drainRadioQueue();
+    } finally {
+      introFinishing = false;
+    }
+  }
+  window.__skipIntro = function(){
+    finishIntro({ skip: true });
+  };
   let duckUntil = 0;
   let SFX_GAIN = 1.0; // global multiplier for SFX/ambience
 
@@ -483,6 +529,8 @@
           const vol = Number.isFinite(Number(intro.vol)) ? Number(intro.vol) : 0.8;
           const onEndUrl = intro.on_end_url || null;
           const startBridgeFlag = intro.start_bridge !== false;
+          introShouldStartBridge = startBridgeFlag;
+          introEndUrl = onEndUrl;
           const playIntro = () => {
             introActive = true;
             bridgeReady = false;
@@ -493,29 +541,12 @@
             introAudio = new Audio(file.startsWith('/') ? file : (BASE + file));
             introAudio.volume = Math.max(0, Math.min(1, vol));
             introAudio.loop = false;
-            const finish = (() => {
-              let called = false;
-              return () => {
-                if (called) return;
-                called = true;
-                introActive = false;
-                bridgeReady = true;
-                if (introAudio) {
-                  try { introAudio.pause(); introAudio.currentTime = 0; } catch(_) {}
-                  introAudio = null;
-                }
-                window.__introActive = false;
-                try{ window.dispatchEvent(new CustomEvent('intro:end')); }catch(_){ }
-                if (startBridgeFlag) startBridge();
-                if (onEndUrl) { try { fetch(String(onEndUrl), { method:'POST' }); } catch(_) {} }
-                drainRadioQueue();
-              };
-            })();
-            introAudio.addEventListener('ended', finish, { once:true });
-            introAudio.addEventListener('error', finish, { once:true });
+            introFinalizeListener = () => finishIntro();
+            introAudio.addEventListener('ended', introFinalizeListener, { once:true });
+            introAudio.addEventListener('error', introFinalizeListener, { once:true });
             const playPromise = introAudio.play();
             if (playPromise && typeof playPromise.catch === 'function') {
-              playPromise.catch(() => finish());
+              playPromise.catch(() => finishIntro());
             }
           };
           if (unlocked) {
@@ -523,6 +554,8 @@
           } else {
             window.__introActive = true;
             try { window.dispatchEvent(new CustomEvent('intro:start')); } catch(_){}
+            bridgeReady = false;
+            stopBridge();
             queuedIntro = playIntro;
           }
           lastIntro = { ts: tsIntro };

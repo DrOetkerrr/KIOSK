@@ -13,6 +13,7 @@
       <img class="intro-overlay__art" src="{{ url_for('static', filename='img/intro/intro_bridge.jpg', v=app_version|default('dev')) }}" alt="Bridge view" />
       <div class="intro-overlay__title">Falklands Tactical Console</div>
       <div class="intro-overlay__cta mono">Tap or press any key to begin</div>
+      <button type="button" class="btn intro-overlay__skip" data-skip-intro>Skip Intro</button>
     </div>
   </div>
   <div class="wrap">
@@ -58,6 +59,17 @@
       }
       window.addEventListener('intro:start', show);
       window.addEventListener('intro:end', hide);
+      const skipBtn = overlay.querySelector('[data-skip-intro]');
+      if(skipBtn){
+        skipBtn.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          if (typeof window.__skipIntro === 'function') {
+            window.__skipIntro();
+          } else {
+            hide();
+          }
+        });
+      }
     })();
   </script>
   <script src="{{ url_for('static', filename='sound.js', v=app_version|default('dev')) }}"></script>

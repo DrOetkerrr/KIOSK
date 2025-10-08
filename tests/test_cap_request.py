@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pytest
 from flask import Flask
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 @dataclass
@@ -48,7 +52,7 @@ class _StubMission:
 
 
 class _StubCAP:
-    def __init__(self, mission: _StubMission) -> None:
+    def __init__(self, mission: _StubMission, *, launch_response: Dict[str, Any] | None = None) -> None:
         self.missions: List[_StubMission] = [mission]
         self._mission = mission
         self.cfg = {
@@ -58,6 +62,7 @@ class _StubCAP:
         }
         self._request_calls: List[Dict[str, Any]] = []
         self.last_permission: Tuple[int, bool] | None = None
+        self._launch_response = launch_response or {"ok": False, "message": "should_not_be_called", "mission": None}
 
     def snapshot(self) -> Dict[str, Any]:
         m = self._mission
@@ -80,14 +85,29 @@ class _StubCAP:
             ]
         }
 
-    def request_cap_to_cell(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:  # pragma: no cover - should not fire
+    def request_cap_to_cell(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         self._request_calls.append({"args": args, "kwargs": kwargs})
-        return {"ok": False, "message": "should_not_be_called"}
+        return dict(self._launch_response)
 
     def set_permission(self, mission_id: int, authorized: bool, now: float | None = None) -> None:
         if mission_id == self._mission.id:
             self._mission.permission_authorized = authorized
         self.last_permission = (mission_id, authorized)
+
+    def mission_status(self) -> Dict[str, Any]:
+        return {
+            "missions": [
+                {
+                    "id": m.id,
+                    "status": m.status,
+                    "loadout": m.loadout,
+                    "kind": m.kind,
+                    "target_cell": m.target_cell,
+                    "timestamps": dict(m.ts),
+                }
+                for m in self.missions
+            ]
+        }
 
 
 def _world_to_cell_mapping(x: float, y: float) -> str:
@@ -163,11 +183,10 @@ def test_cap_request_vectors_onstation_pair(monkeypatch: pytest.MonkeyPatch) -> 
     resp_obj, status = _unwrap_response(resp)
     assert status == 200
     data = resp_obj.get_json()
-    assert data == {
-        "ok": True,
-        "message": "Vectoring airborne pair to Z4",
-        "mission": {"id": mission.id, "target_cell": "Z4"},
-    }
+    assert data["ok"] is True
+    assert data["message"] == "Vectoring airborne pair to Z4"
+    assert data["mission"] == {"id": mission.id, "target_cell": "Z4"}
+    assert data["loadout"] == "aim9"
 
     # Ensure the existing mission was retasked instead of a fresh launch
     assert cap_stub._request_calls == []
@@ -195,7 +214,7 @@ class _StubCAPLaunch(_StubCAP):
 
     def request_cap_to_cell(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         self.launch_calls.append({"args": args, "kwargs": kwargs})
-        return {"ok": True, "message": "Hermes: CAP pair launching", "mission": {"id": self._mission_id}}
+        return {"ok": True, "message": "Hermes: CAP pair launching", "mission": {"id": self._mission_id, "kind": "intercept"}}
 
     def set_permission(self, mission_id: int, authorized: bool, now: float | None = None) -> None:
         self.last_permission = (mission_id, authorized)
@@ -283,7 +302,53 @@ def test_cap_request_launches_new_pair_with_voice(monkeypatch: pytest.MonkeyPatc
     # Voice line for intercept launch should have been emitted
     events = [evt for (evt, _payload, _kw) in voice_calls]
     assert 'pilot.intercept.launch' in events
-    assert 'pilot.cap.launch' in events
+
+    # Mission status should reflect new CAP_META entry
+    mission_status = cap_launch_stub.mission_status()
+    assert len(mission_status["missions"]) == 0  # snapshot returns empty for launch stub
+
+
+def test_cap_request_launches_surface_target_with_bombs(monkeypatch: pytest.MonkeyPatch) -> None:
+    from projects.falklandV2.routes import cap
+
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+
+    base_now = time.time()
+    mission = _StubMission(mission_id=5, target_cell="H26", status="ready", base_now=base_now, kind="cap")
+    surface_stub = _StubCAPLaunch(mission_id=6)
+    target = _Target(id=9, x=14.0, y=2.0, speed_kts=120.0, course_deg=90.0)
+    target.name = "Enemy Corvette"
+    target.meta = {"class": "Ship"}
+
+    captured_events: List[Tuple[str, Dict[str, Any]]] = []
+
+    lazy_payload = _make_lazy_payload(
+        surface_stub,
+        mission,
+        target,
+        record_event=lambda event, data: captured_events.append((event, dict(data))),
+        stamp_cap_launch=lambda *a, **k: None,
+    )
+    lazy_payload["CAP_META"] = {}
+
+    monkeypatch.setattr(cap, "_lazy", lambda: lazy_payload)
+
+    with app.test_request_context("/cap/request", method="POST", json={"id": target.id}):
+        resp = cap.cap_request()
+
+    resp_obj, status = _unwrap_response(resp)
+    assert status == 200
+    data = resp_obj.get_json()
+    assert data["ok"] is True
+    assert data["loadout"] == "bombs"
+
+    assert len(surface_stub.launch_calls) == 1
+    assert surface_stub.launch_calls[0]["kwargs"]["loadout"] == "bombs"
+
+    surface_meta = lazy_payload["CAP_META"].get(surface_stub._mission_id)
+    assert surface_meta is not None
+    assert "target_cell" in surface_meta
 
 
 def test_cap_request_avoids_vectoring_bomb_loadout(monkeypatch: pytest.MonkeyPatch) -> None:

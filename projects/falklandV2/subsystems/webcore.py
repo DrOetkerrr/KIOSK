@@ -16,6 +16,8 @@ import logging
 import hashlib
 import random
 import math
+import threading
+import contextlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
@@ -56,6 +58,10 @@ ROADMAP_PATH = STATE_DIR / "roadmap.json"
 TTS_DIR = STATE_DIR / "tts"; TTS_DIR.mkdir(parents=True, exist_ok=True)
 VOICES_DIR = STATE_DIR / "voices"; VOICES_DIR.mkdir(parents=True, exist_ok=True)
 ENG_SYS_PATH = STATE_DIR / "eng_systems.json"
+
+# Cache last known-good ENG state to survive transient JSON load errors (eg. concurrent writes)
+_ENG_SYS_CACHE: Dict[str, Any] | None = None
+_SPAWN_BOOTSTRAP_LOCK = threading.Lock()
 
 # Map engineering system identifiers to UI-facing labels so events and logs
 # can present meaningful names even if the persisted state lacks them.
@@ -147,12 +153,21 @@ def reset_health_state() -> None:
     _save_health(base)
 
 
+def _clone_eng_state(obj: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        return json.loads(json.dumps(obj))
+    except Exception:
+        return dict(obj)
+
+
 def reset_eng_state() -> None:
     base = _eng_defaults_from_validation()
     try:
         _save_json(ENG_SYS_PATH, base)
     except Exception:
         pass
+    global _ENG_SYS_CACHE
+    _ENG_SYS_CACHE = _clone_eng_state(base)
 
 
 def reset_damage_state() -> None:
@@ -187,41 +202,54 @@ def _eng_defaults_from_validation() -> Dict[str, Any]:
 
 
 def load_eng_sys() -> Dict[str, Any]:
+    global _ENG_SYS_CACHE
     obj = _load_json(ENG_SYS_PATH, None)
-    if not isinstance(obj, dict):
-        obj = _eng_defaults_from_validation()
+    if isinstance(obj, dict):
+        mutated = False
         try:
-            _save_json(ENG_SYS_PATH, obj)
+            systems = obj.get('systems') if isinstance(obj.get('systems'), list) else []
+            for sys in systems or []:
+                try:
+                    sys_id = str(sys.get('id') or '')
+                    label = sys.get('name') or sys.get('label')
+                    if not label:
+                        label = ENG_SYSTEM_LABELS.get(sys_id, sys_id or 'System')
+                        sys['name'] = label
+                        mutated = True
+                    elif 'name' not in sys:
+                        sys['name'] = label
+                        mutated = True
+                except Exception:
+                    continue
         except Exception:
             pass
-    mutated = False
-    try:
-        systems = obj.get('systems') if isinstance(obj.get('systems'), list) else []
-        for sys in systems or []:
+        if mutated:
             try:
-                sys_id = str(sys.get('id') or '')
-                label = sys.get('name') or sys.get('label')
-                if not label:
-                    label = ENG_SYSTEM_LABELS.get(sys_id, sys_id or 'System')
-                    sys['name'] = label
-                    mutated = True
-                elif 'name' not in sys:
-                    sys['name'] = label
-                    mutated = True
+                _save_json(ENG_SYS_PATH, obj)
             except Exception:
-                continue
-    except Exception:
-        pass
-    if mutated:
+                pass
+        _ENG_SYS_CACHE = _clone_eng_state(obj)
+        return obj
+
+    # If the file exists but could not be parsed (eg. concurrent write), reuse last good cache.
+    if ENG_SYS_PATH.exists() and _ENG_SYS_CACHE is not None:
+        return _clone_eng_state(_ENG_SYS_CACHE)
+
+    # File missing or no cache yet: seed defaults (persist if the file truly is absent).
+    obj = _eng_defaults_from_validation()
+    if not ENG_SYS_PATH.exists():
         try:
             _save_json(ENG_SYS_PATH, obj)
         except Exception:
             pass
+    _ENG_SYS_CACHE = _clone_eng_state(obj)
     return obj
 
 
 def save_eng_sys(obj: Dict[str, Any]) -> None:
     _save_json(ENG_SYS_PATH, obj)
+    global _ENG_SYS_CACHE
+    _ENG_SYS_CACHE = _clone_eng_state(obj)
 
 
 # ---- Engineering repair helpers ----
@@ -720,6 +748,12 @@ except Exception:  # pragma: no cover - fallback when engine is unavailable
 BOARD_N = int(_BOARD_N)
 from projects.falklandV2.grid.coords import parse_coord as _parse_label, format_coord as _fmt_label, center_subboard
 from projects.falklandV2.grid.mapping import world_to_label as _world_to_label, label_to_world as _label_to_world
+from projects.falklandV2.engine_adapter import (
+    world_to_cell as adapter_world_to_cell,
+    cell_to_world as adapter_cell_to_world,
+    ship_cell_from_state as adapter_ship_cell_from_state,
+    radar_xy_from_state as adapter_radar_xy_from_state,
+)
 
 # Centered 30×30 sub-board inside 40×40 (AF05 .. BI34)
 (_SUB_TL_C, _SUB_TL_R), (_SUB_BR_C, _SUB_BR_R) = center_subboard(40, 40, 30, 30)
@@ -735,45 +769,15 @@ def cell_for_world(row: float, col: float) -> str:
 
 
 def ship_cell_from_state(state: Dict[str, Any]) -> str:
-    ship = (state or {}).get('ship', {}) if isinstance(state, dict) else {}
-    # Prefer webdash.get_own_xy mapping if available
-    try:
-        from .. import webdash as wd  # type: ignore
-        x, y = wd.get_own_xy(state)
-        return _world_to_label(float(x), float(y), world_n=float(WORLD_N))
-    except Exception:
-        pass
-    # Fallback legacy fields
-    try:
-        col = float(ship.get('col', 0.0))
-        row = float(ship.get('row', 0.0))
-    except Exception:
-        col, row = 0.0, 0.0
-    return _world_to_label(float(col), float(row), world_n=float(WORLD_N))
+    return adapter_ship_cell_from_state(state)
 
 
 def radar_xy_from_state(state: Dict[str, Any]) -> tuple[float, float]:
-    try:
-        from .. import webdash as wd  # type: ignore
-        x, y = wd.get_own_xy(state)
-        xf, yf = float(x), float(y)
-    except Exception:
-        xf, yf = 0.0, 0.0
-    if xf > float(WORLD_N) or yf > float(WORLD_N):
-        try:
-            legacy_span = 100.0
-            xf = (xf / legacy_span) * float(WORLD_N)
-            yf = (yf / legacy_span) * float(WORLD_N)
-        except Exception:
-            pass
-    return (xf, yf)
+    return adapter_radar_xy_from_state(state)
 
 
 def cell_to_world(cell: str) -> tuple[float, float]:
-    try:
-        return _label_to_world(str(cell or ''), world_n=float(WORLD_N))
-    except Exception:
-        return (0.0, 0.0)
+    return adapter_cell_to_world(cell)
 
 
 # ---- Weapons data and helpers ----
@@ -1485,26 +1489,36 @@ def spawn_initial_friendlies(wd) -> None:
     try:
         st = wd.ENG.public_state() if hasattr(wd.ENG, "public_state") else {}
         own_x, own_y = radar_xy_from_state(st)
-        if getattr(wd.RADAR, 'contacts', None):
-            return
-        friend_bearings = (45.0, 315.0)
-        allow_hostiles = False
+    except Exception:
+        own_x, own_y = (0.0, 0.0)
+    try:
+        with _SPAWN_BOOTSTRAP_LOCK:
+            radar = getattr(wd, 'RADAR', None)
+            if radar is None:
+                return
+            radar_lock = getattr(radar, '_lock', None)
+            lock_ctx = radar_lock if hasattr(radar_lock, "__enter__") else contextlib.nullcontext()
+            with lock_ctx:
+                if getattr(radar, 'contacts', None):
+                    return
+                friend_bearings = (45.0, 315.0)
+                allow_hostiles = False
 
-        for b in friend_bearings:
-            try:
-                r = random.uniform(6.0, 12.0)
-                wd.RADAR.force_spawn(own_x, own_y, 'Friendly', bearing_deg=b, range_nm=r)
-            except Exception:
-                continue
+                for b in friend_bearings:
+                    try:
+                        r = random.uniform(6.0, 12.0)
+                        radar.force_spawn(own_x, own_y, 'Friendly', bearing_deg=b, range_nm=r)
+                    except Exception:
+                        continue
 
-        if allow_hostiles:
-            hostile_bearings = (135.0, 225.0)
-            for b in hostile_bearings:
-                try:
-                    r = random.uniform(10.0, 18.0)
-                    wd.RADAR.force_spawn(own_x, own_y, 'Hostile', bearing_deg=b, range_nm=r)
-                except Exception:
-                    continue
+                if allow_hostiles:
+                    hostile_bearings = (135.0, 225.0)
+                    for b in hostile_bearings:
+                        try:
+                            r = random.uniform(10.0, 18.0)
+                            radar.force_spawn(own_x, own_y, 'Hostile', bearing_deg=b, range_nm=r)
+                        except Exception:
+                            continue
     except Exception:
         pass
 
@@ -1869,6 +1883,9 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
                 target_cell_disp = target_cell or '—'
                 pos_cell = origin_cell or (meta_rec or {}).get('origin_cell') or ''
                 def _estimated_pos_cell() -> str:
+                    follow_mode = str(m.get('follow') or '').strip().lower()
+                    if follow_mode == 'hermes':
+                        return target_cell_disp if target_cell_disp != '—' else (origin_cell or '—')
                     origin_xy = _as_xy(m.get('origin_xy')) or _as_xy((meta_rec or {}).get('origin_xy'))
                     if not origin_xy and origin_cell:
                         origin_xy = _cell_to_xy(origin_cell)
@@ -1924,7 +1941,10 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
                     return '—'
 
                 pos_cell = _estimated_pos_cell()
-                if target_name:
+                follow_mode = str(m.get('follow') or '').strip().lower()
+                if follow_mode == 'hermes':
+                    target_label = 'Hermes (Defend)'
+                elif target_name:
                     target_label = f"{target_name} @ {target_cell_disp}" if target_cell_disp != '—' else target_name
                 else:
                     target_label = target_cell_disp
@@ -2069,12 +2089,37 @@ def engine_thread_run(wd) -> None:
                     course_deg2 = float(ship.get('heading', 0.0) or 0.0)
                 except Exception:
                     course_deg2 = 0.0
+                try:
+                    ox2, oy2 = radar_xy_from_state(st2)
+                except Exception:
+                    ox2, oy2 = (ox, oy)
+                try:
+                    ship_cell2 = wd.ship_cell_from_state(st2)
+                except Exception:
+                    ship_cell2 = None
+                if ship_cell2:
+                    try:
+                        sx2, sy2 = cell_to_world(ship_cell2)
+                        ox2, oy2 = float(sx2), float(sy2)
+                    except Exception:
+                        pass
                 convoy = getattr(wd, 'CONVOY', None)
                 if convoy is not None:
-                    hx, hy, hermes_cell = convoy.escort_world_cell('hermes', ox, oy, course_deg2)
+                    try:
+                        hx, hy, hermes_cell = convoy.escort_world_cell('hermes', ox2, oy2, course_deg2)
+                        hx, hy = float(hx), float(hy)
+                    except Exception:
+                        hx, hy = ox2, oy2
+                        hermes_cell = ship_cell2
                 else:
-                    hx, hy = ox, oy
-                    hermes_cell = wd.ship_cell_from_state(st2)
+                    hx, hy = ox2, oy2
+                    hermes_cell = ship_cell2
+                hermes_cell_norm = None
+                if hermes_cell:
+                    try:
+                        hermes_cell_norm = str(hermes_cell).strip().upper()
+                    except Exception:
+                        hermes_cell_norm = None
                 for m in getattr(wd.CAP, 'missions', []) or []:
                     try:
                         if str(getattr(m, 'kind', '')) != 'cap':
@@ -2082,7 +2127,8 @@ def engine_thread_run(wd) -> None:
                         if str(getattr(m, 'follow', '')) != 'hermes':
                             continue
                         # Update station center to Hermes current cell
-                        setattr(m, 'target_cell', hermes_cell)
+                        if hermes_cell_norm and hermes_cell_norm != 'AA00':
+                            setattr(m, 'target_cell', hermes_cell_norm)
                     except Exception:
                         continue
             except Exception:
@@ -2351,11 +2397,25 @@ def engine_thread_run(wd) -> None:
                                 raw = wd._load_json(wd.ARMING_PATH, {})
                                 if isinstance(raw, dict):
                                     rec = raw.get(weapon)
-                                    if isinstance(rec, dict):
-                                        rec['armed'] = True
-                                        rec['arming_until'] = 0.0
-                                        raw[weapon] = rec
-                                        wd._save_json(wd.ARMING_PATH, raw)
+                                    if not isinstance(rec, dict):
+                                        rec = {}
+                                    rec['armed'] = True
+                                    rec['arming_until'] = 0.0
+                                    raw[weapon] = rec
+                                    wd._save_json(wd.ARMING_PATH, raw)
+                                    try:
+                                        current = wd.load_arming() if callable(getattr(wd, 'load_arming', None)) else {}
+                                        if isinstance(current, dict):
+                                            current[weapon] = 'Armed'
+                                            if callable(getattr(wd, 'save_arming', None)):
+                                                wd.save_arming(current)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                            try:
+                                if hasattr(wd, 'clear_weapon_arming'):
+                                    wd.clear_weapon_arming(weapon)
                             except Exception:
                                 pass
                             try:

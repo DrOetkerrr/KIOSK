@@ -221,24 +221,17 @@ def api_command():
             else:
                 target = _radar_find_by_id(arg)
             if target is None:
-                # Last-chance fallback: pick the first listed contact if any
                 try:
-                    clist = list(getattr(RADAR, 'contacts', []) or [])
-                    target = clist[0] if clist else None
+                    avail = [int(getattr(c,'id',-1)) for c in RADAR.contacts]
                 except Exception:
-                    target = None
-                if target is None:
-                    try:
-                        avail = [int(getattr(c,'id',-1)) for c in RADAR.contacts]
-                    except Exception:
-                        avail = []
-                    payload = {"ok": False, "error": "contact not found", "available_ids": avail[:10]}
-                    record_flight({
-                        "route": route, "method": request.method, "status": 404,
-                        "duration_ms": int((time.time()-t0)*1000),
-                        "request": {"cmd": cmd}, "response": payload,
-                    })
-                    return jsonify(payload), 404
+                    avail = []
+                payload = {"ok": False, "error": "contact not found", "available_ids": avail[:10]}
+                record_flight({
+                    "route": route, "method": request.method, "status": 404,
+                    "duration_ms": int((time.time()-t0)*1000),
+                    "request": {"cmd": cmd}, "response": payload,
+                })
+                return jsonify(payload), 404
             tid = int(getattr(target, 'id', 0))
             try:
                 set_primary_contact(tid)

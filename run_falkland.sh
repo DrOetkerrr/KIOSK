@@ -33,4 +33,4 @@ fi
 # Always run via module to ensure a single module instance across imports
 echo "Starting Falkland V2 dashboard on http://127.0.0.1:${PORT} …"
 export PORT
-exec python -u -m projects.falklandV2.webdash "$@"
+exec python -u -m projects.falklandV2.serve "$@"

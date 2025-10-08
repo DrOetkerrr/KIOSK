@@ -19,7 +19,7 @@ Falklands V3 — Radar & Contacts (integrated module)
 # - Keep Contact dataclass, motion (tick), scan cadence, priority, and close-alarm logic unchanged.
 
 from __future__ import annotations
-import math, random, time, json, os
+import math, random, time, json, os, threading
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Tuple, Callable, Set
 
@@ -230,12 +230,12 @@ class Radar:
             "close_threat_nm": 3.0,
             "close_alarm_cooldown_s": 30.0,
             # Probability a normal (non-surprise) spawn is Friendly instead of Hostile
-            "friendly_prob": 0.3,
+            "friendly_prob": 0.2,
             # Time-based spawn rates (per minute), decoupled from scans
             # Roughly matches old behavior (~0.5 spawns per 3 minutes → ~0.166/min),
             # with ~1/3 of those being "surprise" spawns.
-            "spawn_rate_per_min": 0.1667,
-            "surprise_rate_per_min": 0.0556,
+            "spawn_rate_per_min": 0.24,
+            "surprise_rate_per_min": 0.04,
         }
         if cfg: self.cfg.update(cfg)
         self.contacts: List[Contact] = []
@@ -263,76 +263,122 @@ class Radar:
             # best-effort default: relative to this file
             default_path = os.path.join(os.path.dirname(__file__), 'data', 'contacts.json')
             self.catalog = Catalog(default_path, rng=self.rng)
+        self._lock = threading.RLock()
+        mid_point = float(WORLD_N) / 2.0
+        self._last_own_xy: Tuple[float, float] = (mid_point, mid_point)
 
     # API
     def tick(self, dt_s: float, own_x: float, own_y: float):
-        # cadence
-        self._accum += dt_s
-        try:
-            self._wave_elapsed += max(0.0, float(dt_s))
-        except Exception:
-            self._wave_elapsed = 0.0
-        if self._accum >= self.cfg["scan_interval_s"]:
-            self._accum = 0.0
-            self.scan(own_x, own_y)
+        with self._lock:
+            ox, oy = self._origin_with_fallback(own_x, own_y)
+            try:
+                raw_ox = float(own_x)
+                raw_oy = float(own_y)
+            except Exception:
+                raw_ox, raw_oy = ox, oy
+            if math.isfinite(raw_ox) and math.isfinite(raw_oy):
+                if abs(raw_ox) >= 1e-3 or abs(raw_oy) >= 1e-3 or not self.contacts:
+                    self._last_own_xy = (raw_ox, raw_oy)
 
-        # time-based spawn chance (Poisson process per minute)
-        try:
-            # Clamp dt to sane bounds
-            dt = max(0.0, min(float(dt_s), 5.0))
-            # rates per second
-            lam_norm = float(self.cfg.get("spawn_rate_per_min", 0.1667)) / 60.0
-            lam_surp = float(self.cfg.get("surprise_rate_per_min", 0.0556)) / 60.0
-            # spawn probability in dt window: 1 - exp(-lambda * dt)
-            import math as _m
-            p_norm = 1.0 - _m.exp(-lam_norm * dt)
-            p_surp = 1.0 - _m.exp(-lam_surp * dt)
-            # First roll surprise (rare), else roll normal
-            if self.rng.random() < p_surp:
-                self._spawn_attempt(own_x, own_y, surprise=True)
-            elif self.rng.random() < p_norm:
-                self._spawn_attempt(own_x, own_y, surprise=False)
-        except Exception:
-            pass
+            # cadence
+            self._accum += dt_s
+            try:
+                self._wave_elapsed += max(0.0, float(dt_s))
+            except Exception:
+                self._wave_elapsed = 0.0
+            if self._accum >= self.cfg["scan_interval_s"]:
+                self._accum = 0.0
+                self.scan(ox, oy)
 
-        # motion
-        for c in self.contacts:
-            c.tick(dt_s, own_x, own_y)
+            # time-based spawn chance (Poisson process per minute)
+            try:
+                # Determine current wave (if any) for spawn tuning
+                wave = None
+                if self.wave_schedule is not None:
+                    try:
+                        wave = self.wave_schedule.current(self._wave_elapsed)
+                    except Exception:
+                        wave = None
+                # Clamp dt to sane bounds
+                dt = max(0.0, min(float(dt_s), 5.0))
+                # rates per second (default config)
+                cfg_spawn_rate = float(self.cfg.get("spawn_rate_per_min", 0.1667))
+                cfg_surprise_rate = float(self.cfg.get("surprise_rate_per_min", 0.0556))
+                spawn_rate = cfg_spawn_rate
+                surprise_rate = cfg_surprise_rate
+                friendly_prob = float(self.cfg.get("friendly_prob", 0.3))
+                if wave is not None:
+                    try:
+                        wr = getattr(wave, 'spawn_rate_per_min', None)
+                        if wr is not None:
+                            spawn_rate = max(0.0, float(wr))
+                    except Exception:
+                        pass
+                    try:
+                        sr = getattr(wave, 'surprise_rate_per_min', None)
+                        if sr is not None:
+                            surprise_rate = max(0.0, float(sr))
+                    except Exception:
+                        pass
+                    try:
+                        fp = getattr(wave, 'friendly_prob', None)
+                        if fp is not None:
+                            friendly_prob = max(0.0, min(1.0, float(fp)))
+                    except Exception:
+                        pass
+                # rates per second
+                import math as _m
+                lam_norm = spawn_rate / 60.0
+                lam_surp = surprise_rate / 60.0
+                # spawn probability in dt window: 1 - exp(-lambda * dt)
+                p_norm = 1.0 - _m.exp(-lam_norm * dt)
+                p_surp = 1.0 - _m.exp(-lam_surp * dt)
+                # First roll surprise (rare), else roll normal
+                if self.rng.random() < p_surp:
+                    self._spawn_attempt(ox, oy, wave=wave, friendly_prob=friendly_prob, surprise=True)
+                elif self.rng.random() < p_norm:
+                    self._spawn_attempt(ox, oy, wave=wave, friendly_prob=friendly_prob, surprise=False)
+            except Exception:
+                pass
 
-        # Inject or update CAP-friendly contacts so they appear on radar
-        try:
-            self._sync_cap_contacts()
-        except Exception:
-            pass
-        # Inject/update Sea King when resupply active
-        try:
-            self._sync_resupply_contact()
-        except Exception:
-            pass
+            # motion
+            for c in self.contacts:
+                c.tick(dt_s, ox, oy)
 
-        # priority + alarms
-        self._select_priority(own_x, own_y)
-        self._check_close_alarm(own_x, own_y)
-        # morale effects: some Argentine aircraft abort when Harriers are close
-        try:
-            self._apply_harrier_deterrence()
-        except Exception:
-            pass
+            # Inject or update CAP-friendly contacts so they appear on radar
+            try:
+                self._sync_cap_contacts()
+            except Exception:
+                pass
+            # Inject/update Sea King when resupply active
+            try:
+                self._sync_resupply_contact()
+            except Exception:
+                pass
 
-        # cap count
-        try:
-            max_contacts = int(self.cfg.get("max_contacts", 10))
-        except Exception:
-            max_contacts = 10
-        if len(self.contacts) > max_contacts:
-            # Preserve CAP contacts; trim others but prioritise hostiles over friendlies
-            caps = [c for c in self.contacts if bool(getattr(c, 'meta', {}).get('cap_flight'))]
-            others = [c for c in self.contacts if not bool(getattr(c, 'meta', {}).get('cap_flight'))]
-            hostiles = [c for c in others if str(getattr(c, 'allegiance', '')).lower() == 'hostile']
-            non_hostiles = [c for c in others if str(getattr(c, 'allegiance', '')).lower() != 'hostile']
-            ordered = hostiles + non_hostiles
-            allow = max(0, max_contacts - len(caps))
-            self.contacts = caps + ordered[:allow]
+            # priority + alarms
+            self._select_priority(ox, oy)
+            self._check_close_alarm(ox, oy)
+            # morale effects: some Argentine aircraft abort when Harriers are close
+            try:
+                self._apply_harrier_deterrence()
+            except Exception:
+                pass
+
+            # cap count
+            try:
+                max_contacts = int(self.cfg.get("max_contacts", 10))
+            except Exception:
+                max_contacts = 10
+            if len(self.contacts) > max_contacts:
+                # Preserve CAP contacts; trim others but prioritise hostiles over friendlies
+                caps = [c for c in self.contacts if bool(getattr(c, 'meta', {}).get('cap_flight'))]
+                others = [c for c in self.contacts if not bool(getattr(c, 'meta', {}).get('cap_flight'))]
+                hostiles = [c for c in others if str(getattr(c, 'allegiance', '')).lower() == 'hostile']
+                non_hostiles = [c for c in others if str(getattr(c, 'allegiance', '')).lower() != 'hostile']
+                ordered = hostiles + non_hostiles
+                allow = max(0, max_contacts - len(caps))
+                self.contacts = caps + ordered[:allow]
 
     def bind_wave_schedule(self, schedule: Optional[WaveSchedule]) -> None:  # type: ignore[override]
         self.wave_schedule = schedule
@@ -375,8 +421,25 @@ class Radar:
                 })
             self._pending_detection.discard(cid)
 
+    def _origin_with_fallback(self, own_x: float, own_y: float) -> Tuple[float, float]:
+        ox = float(own_x)
+        oy = float(own_y)
+        if not math.isfinite(ox) or not math.isfinite(oy):
+            return self._last_own_xy
+        if abs(ox) < 1e-3 and abs(oy) < 1e-3 and self.contacts:
+            return self._last_own_xy
+        return (ox, oy)
+
     # internals
-    def _spawn_attempt(self, own_x: float, own_y: float, surprise: bool = False):
+    def _spawn_attempt(
+        self,
+        own_x: float,
+        own_y: float,
+        *,
+        wave: Optional[WaveDefinition] = None,
+        friendly_prob: Optional[float] = None,
+        surprise: bool = False,
+    ):
         if len(self.contacts) >= self.cfg["max_contacts"]:
             if self.rec: self.rec.log("radar.spawn_skip", {"reason": "max_contacts"})
             return
@@ -388,12 +451,18 @@ class Radar:
             base_min = float(r0)
             base_max = float(self.cfg.get("offboard_max_nm", 30.0))
 
-        wave = None
-        if self.wave_schedule is not None:
+        if wave is None and self.wave_schedule is not None:
             try:
                 wave = self.wave_schedule.current(self._wave_elapsed)
             except Exception:
                 wave = None
+
+        wave_allows_hostiles = False
+        if wave is not None:
+            try:
+                wave_allows_hostiles = bool(getattr(wave, "enemies", ()) or ())
+            except Exception:
+                wave_allows_hostiles = False
 
         def _sample_bearing() -> float:
             if self.wave_schedule is not None and wave is not None:
@@ -404,12 +473,22 @@ class Radar:
             return self.rng.uniform(0.0, 360.0)
 
         # Decide allegiance: surprise always Hostile; otherwise Friendly with configured probability
+        if friendly_prob is None:
+            try:
+                friendly_prob = float(self.cfg.get("friendly_prob", 0.3))
+            except Exception:
+                friendly_prob = 0.3
         if surprise:
             allegiance = "Hostile"
         else:
-            allegiance = ("Friendly" if (self.rng.random() < float(self.cfg.get("friendly_prob", 0.3))) else "Hostile")
+            allegiance = ("Friendly" if (self.rng.random() < float(friendly_prob)) else "Hostile")
 
         wave_enemy = None
+        if allegiance == "Hostile":
+            if not wave_allows_hostiles:
+                if self.rec:
+                    self.rec.log("radar.spawn_skip", {"reason": "wave_suppressed"})
+                return
         if allegiance == "Hostile" and wave is not None:
             enemies = getattr(wave, 'enemies', ())
             if not enemies:
@@ -565,80 +644,104 @@ class Radar:
                 })
 
     def force_spawn(self, own_x: float, own_y: float, allegiance: str, bearing_deg: float, range_nm: float) -> Contact:
-        r = float(range_nm)
-        rad = math.radians(float(bearing_deg))
-        dx = math.sin(rad) * r
-        dy = -math.cos(rad) * r
-        x = max(0.0, min(float(WORLD_N), own_x + dx))
-        y = max(0.0, min(float(WORLD_N), own_y + dy))
-        if str(allegiance).title() == 'Friendly':
-            name, speed, klass = self.catalog.pick_friendly()
-            allegiance_norm = 'Friendly'
-        else:
-            name, speed, klass = self.catalog.pick_hostile()
-            allegiance_norm = 'Hostile'
-        course_deg = (float(bearing_deg) + 180.0) % 360.0
-        surface_meta: Optional[Dict[str, Any]] = None
-        if allegiance_norm == 'Hostile' and str(klass or '').lower() == 'ship':
-            surface_meta = {'hp': 4.0, 'max_hp': 4.0}
-        meta = {
-            "spawn": {"bearing_deg": round(float(bearing_deg),1), "range_nm": round(r,2), "surprise": False, "forced": True},
-            "cap": self.catalog.details(name),
-            "class": klass,
-        }
-        if surface_meta is not None:
-            meta['surface_ship'] = surface_meta
-        c = Contact(
-            id=self._next_id, name=name, allegiance=allegiance_norm,
-            x=float(x), y=float(y), course_deg=course_deg, speed_kts=float(speed),
-            threat="high" if name in ("Super Etendard", "Mirage III") else "medium",
-            meta=meta
-        )
-        self._next_id += 1
-        self.contacts.append(c)
-        if allegiance_norm.lower() == 'hostile':
-            self._pending_detection.add(c.id)
-        elif self.rec:
-            try:
-                self.rec.log("radar.contact.new", {
-                    "id": c.id,
-                    "name": c.name,
-                    "allegiance": c.allegiance,
+        log_contact: Optional[Dict[str, Any]] = None
+        log_spawn: Optional[Dict[str, Any]] = None
+
+        with self._lock:
+            ox, oy = self._origin_with_fallback(own_x, own_y)
+            if abs(ox) >= 1e-3 or abs(oy) >= 1e-3 or not self.contacts:
+                self._last_own_xy = (ox, oy)
+            r = float(range_nm)
+            rad = math.radians(float(bearing_deg))
+            dx = math.sin(rad) * r
+            dy = -math.cos(rad) * r
+            x = max(0.0, min(float(WORLD_N), ox + dx))
+            y = max(0.0, min(float(WORLD_N), oy + dy))
+            if str(allegiance).title() == 'Friendly':
+                name, speed, klass = self.catalog.pick_friendly()
+                allegiance_norm = 'Friendly'
+            else:
+                name, speed, klass = self.catalog.pick_hostile()
+                allegiance_norm = 'Hostile'
+            course_deg = (float(bearing_deg) + 180.0) % 360.0
+            surface_meta: Optional[Dict[str, Any]] = None
+            if allegiance_norm == 'Hostile' and str(klass or '').lower() == 'ship':
+                surface_meta = {'hp': 4.0, 'max_hp': 4.0}
+            meta = {
+                "spawn": {"bearing_deg": round(float(bearing_deg), 1), "range_nm": round(r, 2), "surprise": False, "forced": True},
+                "cap": self.catalog.details(name),
+                "class": klass,
+            }
+            if surface_meta is not None:
+                meta['surface_ship'] = surface_meta
+            cid = int(self._next_id)
+            self._next_id += 1
+            contact = Contact(
+                id=cid,
+                name=name,
+                allegiance=allegiance_norm,
+                x=float(x),
+                y=float(y),
+                course_deg=course_deg,
+                speed_kts=float(speed),
+                threat="high" if name in ("Super Etendard", "Mirage III") else "medium",
+                meta=meta,
+            )
+            self.contacts.append(contact)
+            if allegiance_norm.lower() == 'hostile':
+                self._pending_detection.add(contact.id)
+            else:
+                log_contact = {
+                    "id": contact.id,
+                    "name": contact.name,
+                    "allegiance": contact.allegiance,
                     "class": str(klass),
-                    "world_xy": [round(c.x, 2), round(c.y, 2)],
-                    "course_deg": c.course_deg,
-                    "speed_kts": c.speed_kts * HOSTILE_SPEED_SCALE,
-                })
-            except Exception:
-                pass
-        if self.rec:
+                    "world_xy": [round(contact.x, 2), round(contact.y, 2)],
+                    "course_deg": contact.course_deg,
+                    "speed_kts": contact.speed_kts * HOSTILE_SPEED_SCALE,
+                }
+
+            def _clamp(v, lo, hi):
+                return lo if v < lo else hi if v > hi else v
+
+            def _letters(i):
+                s = ""
+                n = max(1, int(i))
+                while n > 0:
+                    n -= 1
+                    s = chr(ord('A') + (n % 26)) + s
+                    n //= 26
+                return s
+
+            def _world_to_cell(row, col):
+                def mv(v):
+                    t = 1.0 + (_clamp(v, 0.0, float(WORLD_N)) * (BOARD_N - 1) / float(WORLD_N))
+                    return int(round(_clamp(t, 1.0, float(BOARD_N))))
+
+                r_i, c_i = mv(row), mv(col)
+                return f"{_letters(c_i)}{r_i}"
+
+            cell = _world_to_cell(y, x)
+            log_spawn = {
+                "bearing_deg": round(float(bearing_deg), 1),
+                "range_nm": round(r, 2),
+                "chosen": {"name": name, "speed_kts": speed, "allegiance": allegiance_norm},
+                "target_world_xy": [round(x, 2), round(y, 2)],
+                "ship_world_xy": [round(ox, 2), round(oy, 2)],
+                "cell": cell,
+            }
+
+        if self.rec and log_contact and allegiance_norm.lower() != 'hostile':
             try:
-                # include a display cell (board A..Z + 1..26) derived from world (y=row, x=col)
-                def _clamp(v, lo, hi):
-                    return lo if v < lo else hi if v > hi else v
-                def _letters(i):
-                    s=""; n=max(1,int(i));
-                    while n>0:
-                        n-=1; s=chr(ord('A')+(n%26))+s; n//=26
-                    return s
-                def _world_to_cell(row, col):
-                    def mv(v):
-                        t=1.0+(_clamp(v,0.0,float(WORLD_N))*(BOARD_N-1)/float(WORLD_N))
-                        return int(round(_clamp(t,1.0,float(BOARD_N))))
-                    r_i, c_i = mv(row), mv(col)
-                    return f"{_letters(c_i)}{r_i}"
-                cell = _world_to_cell(y, x)
-                self.rec.log("radar.force_spawn", {
-                    "bearing_deg": round(float(bearing_deg),1),
-                    "range_nm": round(r,2),
-                    "chosen": {"name": name, "speed_kts": speed, "allegiance": allegiance_norm},
-                    "target_world_xy": [round(x,2), round(y,2)],
-                    "ship_world_xy": [round(own_x,2), round(own_y,2)],
-                    "cell": cell,
-                })
+                self.rec.log("radar.contact.new", log_contact)
             except Exception:
                 pass
-        return c
+        if self.rec and log_spawn:
+            try:
+                self.rec.log("radar.force_spawn", log_spawn)
+            except Exception:
+                pass
+        return contact
 
     # ---- Resupply Sea King injection ---------------------------------------
     def _sync_resupply_contact(self) -> None:

@@ -37,6 +37,9 @@ class WaveDefinition:
     direction: str
     direction_segments: Tuple[Tuple[float, float], ...]
     enemies: Tuple[WaveEnemy, ...]
+    spawn_rate_per_min: Optional[float] = None
+    surprise_rate_per_min: Optional[float] = None
+    friendly_prob: Optional[float] = None
 
     def duration_s(self) -> float:
         return max(0.0, self.end_s - self.start_s)
@@ -188,6 +191,18 @@ def load_wave_schedule(path: Path | str, *, fallback_total_min: float = 45.0) ->
         end_s = min(total_s, cursor + dur_s)
         cursor = end_s
         direction_segments = _parse_direction(raw.get('direction'))
+        spawn_rate_per_min = _coerce_float(raw.get('spawn_rate_per_min'))
+        if spawn_rate_per_min is not None and spawn_rate_per_min < 0.0:
+            spawn_rate_per_min = 0.0
+        surprise_rate_per_min = _coerce_float(raw.get('surprise_rate_per_min'))
+        if surprise_rate_per_min is not None and surprise_rate_per_min < 0.0:
+            surprise_rate_per_min = 0.0
+        friendly_prob = _coerce_float(raw.get('friendly_prob'))
+        if friendly_prob is not None:
+            try:
+                friendly_prob = max(0.0, min(1.0, float(friendly_prob)))
+            except Exception:
+                friendly_prob = None
         spawns = raw.get('spawns') if isinstance(raw.get('spawns'), dict) else {}
         enemies: List[WaveEnemy] = []
         for name, cfg in spawns.items():
@@ -208,6 +223,9 @@ def load_wave_schedule(path: Path | str, *, fallback_total_min: float = 45.0) ->
             direction=str(raw.get('direction') or 'ALL').upper(),
             direction_segments=direction_segments,
             enemies=tuple(enemies),
+            spawn_rate_per_min=spawn_rate_per_min,
+            surprise_rate_per_min=surprise_rate_per_min,
+            friendly_prob=friendly_prob,
         ))
 
     if not waves:
@@ -223,6 +241,9 @@ def load_wave_schedule(path: Path | str, *, fallback_total_min: float = 45.0) ->
             direction=last.direction,
             direction_segments=last.direction_segments,
             enemies=last.enemies,
+            spawn_rate_per_min=last.spawn_rate_per_min,
+            surprise_rate_per_min=last.surprise_rate_per_min,
+            friendly_prob=last.friendly_prob,
         )
 
     if start_wave_index < 0:

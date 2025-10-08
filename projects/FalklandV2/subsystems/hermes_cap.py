@@ -1247,6 +1247,8 @@ class HermesCAP:
                 item['origin_cell'] = m.origin_cell
             if 'range_nm' not in item:
                 item['range_nm'] = item.get('distance_nm')
+            if str(m.follow or '').strip().lower() == 'hermes':
+                item['cur_cell'] = m.target_cell
             missions.append(item)
         return {"readiness": r, "missions": missions, "hazard": hazard_copy}
 

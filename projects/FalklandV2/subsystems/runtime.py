@@ -19,12 +19,12 @@ for p in (REPO_ROOT, ROOT):
         sys.path.insert(0, str(p))
 
 try:
-    from projects.falklandV2.engine import Engine  # type: ignore
+    from projects.falklandV2.core.engine import Engine  # type: ignore
     from projects.falklandV2.subsystems.hermes_cap import HermesCAP  # type: ignore
     from projects.falklandV2.subsystems.convoy import Convoy  # type: ignore
     from projects.falklandV2.subsystems import contacts as cons  # type: ignore
 except Exception:  # pragma: no cover - fallback when executed relatively
-    from engine import Engine
+    from core.engine import Engine
     from subsystems.hermes_cap import HermesCAP
     from subsystems.convoy import Convoy
     from subsystems import contacts as cons  # for distance and cell formatting helpers

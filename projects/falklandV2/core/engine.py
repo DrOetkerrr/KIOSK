@@ -7,7 +7,7 @@ Implements the minimal surfaces expected by utils.canary:
 - WORLD_N == 40, BOARD_N == 26, BOARD_MIN_X/Y and project_edge_warning
 - class Engine with: ship, tick(dt_s), hud_line(), contacts
 
-Also wires in the Radar module (core.radar.Radar) and exposes its contacts.
+Also wires in the Radar module (projects.falklandV2.radar.Radar) and exposes its contacts.
 Movement model: 0° = North, 90° = East; distance = kts * dt_s / 3600 nm.
 """
 
@@ -78,7 +78,7 @@ class Engine:
 
         # Hook up radar
         try:
-            from .radar import Radar
+            from projects.falklandV2.radar import Radar
         except Exception:
             # Allow import even if radar is temporarily unavailable
             Radar = None  # type: ignore

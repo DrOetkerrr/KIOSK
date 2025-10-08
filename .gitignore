@@ -14,6 +14,9 @@ env/
 *.log
 logs/
 falklands_state.json
+tmp/
+tmp_state.json
+tmp_status_snapshot.json
 
 # --- macOS crumbs ---
 .DS_Store

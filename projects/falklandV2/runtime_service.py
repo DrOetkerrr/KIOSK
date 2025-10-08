@@ -27,41 +27,11 @@ from projects.falklandV2.subsystems import ui_snapshot as ui_snap
 from projects.falklandV2.subsystems.mission import MissionController
 from projects.falklandV2.subsystems.spawn_waves import load_wave_schedule, WaveSchedule
 from projects.falklandV2.engine_adapter import contact_to_ui, _scale_legacy
-
-
-class _RadarRecorder:
-    """Mirror of webdash's recorder helper so radar logging stays untouched."""
-
-    def __init__(self, runtime: "GameRuntime") -> None:
-        self._runtime = runtime
-
-    def log(self, event: str, data: Dict[str, Any] | None = None) -> None:  # pragma: no cover - resilience only
-        runtime = self._runtime
-        try:
-            runtime.record_flight({
-                "route": f"/radar/{event}",
-                "method": "INT",
-                "status": 200,
-                "duration_ms": 0,
-                "request": {},
-                "response": {"event": event, **(data or {})},
-            })
-            if event == "ship.alarm.threat_close":
-                cfg = runtime.load_alarm_cfg()
-                auto = (cfg.get("auto") or {}).get("threat_close") or {}
-                if bool(auto.get("enabled", False)):
-                    rng = (data or {}).get("range_nm")
-                    try:
-                        thresh = float(auto.get("threshold_nm", 3.0))
-                    except Exception:
-                        thresh = 3.0
-                    if not isinstance(rng, (int, float)) or float(rng) <= thresh:
-                        msg_tpl = str(auto.get("message") or "Combat alarm! Threat inside {range_nm} nm.")
-                        msg = msg_tpl.format(range_nm=(f"{float(rng):.1f}" if isinstance(rng, (int, float)) else "?"))
-                        runtime.trigger_alarm(str(auto.get("sound") or "red-alert.wav"), message=msg,
-                                              role=str(auto.get("role") or "Fire Control"), loop=False)
-        except Exception:
-            pass
+from projects.falklandV2.runtime_state import StateRepository
+from projects.falklandV2.runtime_radar import RadarBridge
+from projects.falklandV2.runtime_cap import CAPOrchestrator
+from projects.falklandV2.runtime_audio import AudioCoordinator
+from projects.falklandV2.runtime_mission import MissionCoordinator
 
 
 class GameRuntime:
@@ -72,7 +42,9 @@ class GameRuntime:
         self.port = port if port is not None else self._read_port()
         self.app_started = datetime.now(timezone.utc)
         self.state_lock = threading.Lock()
-        self.audio_state = core.AUDIO_STATE
+        self.audio_coordinator = AudioCoordinator(core)
+        self.audio_state = self.audio_coordinator.state
+        self.audio = self.audio_state
         self.record_flight = core.record_flight
         self.record_radio = core.record_radio
         self.trigger_alarm = core.trigger_alarm
@@ -80,23 +52,28 @@ class GameRuntime:
         self.stamp_cap_launch = core.stamp_cap_launch
         self.stamp_cap_recovery = core.stamp_cap_recovery
         self.load_alarm_cfg = core.load_alarm_cfg
-        self.log_dir = core.LOG_DIR
-        self.flight_path = core.FLIGHT_PATH
-        self.flight_max_bytes = core.FLIGHT_MAX_BYTES
-        self.data_dir = core.DATA_DIR
-        self.state_dir = core.STATE_DIR
-        self.ammo_path = core.AMMO_PATH
-        self.arming_path = core.ARMING_PATH
-        self.weap_catalog_path = core.WEAP_CATALOG_PATH
-        self.contacts_path = core.CONTACTS_PATH
-        self.crew_path = core.CREW_PATH
-        self.alarm_cfg_path = core.ALARM_CFG_PATH
-        self.health_path = core.HEALTH_PATH
-        self.tts_dir = core.TTS_DIR
-        self.voice_events_path = core.VOICE_EVENTS_PATH
-        self.skirmishes_path = core.SKIRMISHES_PATH
-        self.roadmap_path = core.ROADMAP_PATH
-        self.voices_dir = core.VOICES_DIR
+        self.state_repo = StateRepository(core)
+        self.log_dir = self.state_repo.log_dir
+        self.flight_path = self.state_repo.flight_path
+        self.flight_max_bytes = self.state_repo.flight_max_bytes
+        self.data_dir = self.state_repo.data_dir
+        self.state_dir = self.state_repo.state_dir
+        self.ammo_path = self.state_repo.ammo_path
+        self.arming_path = self.state_repo.arming_path
+        self.weap_catalog_path = self.state_repo.weapons_catalog_path
+        self.contacts_path = self.state_repo.contacts_path
+        self.crew_path = self.state_repo.crew_path
+        self.alarm_cfg_path = self.state_repo.alarm_cfg_path
+        self.health_path = self.state_repo.health_path
+        self.tts_dir = self.state_repo.tts_dir
+        self.voice_events_path = self.state_repo.voice_events_path
+        self.skirmishes_path = self.state_repo.skirmishes_path
+        self.roadmap_path = self.state_repo.roadmap_path
+        self.voices_dir = self.state_repo.voices_dir
+
+        self.radar_bridge = RadarBridge(self)
+        self.cap_orchestrator = CAPOrchestrator(self)
+        self.mission_coordinator = MissionCoordinator(self)
 
         self._rebinder: Optional[Callable[["GameRuntime"], None]] = None
 
@@ -106,8 +83,8 @@ class GameRuntime:
         self._engine_state_cache: Dict[str, Any] = {}
         self.engine: Engine = self._create_engine()
         self.cap: Optional[HermesCAP] = self._create_cap()
+        self.cap_orchestrator.attach(self.cap)
         self.wave_schedule: Optional[WaveSchedule] = load_wave_schedule(self.data_dir / "attack_waves.json")
-        self._mission_settings_cache: Dict[str, Any] = {}
         self.radar: Radar = self._create_radar()
         self._install_engine_compat(self.engine)
         self._update_engine_state_view()
@@ -119,16 +96,12 @@ class GameRuntime:
                     self.mission._mission_def['duration_s'] = float(self.wave_schedule.total_duration_s)
             except Exception:
                 pass
-        self._mission_settings_cache = self.mission.current_settings()
-        self._last_engine_tick_ts: float = now
-        self._last_radar_tick_ts: float = now
-        self._mission_settings_cache = self.mission.current_settings()
-        try:
-            core.AUDIO_STATE['intro'] = core.build_intro_payload()
-        except Exception:
-            core.AUDIO_STATE['intro'] = None
+        self.mission_coordinator.attach(self.mission)
+        self._last_engine_tick_ts = now
+        self._last_radar_tick_ts = now
+        self.audio_coordinator.ensure_intro()
         self._apply_mission_contact_filters(self.radar)
-        self._sync_cap_wave()
+        self.cap_orchestrator.sync_wave()
 
     # ---------- creation helpers
     def _read_port(self) -> int:
@@ -156,59 +129,8 @@ class GameRuntime:
             rng = (random.Random(int(seed)) if seed is not None else random.Random())
         except Exception:
             rng = random.Random()
-        radar = Radar(rec=_RadarRecorder(self), rng=rng, catalog_path=str(self.data_dir / "contacts.json"))
-        try:
-            radar.cap_effects_provider = (lambda: self.cap.current_effects() if self.cap is not None else {"active": False})
-        except Exception:
-            pass
-        try:
-            radar.cap_missions_provider = (lambda: (self.cap.snapshot().get('missions') if self.cap is not None else []))
-        except Exception:
-            pass
-        # Bind CAP hooks: resolve target class/name and apply hit effects
-        try:
-            if self.cap is not None:
-                self.cap.bind_target_resolver(lambda cid: next((c for c in radar.contacts if int(getattr(c, 'id', -1)) == int(cid)), None))  # type: ignore[attr-defined]
-                def _cap_hit(cid: int, name: str, klass: str, ctx: Optional[Dict[str, Any]] = None) -> None:
-                    try:
-                        nm = str(name or '')
-                        kl = str(klass or '')
-                    except Exception:
-                        nm = str(name)
-                        kl = str(klass)
-                    handled = False
-                    sunk = False
-                    try:
-                        wd = sys.modules.get('projects.falklandV2.webdash')  # type: ignore
-                        if wd is None:
-                            from projects.falklandV2 import webdash as wd  # type: ignore
-                    except Exception:
-                        wd = None  # type: ignore
-                    if wd is not None:
-                        loadout = ''
-                        weapon_label = None
-                        if isinstance(ctx, dict):
-                            loadout = str(ctx.get('loadout', '')).lower()
-                            weapon_label = ctx.get('weapon')
-                        if loadout == 'bombs':
-                            weapon = str(weapon_label or 'Bomb')
-                            with wd.STATE_LOCK:
-                                try:
-                                    handled, sunk = self.core.apply_enemy_ship_damage(wd, cid, weapon=weapon, target_name=nm, target_class=kl)
-                                except Exception:
-                                    handled = False
-                    if handled:
-                        if sunk:
-                            return
-                        return
-                    # Fallback: remove contact immediately
-                    try:
-                        radar.contacts = [c for c in radar.contacts if int(getattr(c, 'id', -1)) != int(cid)]
-                    except Exception:
-                        pass
-                self.cap.bind_hit_callback(_cap_hit)  # type: ignore[attr-defined]
-        except Exception:
-            pass
+        radar = Radar(rec=self.radar_bridge.recorder(), rng=rng, catalog_path=str(self.data_dir / "contacts.json"))
+        self.radar_bridge.attach(radar, self.cap)
         try:
             radar.bind_wave_schedule(self.wave_schedule)
         except Exception:
@@ -352,123 +274,38 @@ class GameRuntime:
             pass
 
     def _mission_context(self, *, now: Optional[float] = None) -> Dict[str, Any]:
-        ts = now if now is not None else time.time()
-        try:
-            health = self.core._load_health()
-        except Exception:
-            health = {}
-        try:
-            state = self.engine.public_state()
-        except Exception:
-            state = {}
-        return {
-            "now": ts,
-            "health": health,
-            "state": state,
-        }
-
-    def _derive_cap_wave(self, settings: Dict[str, Any]) -> Optional[str]:
-        wave: Optional[str] = None
-        if isinstance(settings, dict):
-            for key in ("wave_id", "wave", "phase_id", "phase", "stage", "segment"):
-                val = settings.get(key)
-                if isinstance(val, str):
-                    candidate = val.strip()
-                    if candidate:
-                        wave = candidate
-                        break
-        if not wave:
-            active = getattr(self.mission, '_active_id', None)
-            if isinstance(active, str):
-                candidate = active.strip()
-                if candidate:
-                    wave = candidate
-        return wave
-
-    def _sync_cap_wave(self) -> None:
-        cap = getattr(self, 'cap', None)
-        if cap is None or not hasattr(cap, 'set_wave_context'):
-            return
-        try:
-            wave = self._derive_cap_wave(self._mission_settings_cache or {})
-        except Exception:
-            wave = None
-        try:
-            cap.set_wave_context(wave)
-        except Exception:
-            pass
+        return self.mission_coordinator.context(now=now)
 
     def mission_snapshot(self) -> Dict[str, Any]:
-        if not self.mission:
-            return {}
         with self.state_lock:
-            ctx = self._mission_context()
-            snap = self.mission.update(ctx, now=ctx["now"])
-            self._mission_settings_cache = self.mission.current_settings()
-            self._sync_cap_wave()
-            return snap
+            return self.mission_coordinator.snapshot()
 
     def apply_mission_decision(self, decision_id: str, choice: str) -> Dict[str, Any]:
-        if not self.mission:
-            return {"ok": False, "error": "mission_unavailable"}
         with self.state_lock:
-            return self.mission.register_decision(decision_id, choice)
+            return self.mission_coordinator.apply_decision(decision_id, choice)
 
     def mission_settings(self) -> Dict[str, Any]:
         with self.state_lock:
-            return dict(self._mission_settings_cache)
+            return self.mission_coordinator.settings()
 
     def allow_hostile_contacts(self) -> bool:
-        try:
-            settings = getattr(self, '_mission_settings_cache', {}) or {}
-            return bool(settings.get('hostile_spawns', True))
-        except Exception:
-            return True
+        return self.mission_coordinator.allow_hostile_contacts()
 
     def activate_mission(self, mission_id: str) -> Dict[str, Any]:
-        if not self.mission:
-            return {"ok": False, "error": "mission_unavailable"}
         with self.state_lock:
-            previous = dict(self._mission_settings_cache)
-            res = self.mission.activate(mission_id, now=time.time())
-            if res.get('ok'):
-                self._mission_settings_cache = self.mission.current_settings()
-                self._handle_mission_settings_change(previous, self._mission_settings_cache)
-            return res
-
-    def _handle_mission_settings_change(self, previous: Dict[str, Any], new: Dict[str, Any]) -> None:
-        prev_hostiles = bool(previous.get('hostile_spawns', True))
-        new_hostiles = bool(new.get('hostile_spawns', True))
-        try:
-            if prev_hostiles and not new_hostiles:
-                self._apply_mission_contact_filters(self.radar)
-            elif not prev_hostiles and new_hostiles:
-                ox, oy = self._own_xy()
-                bearings = (45.0, 315.0, 90.0)
-                for bearing in bearings:
-                    try:
-                        rng_nm = random.uniform(6.0, 12.0)
-                        self.radar.force_spawn(ox, oy, 'Friendly', bearing, rng_nm)
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-        self._apply_mission_contact_filters(self.radar)
-        self._sync_cap_wave()
+            return self.mission_coordinator.activate(mission_id)
 
     def reset_engine_and_cap(self) -> None:
         with self.state_lock:
             self.engine = self._create_engine()
             self.cap = self._create_cap()
-            try:
-                self.radar.cap_effects_provider = (lambda: self.cap.current_effects() if self.cap is not None else {"active": False})
-            except Exception:
-                pass
+            self.cap_orchestrator.attach(self.cap)
+            self.radar_bridge.attach(self.radar, self.cap)
             now = time.time()
             self._last_engine_tick_ts = now
             self._last_radar_tick_ts = now
             self._sync_engine_contacts()
-            self._sync_cap_wave()
+            self.cap_orchestrator.sync_wave()
         self._rebind()
 
     def reset_state(self, *, clear_tts: bool = False) -> None:
@@ -478,11 +315,11 @@ class GameRuntime:
         """
         with self.state_lock:
             try:
-                core.save_ammo(dict(core.WEAP_DEFAULT_AMMO))
+                self.state_repo.save_ammo(dict(core.WEAP_DEFAULT_AMMO))
             except Exception:
                 pass
             try:
-                core.save_arming(dict(core.WEAP_DEFAULT_ARMING))
+                self.state_repo.save_arming(dict(core.WEAP_DEFAULT_ARMING))
             except Exception:
                 pass
             try:
@@ -490,17 +327,21 @@ class GameRuntime:
             except Exception:
                 pass
             try:
-                core._save_json(self.skirmishes_path, [])
+                self.state_repo.save_json(self.skirmishes_path, [])
             except Exception:
                 pass
             try:
-                core._save_json(self.roadmap_path, {})
+                self.state_repo.save_json(self.roadmap_path, {})
             except Exception:
                 pass
             try:
-                core._save_json(self.state_dir / 'runtime.json', {})
+                self.state_repo.save_json(self.state_dir / 'runtime.json', {})
             except Exception:
                 pass
+            try:
+                self.wave_schedule = load_wave_schedule(self.data_dir / "attack_waves.json")
+            except Exception:
+                self.wave_schedule = None
             if clear_tts:
                 try:
                     for entry in self.tts_dir.iterdir():
@@ -512,28 +353,14 @@ class GameRuntime:
                     pass
 
             # Reset audio state cache
-            core.AUDIO_STATE.clear()
-            core.AUDIO_STATE.update({
-                "last_launch": None,
-                "last_result": None,
-                "radio": None,
-                "alarm": None,
-                "cap_launch": None,
-                "cap_recovery": None,
-                "enemy_bomb": None,
-                "shots_in_flight": [],
-                "intro": None,
-            })
-            try:
-                core.AUDIO_STATE['intro'] = core.build_intro_payload()
-            except Exception:
-                core.AUDIO_STATE['intro'] = None
-            self.audio_state = core.AUDIO_STATE
+            self.audio_coordinator.reset()
 
             # Rebuild runtime components
             self.engine = self._create_engine()
             self.cap = self._create_cap()
             self.radar = self._create_radar()
+            self.cap_orchestrator.attach(self.cap)
+            self.radar_bridge.attach(self.radar, self.cap)
             now = time.time()
             self.mission = MissionController(self.data_dir, now=now)
             if self.wave_schedule is not None:
@@ -542,23 +369,26 @@ class GameRuntime:
                         self.mission._mission_def['duration_s'] = float(self.wave_schedule.total_duration_s)
                 except Exception:
                     pass
-            self._mission_settings_cache = self.mission.current_settings()
+            self.mission_coordinator.attach(self.mission)
             self._last_radar_tick_ts = now
             self._sync_engine_contacts()
+            self.cap_orchestrator.sync_wave()
         self._rebind()
 
     # Convenience pass-throughs for callers that expect functions
     def load_ammo(self) -> Dict[str, Any]:
+        # Preserve legacy normalization (defaults, integer coercion, auto-fixes)
         return core.load_ammo()
 
     def save_ammo(self, obj: Dict[str, Any]) -> None:
-        core.save_ammo(obj)
+        self.state_repo.save_ammo(obj)
 
     def load_arming(self) -> Dict[str, Any]:
+        # Keep historical behaviour: callers expect canonical strings (Safe/Arming/Armed)
         return core.load_arming()
 
     def save_arming(self, obj: Dict[str, Any]) -> None:
-        core.save_arming(obj)
+        self.state_repo.save_arming(obj)
 
     def compute_in_range(self, name: str, primary_ui: Optional[Dict[str, Any]]) -> Optional[bool]:
         return core.compute_in_range(name, primary_ui)
@@ -571,12 +401,7 @@ class GameRuntime:
         with self.state_lock:
             self._update_engine_state_view()
             contacts_ui, radar_meta = self._radar_snapshot()
-            mission_block: Dict[str, Any] = {}
-            try:
-                mission_ctx = self._mission_context()
-                mission_block = self.mission.update(mission_ctx, now=mission_ctx["now"]) if self.mission else {}
-            except Exception:
-                mission_block = {}
+            mission_block: Dict[str, Any] = self.mission_coordinator.snapshot()
             try:
                 paused = False
                 convoy = None
@@ -651,6 +476,9 @@ class GameRuntime:
         except Exception:
             contacts_ui = []
         return contacts_ui, radar_meta
+
+    def handle_cap_hit(self, radar: Optional[Radar], cid: int, name: str, klass: str, ctx: Optional[Dict[str, Any]] = None) -> None:
+        self.cap_orchestrator.handle_hit(cid, name, klass, ctx)
 
     def _apply_mission_contact_filters(self, radar: Optional[Radar]) -> None:
         if radar is None:
@@ -919,7 +747,7 @@ class GameRuntime:
         # audio cue
         try:
             with self.state_lock:
-                self.audio_state['last_launch'] = {'weapon': core._sound_key_for_weapon(name), 'ts': time.time()}
+                self.audio_coordinator.record_launch(name)
         except Exception:
             pass
         # cooldown apply
