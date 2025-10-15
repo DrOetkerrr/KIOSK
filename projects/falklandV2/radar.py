@@ -19,7 +19,8 @@ Falklands V3 — Radar & Contacts (integrated module)
 # - Keep Contact dataclass, motion (tick), scan cadence, priority, and close-alarm logic unchanged.
 
 from __future__ import annotations
-import math, random, time, json, os, threading
+import math, random, time, json, os, threading, re
+from collections import deque
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Tuple, Callable, Set
 
@@ -231,11 +232,17 @@ class Radar:
             "close_alarm_cooldown_s": 30.0,
             # Probability a normal (non-surprise) spawn is Friendly instead of Hostile
             "friendly_prob": 0.2,
+            "hermes_follow_radius_nm": 5.0,
+            "hermes_follow_orbit_period_s": 240.0,
             # Time-based spawn rates (per minute), decoupled from scans
             # Roughly matches old behavior (~0.5 spawns per 3 minutes → ~0.166/min),
             # with ~1/3 of those being "surprise" spawns.
-            "spawn_rate_per_min": 0.24,
-            "surprise_rate_per_min": 0.04,
+            "spawn_rate_per_min": 0.12,
+            "surprise_rate_per_min": 0.02,
+            # Force-spawn rate guard to avoid UI floods when callers misbehave.
+            "force_spawn_rate_per_sec": 64,
+            "force_spawn_burst_limit": 128,
+            "force_spawn_window_s": 3.0,
         }
         if cfg: self.cfg.update(cfg)
         self.contacts: List[Contact] = []
@@ -251,11 +258,16 @@ class Radar:
         # Optional CAP missions provider for placing friendly CAP flights on radar
         # Expected to return a list of dicts with keys: id, status, target_cell, origin_cell (optional)
         self.cap_missions_provider: Optional[Callable[[], List[Dict[str, Any]]]] = None
-        # Track injected CAP contacts by mission id -> contact id
-        self._cap_contacts: Dict[int, int] = {}
+        # Track injected CAP contacts by mission id -> contact ids keyed by role (leader/wingman)
+        self._cap_contacts: Dict[int, Dict[str, int]] = {}
         # Optional resupply state provider (returns dict with keys: active, stage, origin_cell)
         self.resupply_state_provider: Optional[Callable[[], Dict[str, Any]]] = None
         self._resupply_contact_id: Optional[int] = None
+        # Hostile formation tracking (pairs)
+        self._enemy_formations: Dict[int, Dict[str, Any]] = {}
+        self._enemy_formation_seq: int = 1
+        self._enemy_spacing_cells: int = 2
+        self._nm_per_cell: float = self._compute_nm_per_cell()
         # Catalog
         if catalog_path:
             self.catalog = Catalog(catalog_path, rng=self.rng)
@@ -266,6 +278,8 @@ class Radar:
         self._lock = threading.RLock()
         mid_point = float(WORLD_N) / 2.0
         self._last_own_xy: Tuple[float, float] = (mid_point, mid_point)
+        self._force_spawn_recent: deque[float] = deque()
+        self._force_spawn_throttle_last_log = 0.0
 
     # API
     def tick(self, dt_s: float, own_x: float, own_y: float):
@@ -277,8 +291,10 @@ class Radar:
             except Exception:
                 raw_ox, raw_oy = ox, oy
             if math.isfinite(raw_ox) and math.isfinite(raw_oy):
-                if abs(raw_ox) >= 1e-3 or abs(raw_oy) >= 1e-3 or not self.contacts:
+                if abs(raw_ox) >= 1e-3 or abs(raw_oy) >= 1e-3:
                     self._last_own_xy = (raw_ox, raw_oy)
+                else:
+                    self._last_own_xy = (ox, oy)
 
             # cadence
             self._accum += dt_s
@@ -344,6 +360,11 @@ class Radar:
             # motion
             for c in self.contacts:
                 c.tick(dt_s, ox, oy)
+
+            try:
+                self._sync_hostile_formations(ox, oy)
+            except Exception:
+                pass
 
             # Inject or update CAP-friendly contacts so they appear on radar
             try:
@@ -422,11 +443,14 @@ class Radar:
             self._pending_detection.discard(cid)
 
     def _origin_with_fallback(self, own_x: float, own_y: float) -> Tuple[float, float]:
-        ox = float(own_x)
-        oy = float(own_y)
+        try:
+            ox = float(own_x)
+            oy = float(own_y)
+        except Exception:
+            return self._last_own_xy
         if not math.isfinite(ox) or not math.isfinite(oy):
             return self._last_own_xy
-        if abs(ox) < 1e-3 and abs(oy) < 1e-3 and self.contacts:
+        if abs(ox) < 1e-3 and abs(oy) < 1e-3:
             return self._last_own_xy
         return (ox, oy)
 
@@ -542,14 +566,53 @@ class Radar:
         if max_nm <= min_nm:
             max_nm = min_nm + 0.1
 
+        friendly_cells_map: Dict[str, List[Contact]] = {}
+        friendly_allow_overlap = False
+        friendly_override_xy: Optional[Tuple[float, float]] = None
+        if allegiance == "Friendly":
+            friendly_radius_nm = max(self._nm_per_cell * 10.0, self._nm_per_cell)
+            max_nm = min(max_nm, friendly_radius_nm)
+            max_nm = max(max_nm, self._nm_per_cell * 0.5)
+            min_nm = self._nm_per_cell * 0.25
+            friendly_cells_map = self._occupied_cells()
+            friendly_allow_overlap = str(klass or '').strip().lower() == 'aircraft'
+            friendly_override_xy = self._friendly_spawn_xy(own_x, own_y, klass, friendly_cells_map)
+
         r = self.rng.uniform(min_nm, max_nm)
 
         bearing_deg = _sample_bearing()
+        if allegiance == "Friendly" and friendly_override_xy is not None:
+            dx_override = friendly_override_xy[0] - own_x
+            dy_override = friendly_override_xy[1] - own_y
+            r = math.hypot(dx_override, dy_override)
+            if r > 0.0:
+                bearing_deg = (math.degrees(math.atan2(dx_override, -dy_override)) % 360.0)
+            else:
+                bearing_deg = 0.0
+
         rad = math.radians(bearing_deg)
         dx = math.sin(rad) * r
         dy = -math.cos(rad) * r
         x = max(0.0, min(float(WORLD_N), own_x + dx))
         y = max(0.0, min(float(WORLD_N), own_y + dy))
+
+        if allegiance == "Friendly" and friendly_override_xy is None:
+            cell_label = self._cell_label_for_xy(x, y)
+            if cell_label and friendly_cells_map.get(cell_label) and not friendly_allow_overlap:
+                alt_xy = self._friendly_spawn_xy(own_x, own_y, klass, friendly_cells_map)
+                if alt_xy is not None:
+                    dx_alt = alt_xy[0] - own_x
+                    dy_alt = alt_xy[1] - own_y
+                    r = math.hypot(dx_alt, dy_alt)
+                    if r > 0.0:
+                        bearing_deg = (math.degrees(math.atan2(dx_alt, -dy_alt)) % 360.0)
+                    else:
+                        bearing_deg = 0.0
+                    rad = math.radians(bearing_deg)
+                    dx = math.sin(rad) * r
+                    dy = -math.cos(rad) * r
+                    x = max(0.0, min(float(WORLD_N), own_x + dx))
+                    y = max(0.0, min(float(WORLD_N), own_y + dy))
 
         # Ensure Super Étendard starts at >= 20 nm (never uses 10 nm surprise)
         if allegiance == 'Hostile' and name == 'Super Etendard' and r < 20.0:
@@ -630,6 +693,7 @@ class Radar:
             })
         if str(allegiance).lower() == 'hostile':
             self._pending_detection.add(c.id)
+            self._maybe_spawn_hostile_wingman(c, klass=klass, name=name, own_x=own_x, own_y=own_y)
         else:
             if self.rec:
                 cls = str(klass)
@@ -643,14 +707,79 @@ class Radar:
                     "speed_kts": c.speed_kts * HOSTILE_SPEED_SCALE,
                 })
 
+    def _maybe_spawn_hostile_wingman(self, leader: Contact, *, klass: Optional[str], name: str, own_x: float, own_y: float) -> None:
+        if len(self.contacts) >= int(self.cfg.get("max_contacts", 20) or 20):
+            return
+        if leader.allegiance != "Hostile":
+            return
+        klass_norm = str(klass or '').strip().lower()
+        if klass_norm != 'aircraft':
+            return
+        if str(name).strip() == 'Super Étendard':
+            return
+        spacing_nm = self._enemy_spacing_nm()
+        formation_id = self._enemy_formation_seq
+        self._enemy_formation_seq += 1
+        rad = math.radians(leader.course_deg)
+        ux = math.sin(rad)
+        uy = -math.cos(rad)
+        if abs(ux) < 1e-6 and abs(uy) < 1e-6:
+            dx = float(own_x) - float(leader.x)
+            dy = float(own_y) - float(leader.y)
+            norm = math.hypot(dx, dy)
+            if norm > 1e-6:
+                ux, uy = dx / norm, dy / norm
+            else:
+                ux, uy = 0.0, -1.0
+        target_x, target_y = self._formation_wingman_position(float(leader.x), float(leader.y), spacing_nm, ux, uy)
+        wing_meta = {
+            "spawn": dict(leader.meta.get('spawn', {})),
+            "cap": dict(leader.meta.get('cap', {})),
+            "class": klass,
+            "formation": {
+                "id": formation_id,
+                "role": "wingman",
+                "leader_id": leader.id,
+                "spacing_cells": self._enemy_spacing_cells,
+            },
+        }
+        wing_meta["spawn"]["wingman"] = True
+        wingman = Contact(
+            id=self._next_id,
+            name=leader.name,
+            allegiance=leader.allegiance,
+            x=target_x,
+            y=target_y,
+            course_deg=leader.course_deg,
+            speed_kts=leader.speed_kts,
+            threat=leader.threat,
+            meta=wing_meta,
+        )
+        self._next_id += 1
+        self.contacts.append(wingman)
+        self._pending_detection.add(wingman.id)
+        leader.meta.setdefault('formation', {})
+        leader.meta['formation'].update({
+            "id": formation_id,
+            "role": "leader",
+            "wingman_id": wingman.id,
+            "spacing_cells": self._enemy_spacing_cells,
+        })
+        self._enemy_formations[formation_id] = {
+            "leader_id": leader.id,
+            "wingman_id": wingman.id,
+            "spacing_nm": spacing_nm,
+        }
+
     def force_spawn(self, own_x: float, own_y: float, allegiance: str, bearing_deg: float, range_nm: float) -> Contact:
         log_contact: Optional[Dict[str, Any]] = None
         log_spawn: Optional[Dict[str, Any]] = None
 
         with self._lock:
             ox, oy = self._origin_with_fallback(own_x, own_y)
-            if abs(ox) >= 1e-3 or abs(oy) >= 1e-3 or not self.contacts:
-                self._last_own_xy = (ox, oy)
+            if math.isfinite(ox) and math.isfinite(oy):
+                if abs(ox) >= 1e-3 or abs(oy) >= 1e-3:
+                    self._last_own_xy = (ox, oy)
             r = float(range_nm)
             rad = math.radians(float(bearing_deg))
             dx = math.sin(rad) * r
@@ -658,8 +787,36 @@ class Radar:
             x = max(0.0, min(float(WORLD_N), ox + dx))
             y = max(0.0, min(float(WORLD_N), oy + dy))
             if str(allegiance).title() == 'Friendly':
-                name, speed, klass = self.catalog.pick_friendly()
                 allegiance_norm = 'Friendly'
+                name, speed, klass = self.catalog.pick_friendly()
+                tries = 0
+                while str(name).strip().lower().startswith('sea harrier') and tries < 8:
+                    name, speed, klass = self.catalog.pick_friendly()
+                    tries += 1
+                if str(name).strip().lower().startswith('sea harrier'):
+                    fallback_name = 'Type 42 Destroyer'
+                    det = self.catalog.details(fallback_name) or {}
+                    name = fallback_name
+                    speed = float(det.get('speed_kts', 22.0))
+                    klass = det.get('class', 'Ship')
+                friendly_cells = self._occupied_cells()
+                allow_overlap = str(klass or '').strip().lower() == 'aircraft'
+                friendly_radius = max(self._nm_per_cell * 10.0, self._nm_per_cell)
+                if r > friendly_radius:
+                    r = friendly_radius
+                    dx = math.sin(rad) * r
+                    dy = -math.cos(rad) * r
+                    x = clamp(ox + dx, 0.0, float(WORLD_N))
+                    y = clamp(oy + dy, 0.0, float(WORLD_N))
+                cell_label = self._cell_label_for_xy(x, y)
+                if cell_label:
+                    if (friendly_cells.get(cell_label) and not allow_overlap) or math.hypot(x - ox, y - oy) > (self._nm_per_cell * 10.0):
+                        alt_xy = self._friendly_spawn_xy(ox, oy, klass, friendly_cells)
+                        if alt_xy is not None:
+                            x, y = alt_xy
+                            rad = math.atan2(float(x) - float(ox), -(float(y) - float(oy)))
+                            r = math.hypot(float(x) - float(ox), float(y) - float(oy))
+                            bearing_deg = math.degrees(rad) % 360.0
             else:
                 name, speed, klass = self.catalog.pick_hostile()
                 allegiance_norm = 'Hostile'
@@ -674,6 +831,19 @@ class Radar:
             }
             if surface_meta is not None:
                 meta['surface_ship'] = surface_meta
+
+            throttled_info = self._check_force_spawn_throttle(
+                affiliation=allegiance_norm,
+                contact_name=name,
+                klass=klass,
+                x=float(x),
+                y=float(y),
+                course_deg=course_deg,
+                speed=float(speed),
+                meta=meta,
+            )
+            throttled = bool(throttled_info.get("throttled") if isinstance(throttled_info, dict) else throttled_info)
+
             cid = int(self._next_id)
             self._next_id += 1
             contact = Contact(
@@ -691,15 +861,36 @@ class Radar:
             if allegiance_norm.lower() == 'hostile':
                 self._pending_detection.add(contact.id)
             else:
-                log_contact = {
-                    "id": contact.id,
-                    "name": contact.name,
-                    "allegiance": contact.allegiance,
-                    "class": str(klass),
-                    "world_xy": [round(contact.x, 2), round(contact.y, 2)],
-                    "course_deg": contact.course_deg,
-                    "speed_kts": contact.speed_kts * HOSTILE_SPEED_SCALE,
-                }
+                if not throttled:
+                    log_contact = {
+                        "id": contact.id,
+                        "name": contact.name,
+                        "allegiance": contact.allegiance,
+                        "class": str(klass),
+                        "world_xy": [round(contact.x, 2), round(contact.y, 2)],
+                        "course_deg": contact.course_deg,
+                        "speed_kts": contact.speed_kts * HOSTILE_SPEED_SCALE,
+                    }
+                elif throttled:
+                    try:
+                        max_contacts = int(self.cfg.get("max_contacts", 20) or 20)
+                    except Exception:
+                        max_contacts = 20
+                    if len(self.contacts) > max_contacts:
+                        allegiance_lc = contact.allegiance.lower()
+                        removed = False
+                        for idx, existing in enumerate(self.contacts):
+                            if existing is contact:
+                                continue
+                            try:
+                                if str(getattr(existing, 'allegiance', '')).lower() == allegiance_lc:
+                                    self.contacts.pop(idx)
+                                    removed = True
+                                    break
+                            except Exception:
+                                continue
+                        if not removed and len(self.contacts) > max_contacts:
+                            self.contacts.pop(0)
 
             def _clamp(v, lo, hi):
                 return lo if v < lo else hi if v > hi else v
@@ -722,14 +913,15 @@ class Radar:
                 return f"{_letters(c_i)}{r_i}"
 
             cell = _world_to_cell(y, x)
-            log_spawn = {
-                "bearing_deg": round(float(bearing_deg), 1),
-                "range_nm": round(r, 2),
-                "chosen": {"name": name, "speed_kts": speed, "allegiance": allegiance_norm},
-                "target_world_xy": [round(x, 2), round(y, 2)],
-                "ship_world_xy": [round(ox, 2), round(oy, 2)],
-                "cell": cell,
-            }
+            if not throttled:
+                log_spawn = {
+                    "bearing_deg": round(float(bearing_deg), 1),
+                    "range_nm": round(r, 2),
+                    "chosen": {"name": name, "speed_kts": speed, "allegiance": allegiance_norm},
+                    "target_world_xy": [round(x, 2), round(y, 2)],
+                    "ship_world_xy": [round(ox, 2), round(oy, 2)],
+                    "cell": cell,
+                }
 
         if self.rec and log_contact and allegiance_norm.lower() != 'hostile':
             try:
@@ -742,6 +934,81 @@ class Radar:
             except Exception:
                 pass
         return contact
+
+    def _check_force_spawn_throttle(
+        self,
+        *,
+        affiliation: str,
+        contact_name: str,
+        klass: Any,
+        x: float,
+        y: float,
+        course_deg: float,
+        speed: float,
+        meta: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Rate-limit forced spawns to avoid starving the UI with duplicate inserts.
+
+        Returns a dict describing throttle status so the caller can decide how much to log.
+        """
+        try:
+            now = time.time()
+        except Exception:
+            now = 0.0
+
+        window = float(self.cfg.get("force_spawn_window_s", 3.0) or 3.0)
+        per_sec_limit = int(self.cfg.get("force_spawn_rate_per_sec", 8) or 0)
+        burst_limit_default = per_sec_limit * max(2, int(window)) if per_sec_limit > 0 else 0
+        burst_limit = int(self.cfg.get("force_spawn_burst_limit", burst_limit_default) or 0)
+
+        recent = self._force_spawn_recent
+        try:
+            while recent and (now - recent[0]) > window:
+                recent.popleft()
+        except Exception:
+            recent.clear()
+
+        try:
+            recent_per_sec = sum(1 for t in recent if now - t <= 1.0)
+        except Exception:
+            recent_per_sec = len(recent)
+
+        should_throttle = False
+        reason = None
+        if per_sec_limit > 0 and recent_per_sec >= per_sec_limit:
+            should_throttle = True
+            reason = "per_sec"
+        elif burst_limit > 0 and len(recent) >= burst_limit:
+            should_throttle = True
+            reason = "burst"
+
+        result = {"throttled": False, "reason": None, "per_sec": recent_per_sec, "burst": len(recent)}
+
+        if not should_throttle:
+            recent.append(now)
+            return result
+
+        result["throttled"] = True
+        result["reason"] = reason or "rate_limit"
+        recent.append(now)
+        if self.rec:
+            try:
+                last = getattr(self, "_force_spawn_throttle_last_log", 0.0)
+            except Exception:
+                last = 0.0
+            if now - last >= 5.0:
+                try:
+                    self.rec.log("radar.force_spawn_throttled", {
+                        "reason": result["reason"],
+                        "per_sec": recent_per_sec,
+                        "burst": len(recent),
+                        "allegiance": str(affiliation or '').lower(),
+                    })
+                except Exception:
+                    pass
+                self._force_spawn_throttle_last_log = now
+
+        return result
 
     # ---- Resupply Sea King injection ---------------------------------------
     def _sync_resupply_contact(self) -> None:
@@ -781,8 +1048,108 @@ class Radar:
 
     # ---- CAP contact injection --------------------------------------------
     @staticmethod
+    def _compute_nm_per_cell() -> float:
+        try:
+            from projects.falklandV2.grid.mapping import label_to_world  # late import
+            ax, ay = label_to_world('AA00', world_n=float(WORLD_N))
+            bx, by = label_to_world('AA01', world_n=float(WORLD_N))
+            dist = math.hypot(float(bx) - float(ax), float(by) - float(ay))
+            return dist if dist > 0.0 else 1.0
+        except Exception:
+            return 1.0
+
+    def _enemy_spacing_nm(self) -> float:
+        return max(1.0, float(self._enemy_spacing_cells) * float(self._nm_per_cell or 1.0))
+
+    def _cell_label_for_xy(self, x_val: float, y_val: float) -> str:
+        try:
+            from projects.falklandV2.grid.mapping import world_to_label  # late import
+            return world_to_label(float(x_val), float(y_val), world_n=float(WORLD_N))
+        except Exception:
+            return ''
+
+    def _occupied_cells(self) -> Dict[str, List[Contact]]:
+        occupied: Dict[str, List[Contact]] = {}
+        for contact in self.contacts:
+            try:
+                label = self._cell_label_for_xy(float(getattr(contact, 'x', 0.0)), float(getattr(contact, 'y', 0.0)))
+            except Exception:
+                label = ''
+            if label:
+                occupied.setdefault(label, []).append(contact)
+        return occupied
+
+    def _friendly_spawn_xy(self, own_x: float, own_y: float, klass: Optional[str], occupied: Dict[str, List[Contact]]) -> Optional[Tuple[float, float]]:
+        allow_overlap = str(klass or '').strip().lower() == 'aircraft'
+        max_radius = max(self._nm_per_cell * 10.0, self._nm_per_cell)
+        min_radius = max(self._nm_per_cell * 0.5, 0.25)
+        for _ in range(40):
+            radius = self.rng.uniform(min_radius, max_radius)
+            bearing = self.rng.uniform(0.0, 360.0)
+            rad = math.radians(bearing)
+            x = clamp(own_x + math.sin(rad) * radius, 0.0, float(WORLD_N))
+            y = clamp(own_y - math.cos(rad) * radius, 0.0, float(WORLD_N))
+            label = self._cell_label_for_xy(x, y)
+            if not label:
+                continue
+            if not allow_overlap and label in occupied:
+                continue
+            return (x, y)
+        return None
+
+    def _formation_wingman_position(self, leader_x: float, leader_y: float, spacing_nm: float, ux: float, uy: float) -> Tuple[float, float]:
+        def _clamp_xy(x_val: float, y_val: float) -> Tuple[float, float]:
+            return (
+                clamp(x_val, 0.0, float(WORLD_N)),
+                clamp(y_val, 0.0, float(WORLD_N)),
+            )
+
+        candidates: List[Tuple[float, float]] = []
+        # Primary trailing position (aft along flight path)
+        candidates.append((leader_x - ux * spacing_nm, leader_y - uy * spacing_nm))
+        # Lateral offsets (port/starboard) to keep spacing if trailing is clipped by bounds
+        px, py = -uy, ux
+        candidates.append((leader_x + px * spacing_nm, leader_y + py * spacing_nm))
+        candidates.append((leader_x - px * spacing_nm, leader_y - py * spacing_nm))
+
+        threshold = spacing_nm * 0.75
+        for cx, cy in candidates:
+            clamped = _clamp_xy(cx, cy)
+            if math.hypot(leader_x - clamped[0], leader_y - clamped[1]) >= threshold:
+                return clamped
+
+        # Fallback: choose candidate that yields the greatest separation available
+        cx, cy = max(
+            candidates,
+            key=lambda pt: math.hypot(leader_x - clamp(pt[0], 0.0, float(WORLD_N)), leader_y - clamp(pt[1], 0.0, float(WORLD_N)))
+        )
+        return _clamp_xy(cx, cy)
+
+    @staticmethod
+    def _normalize_cell_label(cell: str) -> str:
+        s = str(cell or '').strip().upper()
+        if not s:
+            return ''
+        # Already canonical (two letters)
+        if re.fullmatch(r'[A-Z]{2}\d{1,3}', s):
+            return s
+        # Legacy single-letter columns (e.g., K13 -> AK13)
+        m = re.fullmatch(r'([A-Z])(\d{1,3})', s)
+        if m:
+            return f"A{m.group(1)}{m.group(2)}"
+        return s
+
+    @staticmethod
     def _cell_to_world(cell: str) -> Tuple[float, float]:
-        # Map grid cell like 'K13' to approximate world (x,y) inside 40x40 world
+        # Prefer canonical mapping
+        label = Radar._normalize_cell_label(cell)
+        if label:
+            try:
+                from projects.falklandV2.grid.mapping import label_to_world  # late import
+                return label_to_world(label, world_n=float(WORLD_N))
+            except Exception:
+                pass
+        # Fallback to legacy 26×26 board approximation
         s = str(cell or '').strip().upper()
         if not s:
             return (float(WORLD_N) / 2.0, float(WORLD_N) / 2.0)
@@ -801,11 +1168,221 @@ class Radar:
             row_idx = 1
         col_idx = max(1, min(BOARD_N, col_idx)) - 1
         row_idx = max(1, min(BOARD_N, row_idx)) - 1
-        # World min offset so that A1 maps to (BOARD_MIN, BOARD_MIN)
         board_min = (float(WORLD_N) - float(BOARD_N)) / 2.0
         x = board_min + float(col_idx)
         y = board_min + float(row_idx)
         return (x, y)
+
+    @staticmethod
+    def _cell_to_index(cell: str) -> Tuple[int, int]:
+        label = Radar._normalize_cell_label(cell)
+        if label:
+            try:
+                from projects.falklandV2.grid.coords import to_index  # late import
+                return to_index(label)
+            except Exception:
+                pass
+        s = str(cell or '').strip().upper()
+        if not s:
+            mid = max(0, BOARD_N // 2)
+            return (mid, mid)
+        i = 0
+        while i < len(s) and s[i].isalpha():
+            i += 1
+        letters = s[:i] or 'A'
+        digits = s[i:] or '1'
+        col_idx = 0
+        for ch in letters:
+            if 'A' <= ch <= 'Z':
+                col_idx = col_idx * 26 + (ord(ch) - ord('A') + 1)
+        try:
+            row_idx = int(digits)
+        except Exception:
+            row_idx = 1
+        col_idx = max(1, min(BOARD_N, col_idx)) - 1
+        row_idx = max(1, min(BOARD_N, row_idx)) - 1
+        return (col_idx, row_idx)
+
+    @staticmethod
+    def _index_to_cell(col_idx: int, row_idx: int) -> str:
+        try:
+            from projects.falklandV2.grid.coords import from_index  # late import
+            return Radar._normalize_cell_label(from_index(int(col_idx), int(row_idx)))
+        except Exception:
+            cc = max(0, min(BOARD_N - 1, int(col_idx)))
+            rr = max(0, min(BOARD_N - 1, int(row_idx)))
+            n = cc + 1
+            letters = ''
+            while n > 0:
+                n, rem = divmod(n - 1, 26)
+                letters = chr(ord('A') + rem) + letters
+            digits = str(rr + 1)
+            return f"{letters}{digits}"
+
+    def _wingman_cell(self, base_cell: str, base_xy: Tuple[float, float]) -> Tuple[str, Tuple[float, float]]:
+        try:
+            from projects.falklandV2.grid.config import MASTER_COLS, MASTER_ROWS  # late import
+        except Exception:
+            MASTER_COLS = MASTER_ROWS = 40
+        try:
+            from projects.falklandV2.grid.coords import to_index, from_index  # late import
+        except Exception:
+            to_index = from_index = None  # type: ignore
+        try:
+            from projects.falklandV2.grid.mapping import world_to_label, label_to_world  # late import
+        except Exception:
+            world_to_label = label_to_world = None  # type: ignore
+
+        label = ''
+        if world_to_label is not None:
+            try:
+                label = world_to_label(float(base_xy[0]), float(base_xy[1]), world_n=float(WORLD_N))
+            except Exception:
+                label = ''
+        if not label:
+            label = self._normalize_cell_label(base_cell)
+
+        col_idx = row_idx = None
+        if label and to_index is not None:
+            try:
+                col_idx, row_idx = to_index(label)
+            except Exception:
+                col_idx = row_idx = None
+
+        if (col_idx is None or row_idx is None) and world_to_label is not None:
+            try:
+                col_idx, row_idx = to_index(world_to_label(float(base_xy[0]), float(base_xy[1]), world_n=float(WORLD_N))) if to_index is not None else (None, None)
+            except Exception:
+                col_idx = row_idx = None
+
+        if col_idx is None or row_idx is None:
+            col_idx, row_idx = self._cell_to_index(label or base_cell)
+
+        offsets = [
+            (0, 1),   # six o'clock (south)
+            (0, -1),  # twelve o'clock
+            (-1, 0),  # nine o'clock
+            (1, 0),   # three o'clock
+            (-1, 1),  # southwest
+            (1, 1),   # southeast
+            (-1, -1), # northwest
+            (1, -1),  # northeast
+        ]
+        for dc, dr in offsets:
+            nc, nr = col_idx + dc, row_idx + dr
+            if 0 <= nc < MASTER_COLS and 0 <= nr < MASTER_ROWS:
+                if from_index is not None:
+                    try:
+                        cell = from_index(nc, nr)
+                    except Exception:
+                        cell = self._index_to_cell(nc, nr)
+                else:
+                    cell = self._index_to_cell(nc, nr)
+                if label_to_world is not None:
+                    try:
+                        xy = label_to_world(cell, world_n=float(WORLD_N))
+                        return (cell, xy)
+                    except Exception:
+                        pass
+                return (cell, self._cell_to_world(cell))
+
+        fallback_label = label or base_cell
+        return (fallback_label, self._cell_to_world(fallback_label))
+
+    def _sync_hostile_formations(self, own_x: float, own_y: float) -> None:
+        if not self._enemy_formations:
+            return
+        id_map: Dict[int, Contact] = {c.id: c for c in self.contacts}
+        min_spacing_nm = self._enemy_spacing_nm()
+        removals: List[Tuple[int, int, int]] = []
+        for fid, info in list(self._enemy_formations.items()):
+            leader_id = int(info.get("leader_id", -1))
+            wingman_id = int(info.get("wingman_id", -1))
+            leader = id_map.get(leader_id)
+            wingman = id_map.get(wingman_id)
+            if leader is None or wingman is None:
+                removals.append((fid, leader_id, wingman_id))
+                continue
+            spacing_nm = float(info.get("spacing_nm", min_spacing_nm) or min_spacing_nm)
+            dist_to_ship = nm_distance(float(leader.x), float(leader.y), float(own_x), float(own_y))
+            if dist_to_ship <= 5.0:
+                spacing_nm = max(spacing_nm, min_spacing_nm)
+            info["spacing_nm"] = spacing_nm
+            rad = math.radians(leader.course_deg)
+            ux = math.sin(rad)
+            uy = -math.cos(rad)
+            if abs(ux) < 1e-6 and abs(uy) < 1e-6:
+                dx = float(own_x) - float(leader.x)
+                dy = float(own_y) - float(leader.y)
+                norm = math.hypot(dx, dy)
+                if norm > 1e-6:
+                    ux, uy = dx / norm, dy / norm
+                else:
+                    ux, uy = 0.0, -1.0
+            wingman.course_deg = leader.course_deg
+            wingman.speed_kts = leader.speed_kts
+            target_x, target_y = self._formation_wingman_position(float(leader.x), float(leader.y), spacing_nm, ux, uy)
+            wingman.x = target_x
+            wingman.y = target_y
+            wingman.meta.setdefault('formation', {})
+            wingman.meta['formation'].update({
+                "id": fid,
+                "role": "wingman",
+                "leader_id": leader.id,
+                "spacing_cells": self._enemy_spacing_cells,
+            })
+            leader.meta.setdefault('formation', {})
+            leader.meta['formation'].update({
+                "id": fid,
+                "role": "leader",
+                "wingman_id": wingman.id,
+                "spacing_cells": self._enemy_spacing_cells,
+            })
+        for fid, leader_id, wingman_id in removals:
+            self._enemy_formations.pop(fid, None)
+            leader = id_map.get(leader_id)
+            if leader and leader.meta.get('formation', {}).get('id') == fid:
+                leader.meta.pop('formation', None)
+            wingman = id_map.get(wingman_id)
+            if wingman and wingman.meta.get('formation', {}).get('id') == fid:
+                wingman.meta.pop('formation', None)
+
+    def _cap_contact_layout(self, mid: int, mission: Dict[str, Any], base_x: float, base_y: float, base_cell: str, cap_name: str) -> List[Dict[str, Any]]:
+        base_label = ''
+        try:
+            from projects.falklandV2.grid.mapping import world_to_label  # late import
+            base_label = world_to_label(float(base_x), float(base_y), world_n=float(WORLD_N))
+        except Exception:
+            base_label = ''
+        if not base_label:
+            base_label = self._normalize_cell_label(base_cell)
+        wing_cell, wing_xy = self._wingman_cell(base_label, (base_x, base_y))
+        base_index = max(1, int(mid))
+        leader_num = (base_index - 1) * 2 + 1
+        wingman_num = leader_num + 1
+        lead_callsign = f"S{leader_num}"
+        wing_callsign = f"S{wingman_num}"
+        layout = [
+            {
+                "role": "leader",
+                "x": float(base_x),
+                "y": float(base_y),
+                "cell": base_label or wing_cell,
+                "callsign": lead_callsign,
+                "display_name": f"{cap_name} ({lead_callsign})",
+                "mission": mission,
+            },
+            {
+                "role": "wingman",
+                "x": float(wing_xy[0]),
+                "y": float(wing_xy[1]),
+                "cell": wing_cell if wing_cell else base_label,
+                "callsign": wing_callsign,
+                "display_name": f"{cap_name} ({wing_callsign})",
+                "mission": mission,
+            },
+        ]
+        return layout
 
     def _sync_cap_contacts(self) -> None:
         if self.cap_missions_provider is None:
@@ -818,38 +1395,53 @@ class Radar:
 
         # Active-air statuses
         ACTIVE = {"queued", "airborne", "onstation", "rtb", "recovering"}
-        want: Dict[int, Tuple[float, float, str]] = {}
+        want: Dict[int, List[Dict[str, Any]]] = {}
+        cap_name = 'Sea Harrier FRS.1'
         for m in missions:
             try:
                 status = str(m.get('status') or '').lower()
                 if status not in ACTIVE:
                     continue
                 mid = int(m.get('id'))
+                pos_xy = m.get('position_xy')
+                x = y = None
+                if isinstance(pos_xy, (list, tuple)) and len(pos_xy) >= 2:
+                    try:
+                        x = float(pos_xy[0])
+                        y = float(pos_xy[1])
+                    except Exception:
+                        x = y = None
                 # Choose placement by status: queued/rtb/recovering at origin; onstation/airborne at target
                 if status in ("queued", "rtb", "recovering"):
                     cell = str(m.get('origin_cell') or m.get('cur_cell') or m.get('target_cell') or '').strip()
                 else:
                     cell = str(m.get('cur_cell') or m.get('target_cell') or m.get('origin_cell') or '').strip()
-                if not cell:
+                if (x is None or y is None):
+                    if not cell:
+                        continue
+                    x, y = self._cell_to_world(cell)
+                elif not cell:
+                    try:
+                        from projects.falklandV2.grid.mapping import world_to_label  # late import to avoid cycles
+                        cell = world_to_label(float(x), float(y), world_n=float(WORLD_N))
+                    except Exception:
+                        cell = ''
+                if x is None or y is None:
                     continue
-                x, y = self._cell_to_world(cell)
-                want[mid] = (x, y, cell)
+                want[mid] = self._cap_contact_layout(mid, m, x, y, cell, cap_name)
             except Exception:
                 continue
 
         # Remove stale CAP contacts
-        keep_ids: set[int] = set()
-        for mid, cid in list(self._cap_contacts.items()):
+        for mid, role_map in list(self._cap_contacts.items()):
             if mid not in want:
-                # Drop contact with id=cid if present
-                self.contacts = [c for c in self.contacts if int(getattr(c, 'id', -1)) != int(cid)]
+                # Drop contacts with ids in role_map if present
+                for cid in role_map.values():
+                    self.contacts = [c for c in self.contacts if int(getattr(c, 'id', -1)) != int(cid)]
                 self._cap_contacts.pop(mid, None)
-            else:
-                keep_ids.add(mid)
 
         # Ensure/update required CAP contacts
         # Resolve catalog details (capability + speed)
-        cap_name = 'Sea Harrier FRS.1'
         # Try to find a speed value for the CAP type
         try:
             # Probe friendly pool to find matching speed
@@ -857,42 +1449,145 @@ class Radar:
             speed_kts = float(self.catalog._details.get(cap_name, {}).get('speed_kts') or 420.0)
         except Exception:
             speed_kts = 420.0
-        for mid, (x, y, cell) in want.items():
-            cid = self._cap_contacts.get(mid)
-            if cid is not None:
-                # Update existing
-                c = next((k for k in self.contacts if int(getattr(k, 'id', -1)) == int(cid)), None)
-                if c is not None:
-                    c.x = float(x)
-                    c.y = float(y)
-                    # keep other fields as-is
+        now_ts = time.time()
+        tau = getattr(math, "tau", 2.0 * math.pi)
+        for mid, layout in want.items():
+            mission = layout[0].get("mission") if layout else {}
+            follow_mode = str((mission or {}).get("follow") or "").strip().lower()
+            status = str((mission or {}).get("status") or "").strip().lower()
+            # Clean up any stale legacy contacts for this mission that lack flight_role metadata
+            for contact in list(self.contacts):
+                try:
+                    meta = getattr(contact, 'meta', {}) or {}
+                    if not meta.get('cap_flight'):
+                        continue
+                    if int(meta.get('mission_id', -1)) != int(mid):
+                        continue
+                    role = str(meta.get('flight_role') or '').strip().lower()
+                    if role not in ('leader', 'wingman'):
+                        self.contacts = [c for c in self.contacts if int(getattr(c, 'id', -1)) != int(getattr(contact, 'id', -1))]
+                except Exception:
                     continue
+            # Recompute orbiting positions for leader entry if following Hermes
+            if follow_mode == "hermes" and status in ("airborne", "onstation"):
+                base_cell = str((mission or {}).get("target_cell") or layout[0].get("cell") or "")
+                base_x, base_y = self._cell_to_world(base_cell) if base_cell else (layout[0].get("x", 0.0), layout[0].get("y", 0.0))
+                try:
+                    radius = float((mission or {}).get("station_radius_nm") or 0.0)
+                except Exception:
+                    radius = 0.0
+                if radius <= 0.0:
+                    radius = float(self.cfg.get("hermes_follow_radius_nm", 5.0))
+                period = float(self.cfg.get("hermes_follow_orbit_period_s", 240.0))
+                if period <= 0.0:
+                    period = 240.0
+                theta_base = (now_ts / period) + (mid * 0.35)
+                orbit_x = base_x + radius * math.cos(theta_base * tau)
+                orbit_y = base_y + radius * math.sin(theta_base * tau)
+                if status == "airborne":
+                    ts = mission.get("timestamps") if isinstance(mission, dict) else {}
+                    try:
+                        start_time = float((ts or {}).get("airborne", (ts or {}).get("launch", now_ts)))
+                    except Exception:
+                        start_time = now_ts
+                    try:
+                        eta_on = float((ts or {}).get("eta_onstation", start_time))
+                    except Exception:
+                        eta_on = start_time
+                    elapsed = max(0.0, now_ts - start_time)
+                    duration = max(1e-3, eta_on - start_time)
+                    prog = max(0.0, min(1.0, elapsed / duration))
+                    origin_xy = None
+                    try:
+                        ox, oy = mission.get("origin_xy") or ()
+                        origin_xy = (float(ox), float(oy))
+                    except Exception:
+                        origin_xy = None
+                    if origin_xy is None:
+                        origin_cell = str((mission or {}).get("origin_cell") or "")
+                        if origin_cell:
+                            origin_xy = self._cell_to_world(origin_cell)
+                    if origin_xy is None:
+                        origin_xy = (base_x, base_y)
+                    leader_x = float(origin_xy[0]) + (orbit_x - float(origin_xy[0])) * prog
+                    leader_y = float(origin_xy[1]) + (orbit_y - float(origin_xy[1])) * prog
                 else:
-                    # stale index entry; remove and re-create
-                    self._cap_contacts.pop(mid, None)
+                    leader_x, leader_y = orbit_x, orbit_y
+                layout[0]["x"] = float(leader_x)
+                layout[0]["y"] = float(leader_y)
+                layout[0]["cell"] = str(layout[0].get("cell") or base_cell or "")
+                # Recompute wingman position based on updated leader position
+                wing_cell, wing_xy = self._wingman_cell(layout[0]["cell"], (leader_x, leader_y))
+                if len(layout) > 1:
+                    layout[1]["x"] = float(wing_xy[0])
+                    layout[1]["y"] = float(wing_xy[1])
+                    layout[1]["cell"] = wing_cell if wing_cell else layout[0]["cell"]
 
-            # Create a new friendly CAP contact
-            cid = int(self._next_id)
-            self._next_id += 1
-            meta = {
-                'cap_flight': True,
-                'mission_id': mid,
-                'station_cell': cell,
-                'kind': 'cap',
-                'cap': self.catalog.details(cap_name),
-            }
-            c = Contact(
-                id=cid,
-                name=cap_name,
-                allegiance='Friendly',
-                x=float(x), y=float(y),
-                course_deg=0.0,
-                speed_kts=float(speed_kts),
-                threat='low',
-                meta=meta,
-            )
-            self.contacts.append(c)
-            self._cap_contacts[mid] = cid
+            existing_map = self._cap_contacts.get(mid, {})
+            if not isinstance(existing_map, dict):
+                existing_map = {}
+            updated_map: Dict[str, int] = {}
+            for entry in layout:
+                role = str(entry.get("role") or "").strip().lower() or "leader"
+                x = float(entry.get("x", 0.0))
+                y = float(entry.get("y", 0.0))
+                cell = str(entry.get("cell") or "").strip()
+                callsign = str(entry.get("callsign") or "")
+                display_name = str(entry.get("display_name") or cap_name)
+                mission_data = entry.get("mission") or {}
+                cid = existing_map.get(role)
+                contact_obj = None
+                if cid is not None:
+                    contact_obj = next((k for k in self.contacts if int(getattr(k, 'id', -1)) == int(cid)), None)
+                if contact_obj is not None:
+                    contact_obj.x = float(x)
+                    contact_obj.y = float(y)
+                    meta = dict(getattr(contact_obj, 'meta', {}) or {})
+                    meta.update({
+                        'cap_flight': True,
+                        'mission_id': mid,
+                        'station_cell': cell,
+                        'kind': 'cap',
+                        'cap': self.catalog.details(cap_name),
+                        'callsign': callsign,
+                        'display_name': display_name,
+                        'flight_role': role,
+                    })
+                    contact_obj.meta = meta
+                else:
+                    cid = int(self._next_id)
+                    self._next_id += 1
+                    meta = {
+                        'cap_flight': True,
+                        'mission_id': mid,
+                        'station_cell': cell,
+                        'kind': 'cap',
+                        'cap': self.catalog.details(cap_name),
+                        'callsign': callsign,
+                        'display_name': display_name,
+                        'flight_role': role,
+                    }
+                    contact_obj = Contact(
+                        id=cid,
+                        name=cap_name,
+                        allegiance='Friendly',
+                        x=float(x), y=float(y),
+                        course_deg=0.0,
+                        speed_kts=float(speed_kts),
+                        threat='low',
+                        meta=meta,
+                    )
+                    self.contacts.append(contact_obj)
+                updated_map[role] = cid
+
+            # Remove any stale role-specific contacts not present in updated_map
+            for role, cid in list(existing_map.items()):
+                if role not in updated_map:
+                    self.contacts = [c for c in self.contacts if int(getattr(c, 'id', -1)) != int(cid)]
+            if updated_map:
+                self._cap_contacts[mid] = updated_map
+            else:
+                self._cap_contacts.pop(mid, None)
 
     def _apply_harrier_deterrence(self) -> None:
         harriers = [c for c in self.contacts if str(getattr(c, 'allegiance', '')) == 'Friendly' and bool(getattr(c, 'meta', {}).get('cap_flight'))]

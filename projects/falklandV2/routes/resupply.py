@@ -18,7 +18,7 @@ bp = Blueprint("resupply", __name__)
 def _lazy():
     # Late import to avoid circular deps; reuse webdash singletons
     from ..webdash import (
-        RESUPPLY, record_flight, stamp_cap_launch, record_officer,
+        RESUPPLY, record_event, record_flight,
         ENG, CONVOY, radar_xy_from_state, world_to_cell, ship_cell_from_state,
     )
     return locals()

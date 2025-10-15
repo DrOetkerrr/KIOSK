@@ -215,3 +215,23 @@ def test_weapons_support_real_fire(
     assert cooldown_attempt["error"] == "COOLDOWN"
 
     _clear_contacts(runtime)
+
+
+def test_weapon_fire_uses_cached_primary_when_lock_cleared(runtime: GameRuntime) -> None:
+    _configure_armed(runtime)
+    _clear_contacts(runtime)
+    contact = _add_hostile_contact(
+        runtime,
+        name="ARA Hércules (Type 42 Destroyer)",
+        klass="Ship",
+        distance_nm=12.0,
+    )
+    runtime.radar.priority_id = contact.id
+    runtime._sync_engine_contacts()
+    # Build snapshot to cache the primary contact
+    runtime.build_ui_snapshot()
+    # Clear the priority to mimic lock loss
+    runtime.radar.priority_id = None
+    runtime._sync_engine_contacts()
+    result = runtime.fire_weapon("MM38 Exocet", mode="real")
+    assert result["ok"], result

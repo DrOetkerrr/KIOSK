@@ -1492,7 +1492,7 @@ function renderRADAR(j){
   toggleWrap.appendChild(lblHost); toggleWrap.appendChild(btnHost);
   p.appendChild(toggleWrap);
 
-  const lockedId = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id): null;
+  const lockedId = extractLockedId(j.radar);
   const primary = (j.primary && typeof j.primary==='object')? j.primary : null;
   if(!ST.radar || typeof ST.radar !== 'object') ST.radar = {};
   let contacts = Array.isArray(j.contacts)? j.contacts.slice(): [];
@@ -1529,9 +1529,29 @@ function renderRADAR(j){
   const tb=document.createElement('tbody');
   const list = contacts
     .slice()
-    .sort(function(a,b){ return (a.range_nm||1e9)-(b.range_nm||1e9); })
-    .slice(0,10);
-  const lockContact = async (id)=>{ if(id===undefined||id===null) return; await fetch('/api/command?cmd='+encodeURIComponent(`/radar lock ${id}`)); await poll().catch(()=>{}); };
+    .sort(function(a,b){ return (a.range_nm||1e9)-(b.range_nm||1e9); });
+  const lockContact = async (id)=>{
+    if(id===undefined || id===null) return;
+    const cmdUrl = '/api/command?cmd='+encodeURIComponent(`/radar lock ${id}`);
+    try{
+      const res = await fetch(cmdUrl, {cache:'no-store'});
+      let data=null;
+      try{ data = await res.json(); }catch(_){ data = null; }
+      const ok = res.ok && data && data.ok !== false;
+      if(!ok){
+        const msg = data && (data.message || data.error) ? String(data.message || data.error) : `${res.status} lock failed`;
+        appendConsole(`[radar] lock ERR ${msg}`);
+        return;
+      }
+      const numericId = Number(id);
+      if(!ST.radar || typeof ST.radar!=='object') ST.radar = {};
+      ST.radar.lockedId = Number.isFinite(numericId) ? numericId : null;
+      appendConsole(`[radar] lock OK ${data && data.result ? data.result : id}`);
+      await poll().catch(()=>{});
+    }catch(err){
+      appendConsole(`[radar] lock ERR ${err}`);
+    }
+  };
   function readNumber(obj, keys){
     for(const key of keys){
       if(obj && Object.prototype.hasOwnProperty.call(obj, key)){
@@ -1618,7 +1638,7 @@ function renderWPN(j){
   if(!ST.wpn) ST.wpn = { lockInput: '' };
 
   const contacts = Array.isArray(j.contacts)? j.contacts.slice(): [];
-  const lockedId = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id): null;
+  const lockedId = extractLockedId(j.radar);
   const primaryContact = contacts.find(c=>Number(c.id)===lockedId) || null;
 
   const primaryBox=document.createElement('div'); primaryBox.className='wpn-primary';
@@ -1724,7 +1744,6 @@ function renderWPN(j){
     const state = String(w.armed||'Safe');
     if(state !== 'Armed') return false;
     if(Number(w.arming_s||0) > 0) return false;
-    if(Number(w.cooldown_s||0) > 0) return false;
     if(Number(w.ammo||0) <= 0) return false;
     if(ST.test) return true;
     let canJudgeRange = false;
@@ -1960,7 +1979,7 @@ function renderRADIO(j){
   moveCloserBtn.onclick=function(){ adjustHermes('in'); };
   moveAwayBtn.onclick=function(){ adjustHermes('out'); };
 
-  const lockedId = (j.radar && j.radar.locked_id!==undefined && j.radar.locked_id!==null)? Number(j.radar.locked_id) : null;
+  const lockedId = extractLockedId(j.radar);
   const primaryContact = (lockedId!=null && Array.isArray(j.contacts))? j.contacts.find(c=>Number(c.id)===lockedId) : null;
   const cap = j.cap || {};
   const tasks = Array.isArray(cap.tasks)? cap.tasks : (Array.isArray(cap.missions)? cap.missions : []);
@@ -2062,7 +2081,7 @@ function renderRADIO(j){
         const loadout = String(t.loadout || '').toLowerCase();
         if(loadout !== 'aim9') return sum;
         const status = String(t.status || '').toLowerCase();
-        if(!['queued','airborne','onstation','rtb','recovering'].includes(status)) return sum;
+        if(!['awaiting_pair','queued','airborne','onstation','rtb','recovering'].includes(status)) return sum;
         const left = Number(t.missiles_left != null ? t.missiles_left : 0);
         return sum + (Number.isFinite(left) ? Math.max(0, left) : 0);
       }, 0);
@@ -2086,23 +2105,64 @@ function renderRADIO(j){
       const active = tasks.filter(function(t){
         if(!t) return false;
         const status = String(t.status || '').toLowerCase();
-        return ['queued','airborne','onstation','rtb','recovering'].includes(status);
+        return ['awaiting_pair','queued','airborne','onstation','rtb','recovering'].includes(status);
       }).length;
       return active * 2;
     }
     return 0;
   })();
 
+  const pendingRequests = (function(){
+    let raw = 0;
+    try{
+      if(cap && cap.readiness && typeof cap.readiness==='object' && cap.readiness.pending_requests!=null){
+        raw = cap.readiness.pending_requests;
+      }else if(cap && cap.pending_requests!=null){
+        raw = cap.pending_requests;
+      }
+    }catch(_){ raw = 0; }
+    const num = Number(raw);
+    return Number.isFinite(num) ? num : 0;
+  })();
+
+  const queuedCount = (function(){
+    if(cap && cap.readiness && typeof cap.readiness==='object' && cap.readiness.queued_count != null){
+      const val = Number(cap.readiness.queued_count);
+      if(Number.isFinite(val)) return Math.max(0, val);
+    }
+    if(Array.isArray(tasks)){
+      return tasks.filter(function(t){
+        return t && String(t.status || '').toLowerCase() === 'queued';
+      }).length;
+    }
+    return 0;
+  })();
+
+  const launchIntervalRaw = (function(){
+    if(cap && cap.readiness && typeof cap.readiness==='object' && cap.readiness.launch_interval_left_s!=null){
+      return Number(cap.readiness.launch_interval_left_s);
+    }
+    if(cap && cap.launch_interval_left_s!=null){
+      return Number(cap.launch_interval_left_s);
+    }
+    return 0;
+  })();
+
+  const deckHoldActive = (Number.isFinite(launchIntervalRaw) && launchIntervalRaw > 0) || queuedCount > 0;
+
   const readyTag=document.createElement('span');
-  readyTag.className='shar-ready ' + ((readyPairsNum > 0 && airframesNum >= 2 && !hasCooldown)? 'ok':'err');
-  readyTag.textContent = (readyPairsNum > 0 && airframesNum >= 2 && !hasCooldown)? 'READY':'STANDBY';
+  readyTag.className='shar-ready ' + ((readyPairsNum > 0 && airframesNum >= 2 && !hasCooldown && !deckHoldActive)? 'ok':'err');
+  readyTag.textContent = (readyPairsNum > 0 && airframesNum >= 2 && !hasCooldown && !deckHoldActive)? 'READY':'STANDBY';
   sharSummary.appendChild(readyTag);
   const summaryItems=[
     `pairs: ${readyPairsNum}`,
     `airframes: ${airframesNum}`,
     `sidewinders: ${Math.max(0, Math.round(sidewindersCount))}`,
     `cooldown: ${hasCooldown ? fmtDuration(cooldownRaw) : '0s'}`,
-    `committed airframes: ${Math.max(0, Math.round(committedCount))}`
+    `committed airframes: ${Math.max(0, Math.round(committedCount))}`,
+    `pending launches: ${Math.max(0, Math.round(pendingRequests))}`,
+    `queued deck: ${Math.max(0, Math.round(queuedCount))}`,
+    `deck hold: ${deckHoldActive ? fmtDuration(Math.max(0, launchIntervalRaw)) : '0s'}`
   ];
   summaryItems.forEach(function(text){
     const item=document.createElement('span'); item.textContent=text; sharSummary.appendChild(item);
@@ -2330,7 +2390,7 @@ let missionValid=false;
   }
 
   function updateButtonStates(){
-    const canLaunch = missionValid && readyPairsNum > 0 && airframesNum >= 2 && !hasCooldown;
+    const canLaunch = missionValid && airframesNum >= 2 && readyPairsNum > 0 && !deckHoldActive;
     launchBtn.disabled = !canLaunch;
     const resupply = j.resupply || {};
     resupplyBtn.disabled = Boolean(resupply && resupply.active);
@@ -2544,7 +2604,17 @@ let missionValid=false;
     rngTd.textContent = (t.range_nm!=null && Number.isFinite(Number(t.range_nm)))? `${fmt(t.range_nm,1)} nm` : '—';
     tr.appendChild(rngTd);
     const totTd=document.createElement('td'); totTd.className='num';
-    totTd.textContent = t.tot_s!=null ? fmtDuration(t.tot_s) : (statusKey==='onstation' ? 'ON STN' : '—');
+    const launchIn = (t.launch_in_s!=null && Number.isFinite(Number(t.launch_in_s))) ? Math.max(0, Number(t.launch_in_s)) : null;
+    if(statusKey==='queued'){
+      totTd.textContent = launchIn!=null ? fmtDuration(launchIn) : '—';
+      totTd.title = 'Time until launch';
+    }else if(statusKey==='onstation'){
+      totTd.textContent = 'ON STN';
+      totTd.title = '';
+    }else{
+      totTd.textContent = t.tot_s!=null ? fmtDuration(t.tot_s) : '—';
+      totTd.title = '';
+    }
     tr.appendChild(totTd);
     const tosTd=document.createElement('td'); tosTd.className='num';
     tosTd.textContent = t.tos_s!=null ? fmtDuration(t.tos_s) : '—';
@@ -2556,28 +2626,45 @@ let missionValid=false;
       let authorized = Boolean(perm.authorized);
       const engageBtn=document.createElement('button');
       engageBtn.className='btn engage-toggle';
+      engageBtn.type='button';
       engageBtn.textContent='ENGAGE';
-      engageBtn.classList.toggle('engaged', authorized);
+      const syncEngageState = function(){
+        engageBtn.classList.toggle('engaged', !!authorized);
+        engageBtn.setAttribute('aria-pressed', authorized ? 'true' : 'false');
+      };
+      syncEngageState();
       engageBtn.onclick = async function(){
         if(!missionId){ setStatus('Unknown mission id','err'); return; }
+        const prevAuthorized = authorized;
         const nextAuthorize = !authorized;
+        authorized = nextAuthorize;
+        syncEngageState();
         engageBtn.disabled = true;
+        engageBtn.classList.add('pending');
+        engageBtn.setAttribute('aria-busy', 'true');
         setStatus(nextAuthorize ? 'Authorizing engagement…' : 'Revoking engagement…','muted');
         try{
           const res=await fetch('/cap/authorize',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: missionId, authorize: nextAuthorize})});
           const data=await res.json();
           if(data && data.ok){
-            authorized = nextAuthorize;
-            engageBtn.classList.toggle('engaged', authorized);
+            authorized = (typeof data.authorized === 'boolean') ? data.authorized : nextAuthorize;
+            syncEngageState();
             setStatus(authorized ? 'Engagement authorized' : 'Engagement revoked', 'ok');
             await poll().catch(()=>{});
           }else{
+            authorized = prevAuthorized;
+            syncEngageState();
             setStatus((data && data.error)? String(data.error) : 'Authorization failed','err');
           }
         }catch(_){
+          authorized = prevAuthorized;
+          syncEngageState();
           setStatus('Authorization failed','err');
         }finally{
           engageBtn.disabled = false;
+          engageBtn.classList.remove('pending');
+          engageBtn.removeAttribute('aria-busy');
+          syncEngageState();
         }
       };
       permTd.appendChild(engageBtn);
@@ -2876,6 +2963,210 @@ function renderSYS(j){
   quitRow.appendChild(quitBtn);
   quitRow.appendChild(quitMsg);
   p.appendChild(quitRow);
+
+  const contacts = Array.isArray(j.contacts) ? j.contacts.slice() : [];
+  const gridInfo = typeof j.grid === 'object' && j.grid ? j.grid : {};
+  const parsedCols = Number(gridInfo.cols);
+  const parsedRows = Number(gridInfo.rows);
+  const totalCols = Math.max(1, Number.isFinite(parsedCols) ? Math.trunc(parsedCols) : 40);
+  const totalRows = Math.max(1, Number.isFinite(parsedRows) ? Math.trunc(parsedRows) : 40);
+  const rowWidth = Math.max(1, String(Math.max(0, totalRows - 1)).length);
+
+  function indexToColumn(idx){
+    const hi = Math.floor(idx / 26);
+    const lo = idx % 26;
+    return String.fromCharCode(65 + hi) + String.fromCharCode(65 + lo);
+  }
+
+  function columnToIndex(label){
+    if(!label || typeof label !== 'string' || label.length !== 2) return null;
+    const hi = label.charCodeAt(0) - 65;
+    const lo = label.charCodeAt(1) - 65;
+    if(hi < 0 || hi >= 26 || lo < 0 || lo >= 26) return null;
+    const idx = hi * 26 + lo;
+    return (idx >= 0 && idx < totalCols) ? idx : null;
+  }
+
+  const columns = Array.from({length: totalCols}, (_,i)=>indexToColumn(i));
+  const grid = Array.from({length: totalRows}, ()=>Array.from({length: totalCols},()=>[]));
+
+  function coordFromCell(raw){
+    if(!raw || typeof raw !== 'string') return null;
+    const match = /^([A-Z]{2})(\d{1,3})$/.exec(raw.trim().toUpperCase());
+    if(!match) return null;
+    const colIdx = columnToIndex(match[1]);
+    const rowIdx = Number.parseInt(match[2],10);
+    if(colIdx===null || !Number.isFinite(rowIdx) || rowIdx < 0 || rowIdx >= totalRows) return null;
+    return [rowIdx, colIdx];
+  }
+
+  function isHostile(contact){
+    return String(contact.allegiance || contact.type || '').toLowerCase() === 'hostile';
+  }
+
+  function isFriendly(contact){
+    return String(contact.allegiance || contact.type || '').toLowerCase() === 'friendly';
+  }
+
+  function isSheffield(contact){
+    const id = String(contact.id || '').toLowerCase();
+    if(id === 'fleet:own' || id === 'fleet:sheffield') return true;
+    const meta = contact && typeof contact === 'object' ? contact.meta || {} : {};
+    if(meta && meta.own_ship) return true;
+    const name = String(contact.name || '').toLowerCase();
+    return name.includes('sheffield');
+  }
+
+  function isHarrier(contact){
+    if(contact && (contact.cap_flight || contact.cap_callsign)) return true;
+    const name = String(contact.name || '').toLowerCase();
+    const pennant = String(contact.pennant || '').toLowerCase();
+    if(name.includes('harrier')) return true;
+    if(pennant.startsWith('cap-')) return true;
+    return false;
+  }
+
+  function isHermes(contact){
+    const id = String(contact.id || '').toLowerCase();
+    const name = String(contact.name || '').toLowerCase();
+    return id === 'fleet:hermes' || name.includes('hms hermes');
+  }
+
+  contacts.forEach(function(c){
+    const cell = String(c.cell || c.grid || '').trim().toUpperCase();
+    const xy = coordFromCell(cell);
+    if(!xy) return;
+    const [rowIdx, colIdx] = xy;
+    grid[rowIdx][colIdx].push(c);
+  });
+
+  const friendlyTotal = contacts.filter(function(c){
+    return String(c.allegiance || c.type || '').toLowerCase() === 'friendly';
+  }).length;
+  const hostileTotal = contacts.filter(function(c){
+    return String(c.allegiance || c.type || '').toLowerCase() === 'hostile';
+  }).length;
+
+  const wrap=document.createElement('div'); wrap.className='sys-grid-wrap';
+  const header=document.createElement('div'); header.className='sys-grid-header mono';
+  header.textContent = `Contacts — Friendlies: ${friendlyTotal}   Enemies: ${hostileTotal}`;
+  wrap.appendChild(header);
+
+  const table=document.createElement('table'); table.className='sys-grid';
+  const headRow=document.createElement('tr');
+  const corner=document.createElement('th'); corner.className='sys-grid-corner'; corner.textContent='';
+  headRow.appendChild(corner);
+  columns.forEach(function(colLabel){
+    const th=document.createElement('th'); th.textContent=colLabel; th.className='sys-grid-col';
+    headRow.appendChild(th);
+  });
+  table.appendChild(headRow);
+
+  grid.forEach(function(row, rowIdx){
+    const tr=document.createElement('tr');
+    const th=document.createElement('th'); th.textContent=String(rowIdx).padStart(rowWidth,'0'); th.className='sys-grid-row';
+    tr.appendChild(th);
+    row.forEach(function(cellContacts){
+      const td=document.createElement('td'); td.className='sys-cell';
+      if(cellContacts.length){
+        const hostiles = cellContacts.filter(isHostile);
+        const sheffieldContacts = cellContacts.filter(isSheffield);
+        const hermesContacts = cellContacts.filter(isHermes);
+        const harriers = cellContacts.filter(function(c){ return isFriendly(c) && !isHermes(c) && isHarrier(c); });
+        const harrierCalls = harriers.map(function(h){
+          return String(h.cap_callsign || '').trim();
+        }).filter(Boolean);
+        function computeHarrierLabel(){
+          if(!harriers.length) return '';
+          if(harriers.length === 1 && harrierCalls.length === 1){
+            return harrierCalls[0];
+          }
+          if(harrierCalls.length >= 2){
+            const joined = harrierCalls.slice(0, 2).join('');
+            return joined.length > 3 ? (harrierCalls[0] + '+') : joined;
+          }
+          if(harrierCalls.length === 1){
+            return harrierCalls[0];
+          }
+          if(harriers.length > 1){
+            return `S${Math.min(harriers.length, 9)}`;
+          }
+          return 'S1';
+        }
+        const friendlies = cellContacts.filter(function(c){ return isFriendly(c) && !isHarrier(c) && !isHermes(c); });
+        const friendlyCount = friendlies.length + harriers.length + hermesContacts.length + sheffieldContacts.length;
+        let label='•';
+        if(hostiles.length && friendlyCount){
+          td.classList.add('sys-cell--mixed');
+          label='X';
+        }else if(hostiles.length){
+          td.classList.add('sys-cell--hostile');
+          label = hostiles.length>1 ? String(Math.min(hostiles.length,9)) : 'E';
+        }else if(sheffieldContacts.length){
+          td.classList.add('sys-cell--sheffield');
+          label = '*';
+        }else if(hermesContacts.length && harriers.length){
+          td.classList.add('sys-cell--hermes');
+          td.classList.add('sys-cell--harrier');
+          const harrierLabel = computeHarrierLabel();
+          label = harrierLabel || 'S';
+        }else if(hermesContacts.length){
+          td.classList.add('sys-cell--hermes');
+          label = hermesContacts.length>1 ? '=' : '=';
+        }else if(harriers.length){
+          td.classList.add('sys-cell--harrier');
+          const harrierLabel = computeHarrierLabel();
+          label = harrierLabel || 'S';
+        }else if(friendlies.length){
+          td.classList.add('sys-cell--friendly');
+          label = friendlies.length>1 ? String(Math.min(friendlies.length,9)) : 'F';
+        }
+        td.textContent = label;
+        const names = cellContacts.map(function(c){
+          const allegiance = String(c.allegiance || c.type || '').toUpperCase();
+          const call = String(c.cap_callsign || '').trim();
+          const base = c.name || 'Contact';
+          const display = call ? `${base} (${call})` : base;
+          return `${allegiance}: ${display}`;
+        });
+        td.title = names.join('\n');
+      }else{
+        td.textContent = '';
+      }
+      tr.appendChild(td);
+    });
+    table.appendChild(tr);
+  });
+  wrap.appendChild(table);
+
+  const legend=document.createElement('div'); legend.className='sys-grid-legend';
+  const legendItems=[
+    {cls:'sys-cell--sheffield', label:'Sheffield (*)'},
+    {cls:'sys-cell--friendly', label:'Friendly (F)'},
+    {cls:'sys-cell--hermes', label:'Hermes (=)'},
+    {cls:'sys-cell--harrier', label:'Harrier (S#)'},
+    {cls:'sys-cell--hostile', label:'Enemy (E)'},
+    {cls:'sys-cell--mixed', label:'Mixed (X)'},
+    {cls:'', label:'Multiple = digit count'}
+  ];
+  legendItems.forEach(function(item){
+    const span=document.createElement('span'); span.className='sys-legend-item';
+    const swatch=document.createElement('span'); swatch.className='sys-legend-swatch';
+    if(item.cls) swatch.classList.add(item.cls.replace('sys-cell','sys-legend'));
+    const text=document.createElement('span'); text.textContent=item.label;
+    span.appendChild(swatch);
+    span.appendChild(text);
+    legend.appendChild(span);
+  });
+  wrap.appendChild(legend);
+
+  if(!contacts.length){
+    const empty=document.createElement('div'); empty.className='sys-grid-empty mono muted';
+    empty.textContent='No radar contacts within range.';
+    wrap.appendChild(empty);
+  }
+
+  p.appendChild(wrap);
 }
 
 function render(j){
@@ -2935,3 +3226,9 @@ function wire(){
 document.addEventListener('DOMContentLoaded', wire);
 // Bootstrap marker to help verify the right asset is served
 try { window.__stations_loaded = true; window.__stations_loaded_ts = Date.now(); console.log('stations.js loaded', new Date(window.__stations_loaded_ts).toISOString()); } catch (_e) {}
+  function extractLockedId(snapshot){
+    if(!snapshot) return null;
+    const raw = snapshot.locked_id ?? snapshot.lockedId ?? snapshot.locked_contact_id ?? snapshot.lockedContactId;
+    const num = Number(raw);
+    return Number.isFinite(num) ? num : null;
+  }

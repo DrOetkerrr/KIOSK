@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 import sys
 import time
@@ -14,6 +15,7 @@ if str(ROOT) not in sys.path:
 
 from projects.falklandV2 import webdash
 from projects.falklandV2.subsystems.hermes_cap import HermesCAP
+from projects.falklandV2.engine_adapter import cell_to_world, world_to_cell
 
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "projects" / "falklandV2" / "data"
@@ -182,6 +184,226 @@ def test_auto_engage_respects_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
     third = cap.auto_engage(3.0, 5, now=now + mission.engagement_cooldown_s + 1.0)
     assert third is not None
 
+
+def test_cap_scramble_cooldown_controls_second_launch() -> None:
+    cap = _make_cap()
+    cap.scramble_cooldown_s = 5
+    cap.min_launch_interval_s = 5
+    cap.ready_pairs = 2
+    cap.airframe_pool_total = 4
+
+    now = 1_000.0
+    first = cap.request_cap_to_cell(
+        target_cell="K10",
+        distance_nm=8.0,
+        mission_kind="cap",
+        loadout="aim9",
+        now=now,
+    )
+    assert first["ok"] is True
+    first_mission = cap.missions[-1]
+    assert first_mission.status == "airborne"
+    assert cap.last_scramble == pytest.approx(now)
+    readiness = cap.readiness(now=now)
+    assert readiness["cooldown_s"] == 5
+    assert readiness["available"] is False
+
+    second = cap.request_cap_to_cell(
+        target_cell="K12",
+        distance_nm=9.0,
+        mission_kind="cap",
+        loadout="aim9",
+        now=now,
+    )
+    assert second["ok"] is True
+    second_mission = cap.missions[-1]
+    assert second_mission is not first_mission
+    assert second_mission.status == "queued"
+    assert second_mission.deck_cycle_s == 5
+    assert pytest.approx(second_mission.ts.get("launch_ready"), rel=0.01) == now + 5
+    assert cap.readiness(now=now)["queued_count"] == 1
+
+    cap.tick(now=now + 4.0)
+    assert second_mission.status == "queued"
+    assert pytest.approx(second_mission.ts.get("launch_ready"), rel=0.01) == now + 5
+
+    cap.tick(now=now + 5.0)
+    assert second_mission.status == "airborne"
+    assert "launch_ready" not in second_mission.ts
+    assert cap.last_scramble == pytest.approx(now + 5.0)
+    assert cap.readiness(now=now + 5.0)["queued_count"] == 0
+
+
+def test_cap_launch_voice_triggers_on_actual_takeoff() -> None:
+    cap = _make_cap()
+    events: list[tuple[str, dict]] = []
+    cap.bind_voice_hook(lambda event_id, data: events.append((event_id, dict(data or {}))))
+    cap.scramble_cooldown_s = 10
+    cap.min_launch_interval_s = 0
+    cap.ready_pairs = 2
+    cap.airframe_pool_total = 4
+    cap.last_scramble = 100.0
+
+    now = 100.0
+    res = cap.request_cap_to_cell(
+        target_cell="AR06",
+        distance_nm=12.0,
+        station_minutes=10.0,
+        radius_nm=10.0,
+        mission_kind="cap",
+        loadout="aim9",
+        now=now,
+    )
+    assert res["ok"] is True
+    assert events == []
+
+    mission = cap.missions[-1]
+    assert mission.status == "queued"
+    delay_s = mission.deck_cycle_s
+    assert delay_s > 0
+
+    cap.tick(now=now + delay_s)
+
+    assert events, "voice call should fire once aircraft actually launch"
+    event_id, payload = events[0]
+    assert event_id == "pilot.cap.launch"
+    assert payload.get("mission_id") == mission.id
+
+
+def test_cap_launch_voice_immediate_when_no_delay() -> None:
+    cap = _make_cap()
+    events: list[tuple[str, dict]] = []
+    cap.bind_voice_hook(lambda event_id, data: events.append((event_id, dict(data or {}))))
+    cap.scramble_cooldown_s = 0
+    cap.min_launch_interval_s = 0
+    cap.ready_pairs = 2
+    cap.airframe_pool_total = 4
+    cap.last_scramble = 0.0
+
+    now = 50.0
+    res = cap.request_cap_to_cell(
+        target_cell="AR06",
+        distance_nm=12.0,
+        station_minutes=10.0,
+        radius_nm=10.0,
+        mission_kind="cap",
+        loadout="aim9",
+        now=now,
+    )
+    assert res["ok"] is True
+    assert events, "voice call should fire immediately for an immediate launch"
+    event_id, payload = events[0]
+    assert event_id == "pilot.cap.launch"
+    assert payload.get("mission_id") == cap.missions[-1].id
+
+
+def test_cap_permission_timeout_forces_rtb() -> None:
+    cap = _make_cap()
+    now = 1_000.0
+    origin_xy = (17.0, 19.0)
+    target_cell = "AR06"
+    tx, ty = cell_to_world(target_cell)
+    distance_nm = math.hypot(tx - origin_xy[0], ty - origin_xy[1])
+    res = cap.request_cap_to_cell(
+        target_cell,
+        distance_nm=distance_nm,
+        origin_xy=origin_xy,
+        origin_cell=world_to_cell(*origin_xy),
+        now=now,
+    )
+    assert res["ok"], res
+    mission = cap.missions[-1]
+    mission.status = "onstation"
+    mission.ts["onstation"] = now
+    mission.ts["etd_rtb"] = now + 600.0
+    mission.permission_required = True
+    mission.permission_authorized = False
+    mission.permission_hold_since_ts = now
+
+    cap.permission_timeout_s = 60
+    cap.tick(now=now + 61.0)
+    assert mission.status == "rtb"
+
+
+def _add_onstation_mission(cap: HermesCAP, cell: str, now: float, *, mission_kind: str = "cap") -> None:
+    tx, ty = cell_to_world(cell)
+    ox, oy = cell_to_world("AR05")
+    distance_nm = math.hypot(tx - ox, ty - oy)
+    res = cap.request_cap_to_cell(
+        cell,
+        distance_nm=distance_nm,
+        origin_xy=(ox, oy),
+        origin_cell="AR05",
+        now=now,
+        mission_kind=mission_kind,
+    )
+    assert res["ok"], res
+    mission = cap.missions[-1]
+    mission.status = "onstation"
+    mission.ts["onstation"] = now
+    mission.ts["etd_rtb"] = now + 600.0
+    mission.permission_required = False
+    mission.permission_authorized = True
+    cap.ready_pairs += 1
+    cap.airframe_pool_total += 2
+    cap.last_scramble = now - cap.scramble_cooldown_s
+    cap._deck_ready_ts = now  # type: ignore[attr-defined]
+
+
+def test_cap_blocks_new_station_when_max_active() -> None:
+    cap = _make_cap()
+    cap.ready_pairs = 6
+    cap.airframe_pool_total = 12
+    now = 500.0
+    for idx, cell in enumerate(["AR10", "AR12", "AR14"]):
+        _add_onstation_mission(cap, cell, now + idx)
+    result = cap.request_cap_to_cell(
+        target_cell="AR16",
+        distance_nm=8.0,
+        origin_xy=(17.0, 19.0),
+        origin_cell="AR05",
+        now=now + 10.0,
+    )
+    assert result["ok"] is False
+    assert result["message"] == "Max CAP stations active"
+
+
+def test_cap_intercept_allowed_beyond_station_cap() -> None:
+    cap = _make_cap()
+    cap.ready_pairs = 6
+    cap.airframe_pool_total = 12
+    now = 800.0
+    for idx, cell in enumerate(["AS10", "AS12", "AS14"]):
+        _add_onstation_mission(cap, cell, now + idx)
+    result = cap.request_cap_to_cell(
+        target_cell="AT16",
+        distance_nm=9.0,
+        origin_xy=(17.0, 19.0),
+        origin_cell="AR05",
+        now=now + 5.0,
+        mission_kind="intercept",
+    )
+    assert result["ok"] is True
+
+
+def test_cap_surge_limit_blocks_after_four_pairs() -> None:
+    cap = _make_cap()
+    cap.ready_pairs = 8
+    cap.airframe_pool_total = 16
+    now = 900.0
+    for idx, cell in enumerate(["AP08", "AP10", "AP12"]):
+        _add_onstation_mission(cap, cell, now + idx)
+    _add_onstation_mission(cap, "AP14", now + 3, mission_kind="intercept")
+    result = cap.request_cap_to_cell(
+        target_cell="AP18",
+        distance_nm=10.0,
+        origin_xy=(17.0, 19.0),
+        origin_cell="AR05",
+        now=now + 20.0,
+        mission_kind="intercept",
+    )
+    assert result["ok"] is False
+    assert result["message"] == "All CAP sorties committed"
 
 def test_cap_follow_position_tracks_hermes(monkeypatch: pytest.MonkeyPatch) -> None:
     client = webdash.app.test_client()

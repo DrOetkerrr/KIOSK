@@ -108,10 +108,64 @@ class StateRepository:
 
     def load_arming(self) -> Dict[str, Any]:
         data = self.load_json(self.arming_path, {})
-        return data if isinstance(data, dict) else {}
+        section = data.get('weapons') if isinstance(data, dict) else None
+        source = section if isinstance(section, dict) else (data if isinstance(data, dict) else {})
+        result: Dict[str, Any] = {}
+        for name, rec in source.items():
+            if isinstance(rec, dict):
+                state = str(rec.get('state', 'Safe'))
+                armed = bool(rec.get('armed', False))
+                if armed:
+                    state = 'Armed'
+                result[name] = state
+            else:
+                result[name] = rec
+        return result
 
     def save_arming(self, obj: Dict[str, Any]) -> None:
-        self.save_json(self.arming_path, obj)
+        try:
+            from projects.falklandV2.subsystems import webcore as _core
+        except Exception:
+            _core = None
+        payload: Dict[str, Any] = {}
+        simple_map: Dict[str, Any] = {}
+        for name, value in (obj or {}).items():
+            if isinstance(value, dict):
+                rec = {
+                    'state': str(value.get('state', 'Safe')),
+                    'armed': bool(value.get('armed', False)),
+                    'arming_until': float(value.get('arming_until', 0.0) or 0.0),
+                    'cooldown_until': float(value.get('cooldown_until', 0.0) or 0.0),
+                }
+                simple_map[name] = rec.get('state', 'Safe')
+            else:
+                state_val = str(value)
+                rec = {
+                    'state': state_val,
+                    'armed': state_val.strip().lower() == 'armed',
+                    'arming_until': 0.0,
+                    'cooldown_until': 0.0,
+                }
+                simple_map[name] = state_val
+            payload[name] = rec
+        if _core is not None:
+            try:
+                original_path = getattr(_core, 'ARMING_PATH', None)
+                if original_path != self.arming_path:
+                    setattr(_core, 'ARMING_PATH', self.arming_path)
+                    try:
+                        _core.save_arming(simple_map)
+                    finally:
+                        if original_path is not None:
+                            setattr(_core, 'ARMING_PATH', original_path)
+                        else:
+                            delattr(_core, 'ARMING_PATH')
+                else:
+                    _core.save_arming(simple_map)
+                return
+            except Exception:
+                pass
+        self.save_json(self.arming_path, {'weapons': payload})
 
     def load_health(self) -> Dict[str, Any]:
         data = self.load_json(self.health_path, {})

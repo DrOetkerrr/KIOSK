@@ -25,6 +25,8 @@ def _lazy():
     mark_weapon_arming = getattr(_wd, 'mark_weapon_arming', lambda *args, **kwargs: None)
     clear_weapon_arming = getattr(_wd, 'clear_weapon_arming', lambda *args, **kwargs: None)
     pending_arming_left = getattr(_wd, 'pending_arming_left', lambda *_args, **_kwargs: 0)
+    get_weapon_state = getattr(_wd, 'get_weapon_state', lambda name: {'state': 'Safe', 'armed': False, 'cooldown_until': 0.0, 'arming_until': 0.0})
+    update_weapon_state = getattr(_wd, 'update_weapon_state', lambda name, **kwargs: kwargs)
     return locals()
 
 
@@ -59,101 +61,75 @@ def weapons_arm():
         state = _arg_or_json(request, 'state', '')
         if not name or state not in ("Armed","Safe"):
             return jsonify({'ok': False, 'error': 'bad params'}), 400
-        raw = L['_load_json'](L['ARMING_PATH'], {})
-        if not isinstance(raw, dict):
-            raw = {}
-        arm_delay = 5.0
+        arm_delay = 10.0 if name == 'Sea Dart SAM' else 5.0
         now = time.time()
+        rec = L['get_weapon_state'](name)
+        disp_state = state
         if state == 'Armed':
-            due_ts = now + arm_delay
-            rec = {'armed': False, 'arming_until': due_ts}
-            disp_state = 'Arming'
-        else:
-            due_ts = 0.0
-            rec = {'armed': False, 'arming_until': 0}
-            disp_state = 'Safe'
-        raw[name] = rec
-        L['_save_json'](L['ARMING_PATH'], raw)
-        try:
-            L['RADAR'].rec.log('weapons.arm', {'name': name, 'state': state})
-        except Exception:
-            pass
-        if state == 'Armed':
-            try:
-                L['PENDING_EVENTS'].append({'due': due_ts, 'kind': 'arming_ready', 'weapon': name})
-            except Exception:
-                pass
-            def _complete():
-                armed_updated = False
+            if str(rec.get('state', '')).lower() == 'armed' and rec.get('armed'):
+                disp_state = 'Armed'
+            else:
+                due_ts = now + arm_delay
+                L['update_weapon_state'](name, state='Arming', armed=False, arming_until=due_ts)
                 try:
-                    with L['STATE_LOCK']:
-                        raw_local = L['_load_json'](L['ARMING_PATH'], {})
-                        if isinstance(raw_local, dict):
-                            rec_local = raw_local.get(name)
-                            if not isinstance(rec_local, dict):
-                                rec_local = {}
-                            rec_local['armed'] = True
-                            rec_local['arming_until'] = 0.0
-                            raw_local[name] = rec_local
-                            L['_save_json'](L['ARMING_PATH'], raw_local)
-                            armed_updated = True
+                    pending = L['PENDING_EVENTS']
+                    if isinstance(pending, list):
+                        with L['STATE_LOCK']:
+                            pending[:] = [ev for ev in pending if not (str(ev.get('kind')) == 'arming_ready' and str(ev.get('weapon')) == name)]
+                            pending.append({'due': due_ts, 'kind': 'arming_ready', 'weapon': name})
                 except Exception:
-                    return
-                if armed_updated:
+                    pass
+
+                def _complete() -> None:
                     try:
-                        current = L['load_arming']() if 'load_arming' in L else {}
-                        if isinstance(current, dict):
-                            current[name] = 'Armed'
-                            if 'save_arming' in L:
-                                L['save_arming'](current)
-                                try:
-                                    L['_save_json'](L['ARMING_PATH'], raw_local)
-                                except Exception:
-                                    pass
+                        L['update_weapon_state'](name, state='Armed', armed=True, arming_until=0.0)
                     except Exception:
                         pass
+                    try:
+                        L['clear_weapon_arming'](name, target_state='Armed', armed=True)
+                    except Exception:
+                        pass
+                    try:
+                        L['record_event']('weapon.reload.complete', {'name': name, 'source': 'arming'})
+                    except Exception:
+                        pass
+
                 try:
-                    L['clear_weapon_arming'](name)
+                    timer = threading.Timer(max(0.1, arm_delay), _complete)
+                    timer.daemon = True
+                    timer.start()
+                except Exception:
+                    _complete()
+                try:
+                    L['mark_weapon_arming'](name, due_ts)
                 except Exception:
                     pass
+                disp_state = 'Arming'
                 try:
-                    L['record_event']('weapon.reload.complete', {'name': name, 'source': 'arming'})
+                    L['record_event']('weapon.arm', {'name': name})
                 except Exception:
                     pass
-            # Start arming completion timer (avoid daemon kw for wider Python compat)
-            try:
-                _t = threading.Timer(arm_delay + 0.1, _complete)
-                try:
-                    _t.daemon = True  # best-effort; safe on CPython
-                except Exception:
-                    pass
-                _t.start()
-            except Exception:
-                pass
-            try:
-                L['mark_weapon_arming'](name, due_ts)
-            except Exception:
-                pass
-        try:
-            if state == 'Armed':
-                L['record_event']('weapon.arm', {'name': name})
-            else:
-                L['record_event']('weapon.safe', {'name': name})
-        except Exception:
-            pass
-        if state != 'Armed':
+        else:
+            L['update_weapon_state'](name, state='Safe', armed=False, arming_until=0.0)
             try:
                 L['clear_weapon_arming'](name)
             except Exception:
                 pass
             try:
                 pending = L['PENDING_EVENTS']
-                with L['STATE_LOCK']:
-                    to_keep = [ev for ev in pending if not (str(ev.get('kind')) == 'arming_ready' and str(ev.get('weapon')) == name)]
-                    if len(to_keep) != len(pending):
-                        pending[:] = to_keep
+                if isinstance(pending, list):
+                    with L['STATE_LOCK']:
+                        pending[:] = [ev for ev in pending if not (str(ev.get('kind')) == 'arming_ready' and str(ev.get('weapon')) == name)]
             except Exception:
                 pass
+            try:
+                L['record_event']('weapon.safe', {'name': name})
+            except Exception:
+                pass
+        try:
+            L['RADAR'].rec.log('weapons.arm', {'name': name, 'state': disp_state})
+        except Exception:
+            pass
         return jsonify({'ok': True, 'name': name, 'state': disp_state})
     except Exception as e:
         logging.exception("/weapons/arm error: %s", e)
@@ -171,29 +147,22 @@ def weapons_fire():
         # Load & update ammo using canonical store
         ammo = L['load_ammo']() if 'load_ammo' in L else {}
         ammo.setdefault(name, 0)
-        # Helper: read/update cooldown in arming state file
+        # Helper: read/update cooldown using canonical state helpers
         def _get_cooldown_until(nm: str) -> float:
             try:
-                raw = L['_load_json'](L['ARMING_PATH'], {})
-                rec = (raw or {}).get(nm) if isinstance(raw, dict) else None
-                if isinstance(rec, dict):
-                    return float(rec.get('cooldown_until', 0.0) or 0.0)
+                rec = L['get_weapon_state'](nm)
+                return float(rec.get('cooldown_until', 0.0) or 0.0)
             except Exception:
-                pass
-            return 0.0
+                return 0.0
         def _set_cooldown_until(nm: str, until: float) -> None:
             try:
-                raw = L['_load_json'](L['ARMING_PATH'], {})
-                if not isinstance(raw, dict): raw = {}
-                rec = raw.get(nm)
-                if not isinstance(rec, dict): rec = {'armed': False, 'arming_until': 0}
-                rec['cooldown_until'] = float(until)
-                raw[nm] = rec
-                L['_save_json'](L['ARMING_PATH'], raw)
+                L['update_weapon_state'](nm, cooldown_until=float(until))
             except Exception:
                 pass
         def _cooldown_seconds_by_class(nm: str) -> float:
             try:
+                if nm == 'Sea Dart SAM':
+                    return 10.0
                 wrec = next((w for w in L['WEAP_CATALOG'] if w.get('name') == nm), None)
                 cls = (wrec or {}).get('class', 'Other')
                 if (wrec or {}).get('cooldown_s') is not None:
@@ -217,105 +186,29 @@ def weapons_fire():
                 pass
             return jsonify({'ok': False, 'error': 'COOLDOWN'}), 400
         # Enforce ARMED state for both test and real
-        arming_state = L['load_arming']() if 'load_arming' in L else {}
         try:
             pending_left = L['pending_arming_left'](name)
         except Exception:
             pending_left = 0
-        if pending_left > 0:
+        state_rec = L['get_weapon_state'](name)
+        state_label = str(state_rec.get('state', 'Safe')).lower()
+        arming_until = float(state_rec.get('arming_until', 0.0) or 0.0)
+        armed_flag = bool(state_rec.get('armed', False))
+        if state_label == 'arming' and arming_until <= now:
+            state_rec = L['update_weapon_state'](name, state='Armed', armed=True, arming_until=0.0)
+            state_label = 'armed'
+            armed_flag = True
+            pending_left = 0
+        if pending_left > 0 or (state_label != 'armed' and not armed_flag):
             try:
-                L['record_event']('weapon.fire.rejected', {'name': name, 'reason': 'NOT_ARMED', 'mode': mode, 'pending_s': pending_left})
+                reason = 'NOT_ARMED'
+                if pending_left > 0:
+                    L['record_event']('weapon.fire.rejected', {'name': name, 'reason': reason, 'mode': mode, 'pending_s': pending_left})
+                else:
+                    L['record_event']('weapon.fire.rejected', {'name': name, 'reason': reason, 'mode': mode})
             except Exception:
                 pass
-            return jsonify({'ok': False, 'error': 'NOT_ARMED', 'pending_s': pending_left}), 400
-
-        recent_ready = False
-        if arming_state.get(name) != 'Armed':
-            recovered = False
-            try:
-                raw = L['_load_json'](L['ARMING_PATH'], {})
-                container = None
-                record = None
-                if isinstance(raw, dict):
-                    weapons_section = raw.get('weapons')
-                    if isinstance(weapons_section, dict):
-                        container = weapons_section
-                        record = weapons_section.get(name)
-                    else:
-                        container = raw
-                        record = container.get(name)
-                armed_flag = False
-                sanitized_record = None
-                if isinstance(record, dict):
-                    now_local = time.time()
-                    armed_flag = bool(record.get('armed', False))
-                    if not armed_flag:
-                        try:
-                            until = float(record.get('arming_until', 0.0) or 0.0)
-                            if until > 0.0 and until <= now_local:
-                                armed_flag = True
-                        except Exception:
-                            pass
-                    if armed_flag:
-                        sanitized_record = dict(record)
-                        sanitized_record['armed'] = True
-                        sanitized_record['arming_until'] = 0.0
-                elif isinstance(record, str):
-                    armed_flag = record.strip().lower().startswith('armed')
-
-                if armed_flag:
-                    arming_state[name] = 'Armed'
-                    recovered = True
-                    try:
-                        if isinstance(container, dict):
-                            if sanitized_record is not None:
-                                container[name] = sanitized_record
-                            else:
-                                container[name] = 'Armed'
-                            L['_save_json'](L['ARMING_PATH'], raw)
-                    except Exception:
-                        pass
-                    try:
-                        if 'save_arming' in L:
-                            L['save_arming'](dict(arming_state))
-                    except Exception:
-                        pass
-            except Exception:
-                recovered = False
-
-            if arming_state.get(name) != 'Armed':
-                recovered = False
-                try:
-                    now_local = time.time()
-                    queue = list(L['EVENT_QUEUE']) if 'EVENT_QUEUE' in L else []
-                    for ev in reversed(queue):
-                        if str(ev.get('id') or '') != 'weapon.reload.complete':
-                            continue
-                        data = ev.get('data') or {}
-                        if str(data.get('name') or data.get('weapon') or '') != name:
-                            continue
-                        ts = float(ev.get('ts', 0.0) or 0.0)
-                        if ts and now_local - ts <= 30.0:
-                            recovered = True
-                            break
-                    if recovered:
-                        recent_ready = True
-                        arming_state[name] = 'Armed'
-                        try:
-                            if 'save_arming' in L:
-                                L['save_arming'](dict(arming_state))
-                        except Exception:
-                            pass
-                except Exception:
-                    recovered = False
-
-            if arming_state.get(name) != 'Armed':
-                logging.info("weapon.fire blocked: NOT_ARMED name=%s pending=%s recent_ready=%s state=%s", name, pending_left, recent_ready, arming_state.get(name))
-                try:
-                    L['record_event']('weapon.fire.rejected', {'name': name, 'reason': 'NOT_ARMED', 'mode': mode})
-                except Exception:
-                    pass
-                return jsonify({'ok': False, 'error': 'NOT_ARMED', 'state': arming_state.get(name)}), 400
+            return jsonify({'ok': False, 'error': 'NOT_ARMED', 'state': state_rec.get('state'), 'pending_s': pending_left}), 400
         if mode == 'test':
             if int(ammo.get(name, 0)) <= 0:
                 try:
@@ -393,7 +286,24 @@ def weapons_fire():
                 L['record_event']('weapon.fire.rejected', {'name': name, 'reason': 'NO_PRIMARY', 'mode': mode})
             except Exception:
                 pass
-            return jsonify({'ok': False, 'error': 'NO_PRIMARY'}), 400
+            # Fallback to last primary cached by status builder (if any)
+            try:
+                fallback_primary = getattr(L.get('_wd'), 'LAST_PRIMARY_UI', None)
+            except Exception:
+                fallback_primary = None
+            if fallback_primary:
+                primary = fallback_primary
+            else:
+                try:
+                    own = (own_x, own_y)
+                    for c in reversed(L['RADAR'].contacts):
+                        if getattr(c, 'allegiance', '') == 'Hostile':
+                            primary = L['contact_to_ui'](c, own)
+                            break
+                except Exception:
+                    primary = None
+            if not primary:
+                return jsonify({'ok': False, 'error': 'NO_PRIMARY'}), 400
         # Invariant guard: consistency suite — enforce in_range before any shot is created
         if not L['compute_in_range'](name, primary):
             try:

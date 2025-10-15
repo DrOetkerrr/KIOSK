@@ -204,8 +204,6 @@ def build() -> Dict[str, Any]:
             fleet = payload.get('ownfleet') if isinstance(payload.get('ownfleet'), list) else []
             for u in (fleet or []):
                 try:
-                    if str(u.get('id','')) == 'own':
-                        continue
                     cell = str(u.get('cell') or '')
                     if not cell:
                         continue
@@ -216,8 +214,9 @@ def build() -> Dict[str, Any]:
                         rng = ((float(mx)-float(ox))**2 + (float(my)-float(oy))**2) ** 0.5
                     except Exception:
                         rng = None
+                    rec_id = str(u.get('id') or '').strip().lower()
                     rec = {
-                        'id': f"fleet:{u.get('id') or u.get('name','?')}",
+                        'id': f"fleet:{rec_id}" if rec_id and rec_id != 'own' else f"fleet:{u.get('name','own_ship')}",
                         'cell': cell,
                         'name': u.get('name','Friendly'),
                         'type': 'Friendly',
@@ -226,6 +225,10 @@ def build() -> Dict[str, Any]:
                         'course': int(u.get('heading') or 0),
                         'speed': int(u.get('speed') or 0),
                     }
+                    if rec_id == 'own':
+                        rec['meta'] = {'own_ship': True}
+                        rec['id'] = 'fleet:own'
+                        rec['range_nm'] = 0.0
                     radar_list.append(rec)
                 except Exception:
                     continue
@@ -403,6 +406,10 @@ def build() -> Dict[str, Any]:
                     primary_ui = threats[0]
             except Exception:
                 pass
+        try:
+            setattr(wd, 'LAST_PRIMARY_UI', primary_ui)
+        except Exception:
+            pass
         def _order_key(rec: Dict[str,Any]):
             nm = rec.get('name',''); cls = rec.get('class','Other')
             if nm == 'MM38 Exocet': return (0, nm)
@@ -648,6 +655,16 @@ def build() -> Dict[str, Any]:
                 # One message at a time; pick highest priority first
                 try:
                     q = getattr(wd, 'RADIO_QUEUE', [])
+                    flags = wd.get_audio_flags() if hasattr(wd, 'get_audio_flags') else {}
+                    try:
+                        suppress_until = float((flags or {}).get('suppress_permission_request_until', 0.0) or 0.0)
+                    except Exception:
+                        suppress_until = 0.0
+                    if suppress_until > now and hasattr(wd, 'is_permission_request_radio'):
+                        q[:] = [
+                            item for item in q
+                            if not wd.is_permission_request_radio(item.get('role'), item.get('text'))
+                        ]
                     idx = 0
                     for i, item in enumerate(q):
                         try:
@@ -701,9 +718,9 @@ def build() -> Dict[str, Any]:
                     duration_s = None
             if not file_path:
                 try:
-                    file_path = wd._tts_synthesize(text, role)
+                    wd.schedule_radio_tts(role, text)
                 except Exception:
-                    file_path = None
+                    pass
             duration_s = _estimate_radio_duration(text, duration_s, file_path)
             radio_payload = {
                 'ts': time.time(),

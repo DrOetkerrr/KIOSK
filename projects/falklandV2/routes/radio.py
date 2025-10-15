@@ -4,6 +4,8 @@ import time
 import logging
 from flask import Blueprint, jsonify, request
 
+from .cap import _resolve_hermes_origin
+
 bp = Blueprint("radio", __name__)
 
 
@@ -11,7 +13,7 @@ def _lazy():
     # Late import to avoid circular references
     from ..webdash import (
         record_flight, record_radio, record_officer,
-        ENG, RADAR, CAP,
+        ENG, RADAR, CAP, RUNTIME,
         get_own_xy, world_to_cell, cell_for_world,
         stamp_cap_launch, _arg_or_json
     )
@@ -107,9 +109,9 @@ def radio_ask():
                 if tgt is None:
                     reply = "Captain, no locked or selected target for CAP."
                 else:
-                    own_x, own_y = L['get_own_xy'](st)
-                    dx = float(getattr(tgt, 'x', 0.0)) - float(own_x)
-                    dy = float(getattr(tgt, 'y', 0.0)) - float(own_y)
+                    hx, hy, hermes_cell = _resolve_hermes_origin(L, st)
+                    dx = float(getattr(tgt, 'x', 0.0)) - hx
+                    dy = float(getattr(tgt, 'y', 0.0)) - hy
                     rng = (dx*dx + dy*dy) ** 0.5
                     try:
                         tcell = L['world_to_cell'](float(getattr(tgt, 'x', 0.0)), float(getattr(tgt, 'y', 0.0)))
@@ -118,7 +120,12 @@ def radio_ask():
                     if L['CAP'] is None:
                         reply = "Captain, CAP unavailable."
                     else:
-                        res = L['CAP'].request_cap_to_cell(tcell, distance_nm=float(rng))
+                        res = L['CAP'].request_cap_to_cell(
+                            tcell,
+                            distance_nm=float(rng),
+                            origin_xy=(hx, hy),
+                            origin_cell=hermes_cell,
+                        )
                         if res.get('ok'):
                             reply = f"Hermes: CAP pair launching to {tcell}."
                             try:
@@ -132,6 +139,9 @@ def radio_ask():
                                 meta.setdefault('authorized', False)
                                 meta.setdefault('last_request_ts', 0.0)
                                 meta.setdefault('hold_since_ts', None)
+                                if hermes_cell:
+                                    meta['origin_cell'] = hermes_cell
+                                meta['origin_xy'] = (hx, hy)
                                 L['CAP_META'][mid] = meta
                                 L['CAP'].set_permission(mid, False)
                             except Exception:

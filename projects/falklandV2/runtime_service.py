@@ -140,7 +140,8 @@ class GameRuntime:
         try:
             ox, oy = self._own_xy()
             if isinstance(ox, (int, float)) and isinstance(oy, (int, float)):
-                seed_x, seed_y = float(ox), float(oy)
+                if abs(ox) > 1e-3 or abs(oy) > 1e-3:
+                    seed_x, seed_y = float(ox), float(oy)
         except Exception:
             pass
         try:
@@ -455,6 +456,22 @@ class GameRuntime:
             radar_meta['scan_interval_s'] = interval
             radar_meta['scan_left_s'] = max(0, int(round(interval - accum)))
             radar_meta['locked_contact_id'] = getattr(self.radar, 'priority_id', None)
+            try:
+                pid = getattr(self.radar, 'priority_id', None)
+                primary_ui = None
+                if pid is not None:
+                    for entry in contacts_ui:
+                        try:
+                            if int(entry.get('id', -1)) == int(pid):
+                                primary_ui = entry
+                                break
+                        except Exception:
+                            continue
+                if primary_ui is None:
+                    primary_ui = next((entry for entry in contacts_ui if str(entry.get('type')).lower() == 'hostile'), None)
+                self._last_primary_ui = primary_ui
+            except Exception:
+                pass
 
             try:
                 from projects.falklandV2.subsystems import radar as radar_sub
@@ -525,23 +542,25 @@ class GameRuntime:
 
         progressed = False
         remaining = dt_total
+        current = float(last)
         while remaining > 0.0:
             step = min(1.0, remaining)
+            current += step
             with self.state_lock:
                 try:
                     self.engine.tick(step)
                     progressed = True
                 except Exception:
                     break
+                try:
+                    if self.cap is not None:
+                        self.cap.tick(now=current)
+                except Exception:
+                    pass
             remaining -= step
 
         if progressed:
             with self.state_lock:
-                try:
-                    if self.cap is not None:
-                        self.cap.tick(now=ts)
-                except Exception:
-                    pass
                 try:
                     self._update_engine_state_view()
                 except Exception:
@@ -647,13 +666,29 @@ class GameRuntime:
             raw = core._load_json(self.arming_path, {})
             if not isinstance(raw, dict):
                 raw = {}
+            arm_delay = 10.0 if name == 'Sea Dart SAM' else 5.0
+            container = raw.get('weapons') if isinstance(raw.get('weapons'), dict) else raw
+            if not isinstance(container, dict):
+                container = raw
+            rec_existing = container.get(name)
+            existing_cooldown = 0.0
+            if isinstance(rec_existing, dict):
+                try:
+                    existing_cooldown = float(rec_existing.get('cooldown_until', 0.0) or 0.0)
+                except Exception:
+                    existing_cooldown = 0.0
             if state == 'Armed':
-                rec = {'armed': False, 'arming_until': time.time() + 5.0}
+                rec = {
+                    'armed': False,
+                    'arming_until': time.time() + arm_delay,
+                    'cooldown_until': existing_cooldown,
+                    'state': 'Arming',
+                }
                 disp_state = 'Arming'
             else:
-                rec = {'armed': False, 'arming_until': 0}
+                rec = {'armed': False, 'arming_until': 0, 'cooldown_until': 0.0, 'state': 'Safe'}
                 disp_state = 'Safe'
-            raw[name] = rec
+            container[name] = rec
             core._save_json(self.arming_path, raw)
             # schedule arming ready via cooldown timestamp
             with self.state_lock:
@@ -667,6 +702,10 @@ class GameRuntime:
         try:
             raw = core._load_json(self.arming_path, {})
             rec = (raw or {}).get(nm) if isinstance(raw, dict) else None
+            if not isinstance(rec, dict) and isinstance(raw, dict):
+                weapons_section = raw.get('weapons')
+                if isinstance(weapons_section, dict):
+                    rec = weapons_section.get(nm)
             if isinstance(rec, dict):
                 cu = float(rec.get('cooldown_until', 0.0) or 0.0)
                 left = int(max(0.0, cu - time.time()))
@@ -680,17 +719,43 @@ class GameRuntime:
             raw = core._load_json(self.arming_path, {})
             if not isinstance(raw, dict):
                 raw = {}
+            container = raw
             rec = raw.get(nm)
-            if not isinstance(rec, dict):
-                rec = {'armed': False, 'arming_until': 0}
-            rec['cooldown_until'] = float(until)
-            raw[nm] = rec
+            weapons_section = raw.get('weapons')
+            if isinstance(weapons_section, dict):
+                container = weapons_section
+                rec = weapons_section.get(nm)
+            armed_flag = False
+            arming_until = 0.0
+            if isinstance(rec, dict):
+                armed_flag = bool(rec.get('armed', False))
+                try:
+                    arming_until = float(rec.get('arming_until', 0.0) or 0.0)
+                except Exception:
+                    arming_until = 0.0
+            elif isinstance(rec, str):
+                armed_flag = rec.strip().lower().startswith('armed')
+            updated_state = {
+                'armed': armed_flag,
+                'arming_until': arming_until,
+                'cooldown_until': float(until),
+                'state': 'Armed' if armed_flag else ('Arming' if arming_until > time.time() else 'Safe'),
+            }
+            container[nm] = updated_state
+            if container is not raw:
+                raw[nm] = dict(updated_state)
+            else:
+                weapons_section = raw.get('weapons')
+                if isinstance(weapons_section, dict):
+                    weapons_section[nm] = dict(updated_state)
             core._save_json(self.arming_path, raw)
         except Exception:
             pass
 
     def _cooldown_seconds_by_class(self, nm: str) -> float:
         try:
+            if nm == 'Sea Dart SAM':
+                return 10.0
             wrec = next((w for w in core.WEAP_CATALOG if w.get('name') == nm), None)
             cls = (wrec or {}).get('class', 'Other')
             if (wrec or {}).get('cooldown_s') is not None:
@@ -733,6 +798,16 @@ class GameRuntime:
                             break
             except Exception:
                 primary = None
+            if not primary:
+                fallback = getattr(self, '_last_primary_ui', None)
+                if fallback:
+                    primary = fallback
+                else:
+                    # last resort: first hostile contact
+                    for c in reversed(self.radar.contacts):
+                        if getattr(c, 'allegiance', '') == 'Hostile':
+                            primary = contact_to_ui(c, self._own_xy())
+                            break
             if not primary:
                 return {'ok': False, 'error': 'NO_PRIMARY'}
             if not self.compute_in_range(name, primary):

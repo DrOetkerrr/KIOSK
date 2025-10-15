@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from flask import Flask  # type: ignore
 
+from ..routes.cap import _resolve_hermes_origin
 
 def _safe_call(fn: Callable[[dict], None] | None, payload: dict) -> None:
     if callable(fn):
@@ -43,6 +44,7 @@ def ensure_cap_fallbacks(app: Flask, state: Any) -> None:
             "radar": _attr(state, "RADAR", "radar"),
             "convoy": _attr(state, "CONVOY", "convoy"),
             "eng": _attr(state, "ENG", "engine", "eng"),
+            "runtime": _attr(state, "RUNTIME", "runtime"),
             "primary_id": getattr(state, "PRIMARY_ID", None),
             "target_class_map": getattr(state, "TARGET_CLASS_BY_NAME", {}) or {},
             "world_to_cell": getattr(state, "world_to_cell", lambda *args, **kwargs: "K13"),
@@ -92,23 +94,15 @@ def ensure_cap_fallbacks(app: Flask, state: Any) -> None:
 
             eng = refs["eng"]
             st = eng.public_state() if eng is not None and hasattr(eng, "public_state") else {}
-            own_x, own_y = refs["radar_xy_from_state"](st)
-            ship = st.get("ship", {}) if isinstance(st, dict) else {}
-            try:
-                course_deg = float(ship.get("heading", 0.0) or 0.0)
-            except Exception:
-                course_deg = 0.0
-
-            convoy = refs["convoy"]
-            if convoy is not None:
-                try:
-                    hx, hy, hermes_cell = convoy.escort_world_cell("hermes", own_x, own_y, course_deg)
-                except Exception:
-                    hx, hy = own_x, own_y
-                    hermes_cell = refs["ship_cell_from_state"](st)
-            else:
-                hx, hy = own_x, own_y
-                hermes_cell = refs["ship_cell_from_state"](st)
+            helper_ctx = {
+                "radar_xy_from_state": refs["radar_xy_from_state"],
+                "ship_cell_from_state": refs["ship_cell_from_state"],
+                "cell_to_world": refs["cell_to_world"],
+                "CONVOY": refs["convoy"],
+                "CAP": cap,
+                "RUNTIME": refs.get("runtime"),
+            }
+            hx, hy, hermes_cell = _resolve_hermes_origin(helper_ctx, st)
 
             target_class_map = refs["target_class_map"]
 
@@ -229,23 +223,15 @@ def ensure_cap_fallbacks(app: Flask, state: Any) -> None:
 
             eng = refs["eng"]
             st = eng.public_state() if eng is not None and hasattr(eng, "public_state") else {}
-            own_x, own_y = refs["radar_xy_from_state"](st)
-            ship = st.get("ship", {}) if isinstance(st, dict) else {}
-            try:
-                course_deg = float(ship.get("heading", 0.0) or 0.0)
-            except Exception:
-                course_deg = 0.0
-
-            convoy = refs["convoy"]
-            if convoy is not None:
-                try:
-                    hx, hy, hermes_cell = convoy.escort_world_cell("hermes", own_x, own_y, course_deg)
-                except Exception:
-                    hx, hy = own_x, own_y
-                    hermes_cell = refs["ship_cell_from_state"](st)
-            else:
-                hx, hy = own_x, own_y
-                hermes_cell = refs["ship_cell_from_state"](st)
+            helper_ctx = {
+                "radar_xy_from_state": refs["radar_xy_from_state"],
+                "ship_cell_from_state": refs["ship_cell_from_state"],
+                "cell_to_world": refs["cell_to_world"],
+                "CONVOY": refs["convoy"],
+                "CAP": cap,
+                "RUNTIME": refs.get("runtime"),
+            }
+            hx, hy, hermes_cell = _resolve_hermes_origin(helper_ctx, st)
 
             tx, ty = refs["cell_to_world"](cell)
             dx, dy = float(tx) - float(hx), float(ty) - float(hy)

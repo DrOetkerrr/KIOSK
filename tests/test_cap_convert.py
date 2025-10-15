@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
 from projects.falklandV2.subsystems.hermes_cap import HermesCAP
+from projects.falklandV2.grid.mapping import label_to_world
 
 
 DATA_DIR = ROOT / "projects" / "falklandV2" / "data"
@@ -75,3 +76,38 @@ def test_convert_to_cap_immediate_onstation():
     assert mission.ts.get('eta_onstation') == 360.0
     assert mission.ts.get('etd_rtb') == 360.0 + mission.onstation_s
     assert result.get('eta_seconds') == 0
+
+
+def test_mission_position_queued_starts_at_origin():
+    cap = _make_cap()
+    now = 120.0
+    origin_cell = "AQ37"
+    origin_xy = label_to_world(origin_cell)
+
+    # Force deck to be unavailable so the mission remains queued.
+    cap._deck_ready_ts = now + 90.0
+
+    res = cap.request_cap_to_cell(
+        target_cell="AR40",
+        distance_nm=8.0,
+        now=now,
+        origin_xy=origin_xy,
+        origin_cell=origin_cell,
+        mission_kind="cap",
+    )
+    assert res["ok"] is True
+
+    mission = cap.missions[-1]
+    assert mission.status == "queued"
+
+    pos = cap._mission_position_xy(mission, now)
+    assert math.isclose(pos[0], origin_xy[0], abs_tol=1e-6)
+    assert math.isclose(pos[1], origin_xy[1], abs_tol=1e-6)
+
+    snap = cap.snapshot(now=now)
+    snap_mission = snap["missions"][-1]
+    assert snap_mission["cur_cell"] == origin_cell
+    snap_pos = snap_mission.get("position_xy")
+    assert isinstance(snap_pos, list) and len(snap_pos) == 2
+    assert math.isclose(snap_pos[0], origin_xy[0], abs_tol=1e-6)
+    assert math.isclose(snap_pos[1], origin_xy[1], abs_tol=1e-6)

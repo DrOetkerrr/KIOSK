@@ -3,7 +3,8 @@ from __future__ import annotations
 import time
 import math
 import logging
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, Tuple
 
 from flask import Blueprint, jsonify, request
 
@@ -13,7 +14,7 @@ bp = Blueprint("cap", __name__)
 def _lazy():
     # Import late from webdash to avoid circular imports
     from ..webdash import (
-        CAP, CAP_META, RADAR, ENG, CONVOY,
+        CAP, CAP_META, RADAR, ENG, CONVOY, RUNTIME,
         voice_emit, officer_say, record_flight, record_event,
         radar_xy_from_state, world_to_cell, cell_to_world,
         stamp_cap_launch, ship_cell_from_state, TARGET_CLASS_BY_NAME
@@ -70,6 +71,167 @@ def _normalize_loadout(value: Any) -> str:
         return ''
     return ''
 
+
+def _resolve_hermes_origin(L: Dict[str, Any], state: Dict[str, Any] | None) -> Tuple[float, float, str]:
+    invalid_cells = {'', 'AA00'}
+    st = state if isinstance(state, dict) else {}
+    try:
+        own_x, own_y = L['radar_xy_from_state'](st)
+    except Exception:
+        own_x = own_y = 0.0
+
+    ship = st.get('ship', {}) if isinstance(st, dict) else {}
+
+    runtime = L.get('RUNTIME')
+    if not ship:
+        eng_obj = L.get('ENG')
+        if eng_obj is not None and hasattr(eng_obj, '_ship_xy'):
+            try:
+                sx, sy = eng_obj._ship_xy()
+                own_x, own_y = float(sx), float(sy)
+                ship = {
+                    'col': own_x,
+                    'row': own_y,
+                    'heading': 0.0,
+                    'speed': 0.0,
+                }
+                if hasattr(eng_obj, '_ship_course_speed'):
+                    try:
+                        course_deg, spd = eng_obj._ship_course_speed()
+                        ship['heading'] = course_deg
+                        ship['speed'] = spd
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+    if (not ship) and runtime is not None:
+        cache = getattr(runtime, '_engine_state_cache', None)
+        if isinstance(cache, dict):
+            cache_ship = cache.get('ship', {})
+            pos = cache_ship.get('pos', {}) if isinstance(cache_ship, dict) else {}
+            try:
+                cx = float(pos.get('x'))
+                cy = float(pos.get('y'))
+                if math.isfinite(cx) and math.isfinite(cy):
+                    own_x, own_y = cx, cy
+                    ship = {
+                        'col': cx,
+                        'row': cy,
+                        'heading': cache_ship.get('heading'),
+                        'speed': cache_ship.get('speed'),
+                    }
+            except Exception:
+                pass
+            if not ship:
+                try:
+                    data = getattr(runtime, '_engine_state_cache', {}).get('ship_state', {})
+                    if isinstance(data, dict):
+                        cx = float(data.get('col', data.get('x', 0.0)))
+                        cy = float(data.get('row', data.get('y', 0.0)))
+                        own_x, own_y = cx, cy
+                        ship = {'col': cx, 'row': cy, 'heading': data.get('heading'), 'speed': data.get('speed')}
+                except Exception:
+                    pass
+
+    if not ship:
+        runtime = L.get('RUNTIME')
+        if runtime is not None:
+            try:
+                repo = getattr(runtime, 'state_repo', None)
+                if repo is not None:
+                    fallback = repo.load_json(repo.state_dir / 'falklands_state.json', {})
+                    if isinstance(fallback, dict) and fallback:
+                        st = {'ship': fallback}
+                        ship = fallback
+                        try:
+                            own_x, own_y = L['radar_xy_from_state'](st)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+    try:
+        course_deg = float((ship or {}).get('heading', 0.0) or 0.0)
+    except Exception:
+        course_deg = 0.0
+    try:
+        ship_cell_label = L['ship_cell_from_state'](st)
+    except Exception:
+        ship_cell_label = None
+
+    hx, hy = own_x, own_y
+    hermes_cell: str | None = None
+
+    convoy = L.get('CONVOY')
+    if convoy is None:
+        runtime = L.get('RUNTIME')
+        try:
+            from projects.falklandV2.subsystems.convoy import Convoy
+            data_dir = None
+            if runtime is not None:
+                data_dir = getattr(runtime, 'data_dir', None)
+            if data_dir is None and L.get('CAP') is not None:
+                data_dir = getattr(L['CAP'], 'data_path', None)
+            if data_dir is None:
+                data_dir = Path(__file__).resolve().parents[1] / "data"
+            convoy = Convoy.load(Path(data_dir))
+        except Exception:
+            convoy = None
+    if convoy is not None:
+        try:
+            hx_candidate, hy_candidate, cell_candidate = convoy.escort_world_cell('hermes', own_x, own_y, course_deg)
+            cel = str(cell_candidate or '').strip().upper()
+            if cel and cel not in invalid_cells:
+                hermes_cell = cel
+                hx = float(hx_candidate)
+                hy = float(hy_candidate)
+        except Exception:
+            pass
+
+    if hermes_cell is None and ship_cell_label:
+        cel = str(ship_cell_label).strip().upper()
+        if cel and cel not in invalid_cells:
+            hermes_cell = cel
+            try:
+                hx_cell, hy_cell = L['cell_to_world'](hermes_cell)
+                hx, hy = float(hx_cell), float(hy_cell)
+            except Exception:
+                pass
+
+    if hermes_cell is None:
+        cap_obj = L.get('CAP')
+        candidates = []
+        if cap_obj is not None:
+            candidates.append(getattr(cap_obj, '_last_origin_cell', None))
+            try:
+                candidates.append(cap_obj.cfg.get('default_origin_cell'))
+            except Exception:
+                pass
+        candidates.append('AQ37')
+        for candidate in candidates:
+            if not candidate:
+                continue
+            cel = str(candidate).strip().upper()
+            if cel in invalid_cells:
+                continue
+            try:
+                hx_cell, hy_cell = L['cell_to_world'](cel)
+                hx, hy = float(hx_cell), float(hy_cell)
+                hermes_cell = cel
+                break
+            except Exception:
+                continue
+
+    if hermes_cell is None:
+        hermes_cell = 'AQ37'
+        try:
+            hx_cell, hy_cell = L['cell_to_world'](hermes_cell)
+            hx, hy = float(hx_cell), float(hy_cell)
+        except Exception:
+            pass
+
+    return hx, hy, hermes_cell
 
 
 @bp.get("/cap/roe")
@@ -264,42 +426,7 @@ def cap_request():
         if tgt is None and not fallback_cell:
             return jsonify({"ok": False, "error": "no locked/selected target"}), 400
         st = L['ENG'].public_state() if hasattr(L['ENG'], "public_state") else {}
-        own_x, own_y = L['radar_xy_from_state'](st)
-        ship_cell_label = None
-        try:
-            ship_cell_label = L['ship_cell_from_state'](st)
-        except Exception:
-            ship_cell_label = None
-        if ship_cell_label:
-            try:
-                sx, sy = L['cell_to_world'](ship_cell_label)
-                own_x, own_y = float(sx), float(sy)
-            except Exception:
-                pass
-        ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
-        try:
-            course_deg = float(ship.get('heading', 0.0) or 0.0)
-        except Exception:
-            course_deg = 0.0
-        convoy = L.get('CONVOY')
-        hermes_cell = None
-        if convoy is not None:
-            try:
-                hx, hy, hermes_cell = convoy.escort_world_cell('hermes', own_x, own_y, course_deg)
-                hx, hy = float(hx), float(hy)
-            except Exception:
-                hx, hy = own_x, own_y
-                hermes_cell = None
-        else:
-            hx, hy = own_x, own_y
-        if not hermes_cell:
-            hermes_cell = ship_cell_label
-        try:
-            if hermes_cell:
-                hx_cell, hy_cell = L['cell_to_world'](hermes_cell)
-                hx, hy = float(hx_cell), float(hy_cell)
-        except Exception:
-            pass
+        hx, hy, hermes_cell = _resolve_hermes_origin(L, st)
         if tgt is not None:
             dx = float(getattr(tgt, 'x', 0.0)) - float(hx)
             dy = float(getattr(tgt, 'y', 0.0)) - float(hy)
@@ -520,21 +647,6 @@ def cap_request():
                 pass
         if res.get('ok'):
             try:
-                L['stamp_cap_launch']()
-            except Exception:
-                pass
-            try:
-                mission_kind = str((res.get('mission') or {}).get('kind') or '').lower()
-                event_id = 'pilot.intercept.launch' if mission_kind == 'intercept' else 'pilot.cap.launch'
-                fallback = (
-                    'Hermes, intercept bogey, vector to %s.' % (cell,)
-                    if event_id == 'pilot.intercept.launch'
-                    else 'Hermes, proceeding to CAP station at %s.' % (cell,)
-                )
-                L['voice_emit'](event_id, {'cell': cell}, fallback=fallback, role='Pilot')
-            except Exception:
-                pass
-            try:
                 event_payload = {'cell': cell, 'from': hermes_cell, 'range_nm': round(rng_nm, 2), 'loadout': loadout}
                 if target_class:
                     event_payload['target_class'] = target_class
@@ -558,6 +670,10 @@ def cap_request():
                 meta.setdefault('hold_since_ts', None)
                 L['CAP_META'][mid] = meta
                 L['CAP'].set_permission(mid, False)
+            except Exception:
+                pass
+            try:
+                L['CAP'].tick(now=time.time())
             except Exception:
                 pass
         L['record_flight']({"route": route, "method": request.method, "status": status,
@@ -593,27 +709,7 @@ def cap_launch_to():
                                "request": data, "response": payload})
             return jsonify(payload), 400
         st = L['ENG'].public_state() if hasattr(L['ENG'], "public_state") else {}
-        own_x, own_y = L['radar_xy_from_state'](st)
-        try:
-            ship_cell_label = L['ship_cell_from_state'](st)
-            if ship_cell_label:
-                sx, sy = L['cell_to_world'](ship_cell_label)
-                own_x, own_y = float(sx), float(sy)
-        except Exception:
-            pass
-        _ = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
-        hermes_cell = None
-        try:
-            hermes_cell = L['ship_cell_from_state'](st)
-        except Exception:
-            hermes_cell = None
-        try:
-            if hermes_cell:
-                hx, hy = L['cell_to_world'](hermes_cell)
-            else:
-                hx, hy = own_x, own_y
-        except Exception:
-            hx, hy = own_x, own_y
+        hx, hy, hermes_cell = _resolve_hermes_origin(L, st)
         tx, ty = L['cell_to_world'](cell)
         dx, dy = float(tx) - float(hx), float(ty) - float(hy)
         rng_nm = (dx*dx + dy*dy) ** 0.5
@@ -657,14 +753,6 @@ def cap_launch_to():
             payload['loadout_forced'] = loadout_forced
         if res.get('ok'):
             try:
-                L['stamp_cap_launch']()
-            except Exception:
-                pass
-            try:
-                L['voice_emit']('pilot.cap.launch', {'cell': cell}, fallback='Hermes, proceeding to CAP station at %s.' % (cell,), role='Pilot')
-            except Exception:
-                pass
-            try:
                 L['record_event']('cap.launch', {'cell': cell, 'loadout': actual_loadout, 'follow': follow})
             except Exception:
                 pass
@@ -679,6 +767,10 @@ def cap_launch_to():
                 meta.setdefault('hold_since_ts', None)
                 L['CAP_META'][mid] = meta
                 L['CAP'].set_permission(mid, False)
+            except Exception:
+                pass
+            try:
+                L['CAP'].tick(now=time.time())
             except Exception:
                 pass
         L['record_flight']({"route": route, "method": request.method, "status": status,
@@ -771,37 +863,7 @@ def cap_vector():
 
         # Determine current primary lock target
         st = L['ENG'].public_state() if hasattr(L['ENG'], "public_state") else {}
-        ship_cell_label = None
-        try:
-            ship_cell_label = L['ship_cell_from_state'](st)
-        except Exception:
-            ship_cell_label = None
-        own_x, own_y = L['radar_xy_from_state'](st)
-        if ship_cell_label:
-            try:
-                sx, sy = L['cell_to_world'](ship_cell_label)
-                own_x, own_y = float(sx), float(sy)
-            except Exception:
-                pass
-        convoy = L.get('CONVOY')
-        hermes_cell = None
-        if convoy is not None:
-            try:
-                hx, hy, hermes_cell = convoy.escort_world_cell('hermes', own_x, own_y, float((st.get('ship') or {}).get('heading', 0.0) if isinstance(st, dict) else 0.0))
-                hx, hy = float(hx), float(hy)
-            except Exception:
-                hx, hy = own_x, own_y
-                hermes_cell = None
-        else:
-            hx, hy = own_x, own_y
-        if not hermes_cell:
-            hermes_cell = ship_cell_label
-        try:
-            if hermes_cell:
-                hx_cell, hy_cell = L['cell_to_world'](hermes_cell)
-                hx, hy = float(hx_cell), float(hy_cell)
-        except Exception:
-            pass
+        hx, hy, hermes_cell = _resolve_hermes_origin(L, st)
         pid = getattr(L['RADAR'], 'priority_id', None)
         tgt = next((c for c in L['RADAR'].contacts if int(getattr(c,'id',-1)) == int(pid)), None) if pid is not None else None
         if tgt is None:

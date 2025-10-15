@@ -228,7 +228,8 @@ def arm_start(state: Dict[str, Any], weapon_key: str, now: float) -> None:
     arm = state.setdefault("arming", {})
     rec = arm.get(weapon_key, {"armed": False, "arming_until": 0})
     rec["armed"] = False
-    rec["arming_until"] = now + ARM_TIME_S
+    delay = 10.0 if weapon_key.lower() in ("seacat", "sea_dart", "seadart") else ARM_TIME_S
+    rec["arming_until"] = now + delay
     arm[weapon_key] = rec
 
 def arm_status(state: Dict[str, Any], weapon_key: str, now: float) -> Dict[str, Any]:

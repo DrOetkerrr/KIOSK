@@ -89,10 +89,19 @@ def contact_to_ui(c: Contact, own_xy: Tuple[float, float]) -> Dict[str, Any]:
     # Disambiguate multiple CAP flights by adding a pennant
     try:
         meta = getattr(c, 'meta', {}) or {}
-        if bool(meta.get('cap_flight')):
+        is_cap = bool(meta.get('cap_flight'))
+        if is_cap:
             mid = meta.get('mission_id')
             if mid is not None:
                 ui['pennant'] = f"CAP-{int(mid)}"
+                ui['cap_mission_id'] = int(mid)
+        ui['cap_flight'] = is_cap
+        callsign = meta.get('callsign')
+        if callsign:
+            ui['cap_callsign'] = str(callsign)
+        display_name = meta.get('display_name')
+        if display_name and not name:
+            ui['name'] = str(display_name)
     except Exception:
         pass
     return ui

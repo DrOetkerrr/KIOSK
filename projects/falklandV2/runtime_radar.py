@@ -83,6 +83,16 @@ class RadarBridge:
             radar.cap_missions_provider = (lambda: cap.snapshot().get("missions") if cap is not None else [])
         except Exception:
             pass
+        try:
+            if cap is not None:
+                radius = getattr(cap, "hermes_follow_radius_nm", None)
+                if radius is not None:
+                    radar.cfg["hermes_follow_radius_nm"] = float(radius)
+                period = getattr(cap, "hermes_follow_orbit_period_s", None)
+                if period is not None and period > 0:
+                    radar.cfg["hermes_follow_orbit_period_s"] = float(period)
+        except Exception:
+            pass
 
         if cap is None:
             return
@@ -113,4 +123,3 @@ class RadarBridge:
             except Exception:
                 continue
         return None
-

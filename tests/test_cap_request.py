@@ -11,6 +11,11 @@ from flask import Flask
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from projects.falklandV2.subsystems.hermes_cap import HermesCAP
+from projects.falklandV2.grid.mapping import label_to_world
+
+DATA_DIR = Path(__file__).resolve().parents[1] / "projects" / "falklandV2" / "data"
+
 
 @dataclass
 class _Target:
@@ -299,9 +304,8 @@ def test_cap_request_launches_new_pair_with_voice(monkeypatch: pytest.MonkeyPatc
     assert len(cap_launch_stub.launch_calls) == 1
     assert cap_launch_stub.launch_calls[0]["kwargs"]["loadout"] == "aim9"
 
-    # Voice line for intercept launch should have been emitted
-    events = [evt for (evt, _payload, _kw) in voice_calls]
-    assert 'pilot.intercept.launch' in events
+    # Voice line is now emitted when the aircraft actually take off, not at order time
+    assert voice_calls == []
 
     # Mission status should reflect new CAP_META entry
     mission_status = cap_launch_stub.mission_status()
@@ -390,6 +394,36 @@ def test_cap_request_avoids_vectoring_bomb_loadout(monkeypatch: pytest.MonkeyPat
 
     # Ensure no vector call altered the existing bombs mission
     assert bombs_stub.bombs_mission.target_cell == "H26"
+
+
+def test_cap_launch_without_origin_reuses_last_known_location() -> None:
+    cap = HermesCAP(DATA_DIR)
+    hx, hy = label_to_world("AQ37")
+    first = cap.request_cap_to_cell(
+        target_cell="AP20",
+        distance_nm=12.0,
+        now=100.0,
+        origin_xy=(hx, hy),
+        origin_cell="AQ37",
+    )
+    assert first["ok"]
+    mission_first = cap.missions[-1]
+    assert mission_first.origin_xy is not None
+    assert mission_first.origin_cell == "AQ37"
+
+    second = cap.request_cap_to_cell(
+        target_cell="AP21",
+        distance_nm=14.0,
+        now=200.0,
+    )
+    assert second["ok"]
+    mission_second = cap.missions[-1]
+    assert mission_second.origin_xy is not None
+    assert mission_second.origin_cell == "AQ37"
+    assert mission_second.origin_xy[0] == pytest.approx(mission_first.origin_xy[0])
+    assert mission_second.origin_xy[1] == pytest.approx(mission_first.origin_xy[1])
+
+
 def _unwrap_response(resp: Any):
     if isinstance(resp, tuple):
         response_obj = resp[0]

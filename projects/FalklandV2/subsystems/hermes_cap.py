@@ -16,7 +16,7 @@ import time, json, random, math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from projects.falklandV2.grid.mapping import label_to_world
+from projects.falklandV2.grid.mapping import label_to_world, world_to_label
 
 def _read_json(p: Path) -> Dict[str, Any]:
     return json.loads(p.read_text(encoding="utf-8"))
@@ -146,6 +146,7 @@ class CAPMission:
         self.hazard_ineffective: bool = False
 
         # Transit times from distance (one way)
+        self.takeoff_roll_s = max(0, int(cfg.get("takeoff_roll_s", 30)))
         if self.kind == "intercept":
             dash_kts = float(self.intercept_speed_kts)
             tgt_kts = float(intercept_target_kts if intercept_target_kts is not None else 350.0)
@@ -160,16 +161,30 @@ class CAPMission:
 
         # Derived timeline
         self.ts["launch"] = now
-        self.ts["eta_onstation"] = now + self.deck_cycle_s + self.outbound_s
+        self.ts["eta_onstation"] = now + self.deck_cycle_s + self.takeoff_roll_s + self.outbound_s
         self.ts["etd_rtb"] = None
         self.ts["eta_recovery"] = None
+        self.pending_launch_sound: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
+        origin_xy_list: Optional[List[float]] = None
+        if isinstance(self.origin_xy, (tuple, list)) and len(self.origin_xy) == 2:
+            try:
+                origin_xy_list = [float(self.origin_xy[0]), float(self.origin_xy[1])]
+            except Exception:
+                origin_xy_list = None
+        if origin_xy_list is None and self.origin_cell:
+            try:
+                ox, oy = label_to_world(self.origin_cell)
+                origin_xy_list = [float(ox), float(oy)]
+            except Exception:
+                origin_xy_list = None
+
         return {
             "id": self.id,
             "n": self.id,
             "target_cell": self.target_cell,
-            "cur_cell": self.target_cell,
+            "cur_cell": self.origin_cell or self.target_cell,
             "kind": self.kind,
             "loadout": self.loadout,
             "follow": self.follow,
@@ -181,8 +196,10 @@ class CAPMission:
             "inbound_s": self.inbound_s,
             "cruise_speed_kts": self.cruise_speed_kts,
             "intercept_speed_kts": self.intercept_speed_kts,
-            "origin_xy": list(self.origin_xy) if self.origin_xy is not None else None,
+            "launch_ready_ts": self.ts.get("launch_ready"),
+            "origin_xy": origin_xy_list,
             "origin_cell": self.origin_cell,
+            "position_xy": origin_xy_list,
             "timestamps": self.ts,
             "missiles_left": self.missiles_left,
             "last_engagement": self.last_engagement,
@@ -224,6 +241,10 @@ class HermesCAP:
         self.pair_rearm_refuel_s = int(self.cfg.get("pair_rearm_refuel_min", 25)) * 60
         self.scramble_cooldown_s = int(self.cfg.get("scramble_cooldown_min", 10)) * 60
         self.min_launch_interval_s = int(self.cfg.get("min_launch_interval_s", 30))
+        self.hermes_follow_radius_nm = float(self.cfg.get("hermes_follow_radius_nm", 5.0))
+        self.hermes_follow_orbit_period_s = float(self.cfg.get("hermes_follow_orbit_period_s", 240.0))
+        if self.hermes_follow_orbit_period_s <= 0.0:
+            self.hermes_follow_orbit_period_s = 240.0
         self.last_scramble: float = float('-inf')
         self.missions: List[CAPMission] = []
         self._next_id = 1
@@ -233,6 +254,9 @@ class HermesCAP:
         self.permission_timeout_s = int(self.cfg.get("permission_timeout_s", 600))
         self._permission_meta: Optional[Dict[int, Dict[str, Any]]] = None
         self._deck_ready_ts: float = 0.0
+        self._pending_pair_queue: List[CAPMission] = []
+        self._last_origin_xy: Optional[Tuple[float, float]] = None
+        self._last_origin_cell: Optional[str] = None
 
         # Intercept tuning defaults
         self.intercept_speed_kts = float(self.cfg.get("intercept_speed_kts", 600))
@@ -387,6 +411,11 @@ class HermesCAP:
         if mission is None:
             return
         t = now or time.time()
+        if mission.status == 'awaiting_pair':
+            self._remove_from_pending_queue(mission)
+            self._drop_meta(mission.id)
+            self.missions = [m for m in self.missions if m is not mission]
+            return
         self._transition_to_rtb(mission, t)
         mission.permission_authorized = False
         mission.permission_hold_since_ts = None
@@ -612,18 +641,130 @@ class HermesCAP:
 
 
     # ---------- weapon-like surface
+    def _available_pair_slots(self) -> int:
+        return max(0, self.ready_pairs - len(self._pending_pair_queue))
+
+    def _estimate_pair_ready_ts(self, queue_index: int, now: float) -> Optional[float]:
+        supply: List[float] = []
+        available_now = self._available_pair_slots()
+        if available_now > 0:
+            supply.extend([now] * available_now)
+        for mission in self.missions:
+            if getattr(mission, 'status', None) == 'recovering':
+                ready = mission.ts.get('ready_again')
+                if ready is not None:
+                    try:
+                        supply.append(float(ready))
+                    except Exception:
+                        continue
+        if not supply:
+            return None
+        supply.sort()
+        if queue_index < len(supply):
+            return supply[queue_index]
+        return None
+
+    def _remove_from_pending_queue(self, mission: CAPMission) -> None:
+        try:
+            self._pending_pair_queue.remove(mission)
+        except ValueError:
+            pass
+
+    def _play_launch_sound(self, mission: CAPMission) -> None:
+        if not getattr(mission, 'pending_launch_sound', False):
+            return
+        mission.pending_launch_sound = False
+        try:
+            from . import webcore as _core  # type: ignore
+            _core.stamp_cap_launch()
+        except Exception:
+            pass
+        try:
+            event_id = 'pilot.intercept.launch' if str(getattr(mission, 'kind', '')).lower() == 'intercept' else 'pilot.cap.launch'
+            payload = {
+                'mission_id': mission.id,
+                'cell': mission.target_cell,
+                'follow': mission.follow,
+            }
+            self._pilot_call(event_id, payload)
+        except Exception:
+            pass
+
+    def _assign_pair_to_mission(self, mission: CAPMission, now: float) -> Tuple[int, float]:
+        self._remove_from_pending_queue(mission)
+        if self.ready_pairs <= 0:
+            return (0, now)
+        self.ready_pairs = max(0, self.ready_pairs - 1)
+        if self.airframe_pool_total >= 2:
+            self.airframe_pool_total -= 2
+        else:
+            self.airframe_pool_total = max(0, self.airframe_pool_total - 2)
+        launch_ready_ts = max(
+            now,
+            self._deck_ready_ts,
+            self.last_scramble + self.scramble_cooldown_s,
+        )
+        delay_s = int(math.ceil(max(0.0, launch_ready_ts - now)))
+        mission.ts['launch'] = now
+        mission.deck_cycle_s = max(0, int(delay_s))
+        if delay_s > 0:
+            mission.ts['launch_ready'] = launch_ready_ts
+        else:
+            mission.ts.pop('launch_ready', None)
+        mission.ts.pop('awaiting_pair_since', None)
+        mission.ts.pop('expected_pair_ready', None)
+        if delay_s <= 0:
+            mission.status = 'airborne'
+            mission.ts['airborne'] = now
+            try:
+                mission.ts['eta_onstation'] = now + mission.takeoff_roll_s + mission.outbound_s
+            except Exception:
+                mission.ts['eta_onstation'] = now + max(1.0, mission.takeoff_roll_s)
+            self.last_scramble = now
+            self._deck_ready_ts = max(self._deck_ready_ts, now + self.min_launch_interval_s)
+            self._play_launch_sound(mission)
+        else:
+            mission.status = 'queued'
+            try:
+                mission.ts['eta_onstation'] = launch_ready_ts + mission.takeoff_roll_s + mission.outbound_s
+            except Exception:
+                mission.ts['eta_onstation'] = launch_ready_ts + max(1.0, mission.takeoff_roll_s)
+            self._deck_ready_ts = max(self._deck_ready_ts, launch_ready_ts + self.min_launch_interval_s)
+        return (delay_s, launch_ready_ts)
+
+    def _maybe_assign_pending_pairs(self, now: float) -> None:
+        while self._pending_pair_queue and self.ready_pairs > 0 and self.airframe_pool_total >= 2:
+            mission = self._pending_pair_queue[0]
+            if getattr(mission, 'status', None) != 'awaiting_pair':
+                self._pending_pair_queue.pop(0)
+                continue
+            self._pending_pair_queue.pop(0)
+            delay_s, _launch_ts = self._assign_pair_to_mission(mission, now)
+            dest = mission.target_cell if not mission.follow else f"follow:{mission.follow}"
+            if delay_s <= 0:
+                msg = f"Hermes: CAP pair launching to {dest}"
+            else:
+                msg = f"Hermes: CAP pair queued for launch to {dest}"
+            self._emit_event('cap.launch.assigned', {'mission_id': mission.id, 'delay_s': delay_s, 'target': dest})
+            self._log_flight('cap.launch.assigned', {'mission_id': mission.id, 'delay_s': delay_s, 'target': dest})
+
     def readiness(self, now: Optional[float] = None) -> Dict[str, Any]:
         t = time.time() if now is None else float(now)
         cooldown_ready_ts = self.last_scramble + self.scramble_cooldown_s
         deck_left = max(0, int(math.ceil(max(0.0, self._deck_ready_ts - t))))
         cd_left = max(0, int(math.ceil(max(0.0, cooldown_ready_ts - t))))
+        queued_pending = any(str(getattr(m, 'status', '')).lower() == 'queued' for m in self.missions)
+        queued_count = sum(1 for m in self.missions if str(getattr(m, 'status', '')).lower() == 'queued')
+        deck_pending = queued_count > 0 or deck_left > 0
         hazard = self._hazard_snapshot(float(t))
         return {
-            "available": (self.ready_pairs >= 1 and self.airframe_pool_total >= 2 and cd_left == 0),
+            "available": (self._available_pair_slots() >= 1 and self.airframe_pool_total >= 2 and cd_left == 0 and not queued_pending and not deck_pending),
             "ready_pairs": self.ready_pairs,
+            "pending_requests": len(self._pending_pair_queue),
             "airframes": self.airframe_pool_total,
             "cooldown_s": cd_left,
             "launch_interval_left_s": deck_left,
+            "queued_count": queued_count,
             "station_radius_nm": float(self.cfg.get("station_radius_nm", 5)),
             "hazard": hazard,
         }
@@ -636,23 +777,16 @@ class HermesCAP:
                             loadout: str = "aim9",
                             follow: Optional[str] = None) -> Dict[str, Any]:
         t = time.time() if now is None else float(now)
-        if self.ready_pairs < 1:
-            return {"ok": False, "message": "No ready pairs on deck"}
         if self.airframe_pool_total < 2:
             return {"ok": False, "message": "Insufficient airframes"}
-        active_pairs = [m for m in self.missions if m.status in ('queued', 'airborne', 'onstation')]
+        active_pairs = [m for m in self.missions if m.status in ('awaiting_pair', 'queued', 'airborne', 'onstation')]
         if len(active_pairs) >= self.surge_pairs_on_task:
             return {"ok": False, "message": "All CAP sorties committed"}
         if len(active_pairs) >= self.max_pairs_on_task and mission_kind != 'intercept':
             return {"ok": False, "message": "Max CAP stations active"}
 
-        launch_ready_ts = max(
-            t,
-            self._deck_ready_ts,
-            self.last_scramble + self.scramble_cooldown_s,
-        )
-        delay_s = int(math.ceil(max(0.0, launch_ready_ts - t)))
-        launch_ts = t + delay_s
+        if any(str(getattr(m, 'status', '')).lower() == 'queued' for m in self.missions):
+            return {"ok": False, "message": "Deck cycle in progress — standby for launch"}
 
         follow_norm = None
         if isinstance(follow, str):
@@ -664,10 +798,57 @@ class HermesCAP:
         if follow_norm == 'hermes' and loadout_norm != 'aim9':
             loadout_norm = 'aim9'
 
+        def _coerce_xy(value: Any) -> Optional[Tuple[float, float]]:
+            if isinstance(value, (tuple, list)) and len(value) == 2:
+                try:
+                    return (float(value[0]), float(value[1]))
+                except Exception:
+                    return None
+            return None
+
+        origin_cell_norm = None
+        if origin_cell:
+            try:
+                origin_cell_norm = str(origin_cell).strip().upper() or None
+            except Exception:
+                origin_cell_norm = None
+
+        origin_xy_norm = _coerce_xy(origin_xy)
+        if origin_xy_norm is None and origin_cell_norm:
+            try:
+                origin_xy_norm = _coerce_xy(label_to_world(origin_cell_norm))
+            except Exception:
+                origin_xy_norm = None
+
+        if origin_xy_norm is None:
+            if self._last_origin_xy is not None:
+                origin_xy_norm = self._last_origin_xy
+            elif self._last_origin_cell:
+                try:
+                    origin_xy_norm = _coerce_xy(label_to_world(self._last_origin_cell))
+                except Exception:
+                    origin_xy_norm = None
+
+        if origin_cell_norm is None:
+            if origin_xy_norm is not None:
+                try:
+                    origin_cell_norm = world_to_label(float(origin_xy_norm[0]), float(origin_xy_norm[1]))
+                except Exception:
+                    origin_cell_norm = None
+            if origin_cell_norm is None and self._last_origin_cell:
+                origin_cell_norm = self._last_origin_cell
+
+        if origin_xy_norm is not None:
+            self._last_origin_xy = origin_xy_norm
+        if origin_cell_norm is not None:
+            self._last_origin_cell = origin_cell_norm
+        if follow_norm == 'hermes' and radius_nm is None:
+            radius_nm = self.hermes_follow_radius_nm
+
         m = CAPMission(self._next_id, target_cell, self.cfg, now=t, distance_nm=float(distance_nm),
                        onstation_min=(float(station_minutes) if station_minutes is not None else None),
                        station_radius_nm=(float(radius_nm) if radius_nm is not None else None),
-                       origin_xy=origin_xy, origin_cell=origin_cell,
+                       origin_xy=origin_xy_norm, origin_cell=origin_cell_norm,
                        kind=mission_kind,
                        loadout=loadout_norm,
                        follow=follow_norm,
@@ -680,33 +861,28 @@ class HermesCAP:
         m.sortie_index = self._hazard_sortie_count
         if self._hazard_last_roll_ts <= 0.0:
             self._hazard_last_roll_ts = t
-        self.ready_pairs -= 1
-        self.airframe_pool_total -= 2
         self._ensure_meta_record(m.id)
         self.set_permission(m.id, False, now=t)
-        m.deck_cycle_s = max(0, int(delay_s))
-        try:
-            m.ts['eta_onstation'] = launch_ts + m.outbound_s
-        except Exception:
-            m.ts['eta_onstation'] = launch_ts + 1.0
-        if delay_s <= 0:
-            m.deck_cycle_s = 0
-            m.status = 'airborne'
-            m.ts['airborne'] = t
-            try:
-                m.ts['eta_onstation'] = t + m.outbound_s
-            except Exception:
-                m.ts['eta_onstation'] = t + 1.0
-            self.last_scramble = t
-            self._deck_ready_ts = max(self._deck_ready_ts, t + self.min_launch_interval_s)
-        else:
-            m.status = 'queued'
-            self._deck_ready_ts = max(self._deck_ready_ts, launch_ts + self.min_launch_interval_s)
+        m.pending_launch_sound = True
+
         dest = target_cell if not follow_norm else f"follow:{follow_norm}"
-        if delay_s <= 0:
-            msg = f"Hermes: CAP pair launching to {dest}"
+        available_pairs = self._available_pair_slots()
+        if available_pairs > 0:
+            delay_s, _launch_ts = self._assign_pair_to_mission(m, t)
+            if delay_s <= 0:
+                msg = f"Hermes: CAP pair launching to {dest}"
+            else:
+                msg = f"Hermes: CAP pair queued for launch to {dest}"
         else:
-            msg = f"Hermes: CAP pair queued for launch to {dest}"
+            m.status = 'awaiting_pair'
+            m.ts['awaiting_pair_since'] = t
+            expected = self._estimate_pair_ready_ts(len(self._pending_pair_queue), t)
+            if expected is not None:
+                m.ts['expected_pair_ready'] = expected
+            m.deck_cycle_s = 0
+            m.ts.pop('eta_onstation', None)
+            self._pending_pair_queue.append(m)
+            msg = f"Hermes: CAP pair request queued for {dest}"
         return {"ok": True, "message": msg, "mission": m.to_dict()}
 
     def _mission_origin_xy(self, mission: CAPMission) -> Tuple[float, float]:
@@ -718,6 +894,16 @@ class HermesCAP:
         if mission.origin_cell:
             try:
                 return label_to_world(mission.origin_cell)
+            except Exception:
+                pass
+        if self._last_origin_xy is not None:
+            try:
+                return (float(self._last_origin_xy[0]), float(self._last_origin_xy[1]))
+            except Exception:
+                pass
+        if self._last_origin_cell:
+            try:
+                return label_to_world(self._last_origin_cell)
             except Exception:
                 pass
         default_cell = str(self.cfg.get('default_origin_cell') or 'AQ37')
@@ -733,16 +919,56 @@ class HermesCAP:
             return (0.0, 0.0)
 
     def _mission_position_xy(self, mission: CAPMission, now: float) -> Tuple[float, float]:
-        target_xy = self._target_xy(mission.target_cell)
-        if mission.status == 'onstation':
-            return target_xy
-        if mission.status == 'recovering':
-            return self._mission_origin_xy(mission)
-
+        status = str(getattr(mission, 'status', '')).strip().lower()
         origin_xy = self._mission_origin_xy(mission)
+        if status in ('queued', 'awaiting_pair'):
+            return origin_xy
+
+        follow_mode = str(getattr(mission, 'follow', '')).strip().lower()
+        target_xy = self._target_xy(mission.target_cell)
+        if follow_mode == 'hermes':
+            center_x, center_y = target_xy
+            try:
+                radius = float(getattr(mission, 'station_radius_nm', self.hermes_follow_radius_nm))
+            except Exception:
+                radius = self.hermes_follow_radius_nm
+            if radius <= 0.0:
+                radius = self.hermes_follow_radius_nm or 5.0
+            period = self.hermes_follow_orbit_period_s if self.hermes_follow_orbit_period_s > 0.0 else 240.0
+            theta_base = (float(now) / period) + (float(getattr(mission, 'id', 0)) * 0.35)
+            tau = getattr(math, 'tau', 2.0 * math.pi)
+            orbit_x = center_x + radius * math.cos(theta_base * tau)
+            orbit_y = center_y + radius * math.sin(theta_base * tau)
+            if status == 'onstation':
+                return (orbit_x, orbit_y)
+            if status == 'airborne':
+                ts = mission.ts
+                start_time = ts.get('airborne', ts.get('launch', now))
+                eta = ts.get('eta_onstation', now)
+                try:
+                    elapsed = max(0.0, float(now) - float(start_time))
+                except Exception:
+                    elapsed = 0.0
+                try:
+                    duration = max(1e-3, float(eta) - float(start_time))
+                except Exception:
+                    duration = 1.0
+                progress = max(0.0, min(1.0, elapsed / duration))
+                ox, oy = origin_xy
+                x = float(ox) + (orbit_x - float(ox)) * progress
+                y = float(oy) + (orbit_y - float(oy)) * progress
+                return (x, y)
+            # rtb and other statuses fall through
+
+        if status == 'onstation':
+            return target_xy
+
         ts = mission.ts
 
-        if mission.status == 'airborne':
+        if status == 'recovering':
+            return origin_xy
+
+        if status == 'airborne':
             vector_xy = ts.get('vector_start_xy')
             if isinstance(vector_xy, (tuple, list)) and len(vector_xy) == 2:
                 try:
@@ -758,11 +984,11 @@ class HermesCAP:
                 start_time = ts.get('vector_start_time', ts.get('airborne', now))
             eta = ts.get('eta_onstation', now)
             end_xy = target_xy
-        elif mission.status == 'rtb':
+        elif status == 'rtb':
             start_x, start_y = target_xy
             start_time = ts.get('rtb', now)
             eta = ts.get('eta_recovery', now)
-            end_xy = self._mission_origin_xy(mission)
+            end_xy = origin_xy
         else:
             return target_xy
 
@@ -979,17 +1205,34 @@ class HermesCAP:
 
     def tick(self, now: Optional[float] = None) -> None:
         t = time.time() if now is None else float(now)
+        self._maybe_assign_pending_pairs(t)
         for m in self.missions:
+            if m.status == "awaiting_pair":
+                continue
             if m.status == "queued":
-                if t >= m.ts["launch"] + m.deck_cycle_s:
+                ready_at = m.ts.get("launch_ready", m.ts["launch"] + m.deck_cycle_s)
+                try:
+                    ready_at = float(ready_at)
+                except Exception:
+                    ready_at = m.ts["launch"] + m.deck_cycle_s
+                if t >= ready_at:
                     m.status = "airborne"
                     m.ts['airborne'] = t
+                    m.ts.pop('launch_ready', None)
                     try:
-                        m.ts['eta_onstation'] = t + m.outbound_s
+                        m.ts['eta_onstation'] = t + m.takeoff_roll_s + m.outbound_s
                     except Exception:
-                        m.ts['eta_onstation'] = t + 1.0
+                        m.ts['eta_onstation'] = t + max(1.0, m.takeoff_roll_s)
                     self.last_scramble = t
                     self._deck_ready_ts = max(self._deck_ready_ts, t + self.min_launch_interval_s)
+                    # Advance position baseline at airborne transition
+                    try:
+                        pos = self._mission_position_xy(m, t)
+                        if pos is not None:
+                            m.ts['cur_cell'] = world_to_label(float(pos[0]), float(pos[1]))
+                    except Exception:
+                        pass
+                    self._play_launch_sound(m)
             elif m.status == "airborne":
                 if t >= m.ts["eta_onstation"]:
                     m.status = "onstation"
@@ -999,6 +1242,13 @@ class HermesCAP:
                     m.ts.pop('vector_start_time', None)
                     m.ts.pop('vector_start_cell', None)
                     self._emit_event('cap.onstation', {'mission_id': m.id, 'cell': m.target_cell})
+                else:
+                    try:
+                        pos = self._mission_position_xy(m, t)
+                        if pos is not None:
+                            m.ts['cur_cell'] = world_to_label(float(pos[0]), float(pos[1]))
+                    except Exception:
+                        pass
             elif m.status == "onstation":
                 if m.permission_required and not m.permission_authorized:
                     if m.permission_hold_since_ts is None:
@@ -1017,7 +1267,20 @@ class HermesCAP:
                     pass
                 if t >= (m.ts.get("etd_rtb") or t):
                     self._transition_to_rtb(m, t)
+                else:
+                    try:
+                        pos = self._mission_position_xy(m, t)
+                        if pos is not None:
+                            m.ts['cur_cell'] = world_to_label(float(pos[0]), float(pos[1]))
+                    except Exception:
+                        pass
             elif m.status == "rtb":
+                try:
+                    pos = self._mission_position_xy(m, t)
+                    if pos is not None:
+                        m.ts['cur_cell'] = world_to_label(float(pos[0]), float(pos[1]))
+                except Exception:
+                    pass
                 if t >= (m.ts.get("eta_recovery") or t):
                     m.status = "recovering"
                     m.ts["recovering"] = t
@@ -1040,6 +1303,7 @@ class HermesCAP:
                     except Exception:
                         pass
                     self._drop_meta(m.id)
+                    self._maybe_assign_pending_pairs(t)
 
         self._apply_hazard_rolls(t)
 
@@ -1055,6 +1319,7 @@ class HermesCAP:
             if len(kept) > 12:
                 kept = kept[-12:]
             self.missions = kept
+        self._maybe_assign_pending_pairs(t)
 
     # ---------- engagement logic
     def _pk_for_range(self, range_nm: float) -> float:
@@ -1224,31 +1489,69 @@ class HermesCAP:
         missions = []
         for m in self.missions:
             item = m.to_dict()
+            pos_xy = None
+            try:
+                pos_xy = self._mission_position_xy(m, t_now)
+            except Exception:
+                pos_xy = None
+            if pos_xy is not None:
+                try:
+                    item['position_xy'] = [float(pos_xy[0]), float(pos_xy[1])]
+                except Exception:
+                    pass
+                try:
+                    item['cur_cell'] = world_to_label(float(pos_xy[0]), float(pos_xy[1]))
+                except Exception:
+                    pass
+                try:
+                    target_cell = str(getattr(m, 'target_cell', '') or item.get('target_cell') or '')
+                    if target_cell:
+                        tx, ty = label_to_world(target_cell)
+                        rng_nm = math.hypot(float(pos_xy[0]) - float(tx), float(pos_xy[1]) - float(ty))
+                        item['range_nm'] = rng_nm
+                except Exception:
+                    pass
             eta_on = m.ts.get('eta_onstation') or 0.0
             etd_rtb = m.ts.get('etd_rtb') or 0.0
             eta_rec = m.ts.get('eta_recovery') or 0.0
             if m.status in ('queued', 'airborne'):
                 item['tot_s'] = max(0, int(eta_on - t_now)) if eta_on else None
                 item['tos_s'] = None
+                if m.status == 'queued':
+                    launch_base = float(m.ts.get('launch', t_now))
+                    try:
+                        launch_at = launch_base + float(getattr(m, 'deck_cycle_s', 0) or 0.0)
+                    except Exception:
+                        launch_at = launch_base
+                    item['launch_in_s'] = max(0, int(math.ceil(launch_at - t_now))) if launch_at > t_now else 0
+                else:
+                    item['launch_in_s'] = None
+            elif m.status == 'awaiting_pair':
+                ready_ts = m.ts.get('expected_pair_ready')
+                item['tot_s'] = max(0, int(ready_ts - t_now)) if ready_ts else None
+                item['tos_s'] = None
+                item['launch_in_s'] = None
             elif m.status == 'onstation':
                 item['tot_s'] = 0
                 item['tos_s'] = max(0, int(etd_rtb - t_now)) if etd_rtb else None
+                item['launch_in_s'] = None
             elif m.status == 'rtb':
                 item['tot_s'] = None
                 item['tos_s'] = max(0, int(eta_rec - t_now)) if eta_rec else None
+                item['launch_in_s'] = None
             elif m.status == 'recovering':
                 ready_again = m.ts.get('ready_again')
                 item['tot_s'] = None
                 item['tos_s'] = max(0, int((ready_again or 0) - t_now)) if ready_again else None
+                item['launch_in_s'] = None
             else:
                 item['tot_s'] = None
                 item['tos_s'] = None
+                item['launch_in_s'] = None
             if m.origin_cell and 'origin_cell' not in item:
                 item['origin_cell'] = m.origin_cell
             if 'range_nm' not in item:
                 item['range_nm'] = item.get('distance_nm')
-            if str(m.follow or '').strip().lower() == 'hermes':
-                item['cur_cell'] = m.target_cell
             missions.append(item)
         return {"readiness": r, "missions": missions, "hazard": hazard_copy}
 

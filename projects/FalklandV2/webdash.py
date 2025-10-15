@@ -99,6 +99,11 @@ def _ensure_audio_flags() -> Dict[str, Any]:
     return AUDIO_FLAGS
 
 
+def get_audio_flags() -> Dict[str, Any]:
+    """Expose mutable audio flag storage to other subsystems."""
+    return _ensure_audio_flags()
+
+
 def _reset_audio_state() -> None:
     try:
         existing_intro = AUDIO_STATE.get('intro')
@@ -221,6 +226,110 @@ def _reset_runtime_globals() -> None:
         pass
 
 
+ARMING_PENDING: Dict[str, float] = {}
+ARMING_STATE: Dict[str, Dict[str, float | str | bool]] = {}
+_TTS_LOCK = threading.Lock()
+_TTS_IN_FLIGHT: set[tuple[str, str]] = set()
+
+
+def _default_weapon_record() -> Dict[str, float | str | bool]:
+    return {'state': 'Safe', 'armed': False, 'arming_until': 0.0, 'cooldown_until': 0.0}
+
+
+def _persist_arming_state_locked() -> None:
+    payload: Dict[str, Any] = {}
+    for name, rec in ARMING_STATE.items():
+        if not isinstance(rec, dict):
+            continue
+        payload[name] = {
+            'state': str(rec.get('state', 'Safe')),
+            'armed': bool(rec.get('armed', False)),
+            'arming_until': float(rec.get('arming_until', 0.0) or 0.0),
+            'cooldown_until': float(rec.get('cooldown_until', 0.0) or 0.0),
+        }
+    save_fn = globals().get('_save_json')
+    if save_fn is None or 'ARMING_PATH' not in globals():
+        return
+    try:
+        merged = dict(payload)
+        merged['weapons'] = payload
+        save_fn(ARMING_PATH, merged)
+    except Exception:
+        pass
+
+
+def _init_arming_state() -> None:
+    lock = globals().get('STATE_LOCK')
+    if lock is None:
+        return
+    load_fn = globals().get('_load_json')
+    if load_fn is None or 'ARMING_PATH' not in globals():
+        return
+    raw = load_fn(ARMING_PATH, {})
+    weapons_section = raw.get('weapons') if isinstance(raw, dict) else None
+    if isinstance(weapons_section, dict):
+        raw_map = weapons_section
+    elif isinstance(raw, dict):
+        raw_map = raw
+    else:
+        raw_map = {}
+    with lock:
+        ARMING_STATE.clear()
+        for name, rec in raw_map.items():
+            if not isinstance(rec, dict):
+                continue
+            ARMING_STATE[name] = {
+                'state': str(rec.get('state', 'Safe')),
+                'armed': bool(rec.get('armed', False)),
+                'arming_until': float(rec.get('arming_until', 0.0) or 0.0),
+                'cooldown_until': float(rec.get('cooldown_until', 0.0) or 0.0),
+            }
+
+
+def get_weapon_state(name: str) -> Dict[str, float | str | bool]:
+    if not name:
+        return _default_weapon_record()
+    lock = globals().get('STATE_LOCK')
+    if lock is None:
+        return _default_weapon_record()
+    with lock:
+        if not ARMING_STATE:
+            _init_arming_state()
+        rec = ARMING_STATE.get(name)
+        if rec is None:
+            rec = _default_weapon_record()
+            ARMING_STATE[name] = rec
+        return dict(rec)
+
+
+def update_weapon_state(name: str, **changes: Any) -> Dict[str, float | str | bool]:
+    if not name:
+        return _default_weapon_record()
+    lock = globals().get('STATE_LOCK')
+    if lock is None:
+        return _default_weapon_record()
+    with lock:
+        if not ARMING_STATE:
+            _init_arming_state()
+        rec = ARMING_STATE.setdefault(name, _default_weapon_record())
+        for key, value in changes.items():
+            if value is None:
+                continue
+            if key in ('arming_until', 'cooldown_until'):
+                try:
+                    rec[key] = float(value)
+                except Exception:
+                    continue
+            elif key == 'armed':
+                rec[key] = bool(value)
+            elif key == 'state':
+                rec[key] = str(value)
+            else:
+                rec[key] = value
+        _persist_arming_state_locked()
+        return dict(rec)
+
+
 def _bind_runtime(rt: GameRuntime) -> None:
     global ENG, STATE_LOCK, AUDIO_STATE, record_flight, record_radio
     global trigger_alarm, clear_alarm, stamp_cap_launch, stamp_cap_recovery
@@ -283,23 +392,44 @@ def _bind_runtime(rt: GameRuntime) -> None:
     rt_load_arming = rt.load_arming
 
     def _load_arming_with_pending() -> Dict[str, str]:
-        base = rt_load_arming()
         now = time.time()
+        try:
+            base = rt_load_arming() if callable(rt_load_arming) else {}
+        except Exception:
+            base = {}
+        out: Dict[str, str] = {}
+        if isinstance(base, dict):
+            out.update({str(k): str(v) for k, v in base.items()})
         try:
             pending = pending_arming_snapshot(now)
         except Exception:
             pending = {}
-        if not isinstance(base, dict):
-            base = {}
+        lock = globals().get('STATE_LOCK')
+        if lock is not None:
+            with lock:
+                if not ARMING_STATE:
+                    _init_arming_state()
+                for name, rec in ARMING_STATE.items():
+                    if not isinstance(rec, dict):
+                        continue
+                    state_val = str(rec.get('state', 'Safe'))
+                    armed = bool(rec.get('armed', False))
+                    arming_until = float(rec.get('arming_until', 0.0) or 0.0)
+                    if arming_until <= now and state_val == 'Arming':
+                        state_val = 'Armed' if armed else 'Safe'
+                    if armed and state_val != 'Arming':
+                        state_val = 'Armed'
+                    base_val = out.get(name)
+                    if base_val == 'Armed' and state_val != 'Armed':
+                        state_val = 'Armed'
+                    out[name] = state_val
         for nm, left in (pending or {}).items():
-            try:
-                if left > 0:
-                    base[nm] = 'Arming'
-            except Exception:
-                continue
+            if left > 0:
+                out[nm] = 'Arming'
         _prune_arming_pending(now)
-        return base
+        return out
 
+    _init_arming_state()
     load_arming = _load_arming_with_pending
     save_arming = rt.save_arming
     compute_in_range = rt.compute_in_range
@@ -329,6 +459,11 @@ def _bind_runtime(rt: GameRuntime) -> None:
     try:
         if RADAR is not None:
             RADAR.resupply_state_provider = (lambda: RESUPPLY)
+    except Exception:
+        pass
+    try:
+        if RADAR is not None:
+            RADAR.cap_missions_provider = (lambda: CAP.snapshot().get("missions") if CAP is not None else [])
     except Exception:
         pass
 
@@ -676,9 +811,6 @@ PENDING_EVENTS: list[Dict[str, Any]] = []
 ATTACK_STATE: Dict[int, float] = {}
 ENEMY_SURFACE_STATE: Dict[int, Dict[str, Any]] = {}
 
-ARMING_PENDING: Dict[str, float] = {}
-
-
 def _prune_arming_pending(now: float) -> None:
     lock = globals().get('STATE_LOCK')
     if lock is None:
@@ -699,11 +831,19 @@ def mark_weapon_arming(name: str, until_ts: float) -> None:
     with lock:
         if until_ts > now:
             ARMING_PENDING[name] = float(until_ts)
+            rec = ARMING_STATE.setdefault(name, {})
+            rec['state'] = 'Arming'
+            rec['arming_until'] = float(until_ts)
+            rec.setdefault('armed', False)
+            _persist_arming_state_locked()
         else:
             ARMING_PENDING.pop(name, None)
+            rec = ARMING_STATE.setdefault(name, {})
+            rec['arming_until'] = 0.0
+            _persist_arming_state_locked()
 
 
-def clear_weapon_arming(name: str) -> None:
+def clear_weapon_arming(name: str, *, target_state: str = 'Safe', armed: bool | None = None) -> None:
     if not name:
         return
     lock = globals().get('STATE_LOCK')
@@ -711,6 +851,15 @@ def clear_weapon_arming(name: str) -> None:
         return
     with lock:
         ARMING_PENDING.pop(name, None)
+        rec = ARMING_STATE.setdefault(name, {})
+        rec['arming_until'] = 0.0
+        if target_state:
+            rec['state'] = str(target_state)
+        if armed is None:
+            armed = str(rec.get('state', '')).lower() == 'armed'
+        rec['armed'] = bool(armed)
+        rec['cooldown_until'] = float(rec.get('cooldown_until') or 0.0)
+        _persist_arming_state_locked()
 
 
 def pending_arming_snapshot(now: float | None = None) -> Dict[str, int]:
@@ -816,26 +965,27 @@ class _RecorderLike:
         except Exception:
             pass
 
-try:
-    _seed = os.environ.get('RADAR_SEED')
-    _rng = (None if _seed is None else __import__('random').Random(int(_seed))) or __import__('random').Random()
-except Exception:
-    _rng = __import__('random').Random()
+if 'RADAR' not in globals() or RADAR is None:
+    try:
+        _seed = os.environ.get('RADAR_SEED')
+        _rng = (None if _seed is None else __import__('random').Random(int(_seed))) or __import__('random').Random()
+    except Exception:
+        _rng = __import__('random').Random()
 
-RADAR = Radar(rec=_RecorderLike(), rng=_rng, catalog_path=os.path.join(os.path.dirname(__file__), 'data', 'contacts.json'))
-try:
-    RADAR.cap_effects_provider = (lambda: CAP.current_effects() if CAP is not None else {"active": False})
-except Exception:
-    pass
-try:
-    st0 = ENG.public_state() if hasattr(ENG, 'public_state') else {}
-    ox0, oy0 = radar_xy_from_state(st0)
-except Exception:
-    ox0, oy0 = (float(WORLD_N) / 2.0, float(WORLD_N) / 2.0)
-try:
-    core.spawn_initial_friendlies(sys.modules[__name__])  # type: ignore[attr-defined]
-except Exception:
-    pass
+    RADAR = Radar(rec=_RecorderLike(), rng=_rng, catalog_path=os.path.join(os.path.dirname(__file__), 'data', 'contacts.json'))
+    try:
+        RADAR.cap_effects_provider = (lambda: CAP.current_effects() if CAP is not None else {"active": False})
+    except Exception:
+        pass
+    try:
+        st0 = ENG.public_state() if hasattr(ENG, 'public_state') else {}
+        ox0, oy0 = radar_xy_from_state(st0)
+    except Exception:
+        ox0, oy0 = (float(WORLD_N) / 2.0, float(WORLD_N) / 2.0)
+    try:
+        core.spawn_initial_friendlies(sys.modules[__name__])  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 def _spawn_initial_friendlies() -> None:
@@ -1227,7 +1377,7 @@ def _weapon_audio_for_arm(name: str) -> str | None:
     kind = _weapon_kind(name)
     return {
         '20MM': 'WPN_20MM_ARMED_READY',
-        'SEADART': 'WPN_SEADART_ARMED',
+        'SEADART': 'WPN_SEADART_ARMING',
         'EXOCET': 'WPN_EXOCET_ARMED',
         'MAINGUN': 'WPN_MAINGUN_ARMED',
         'CHAFF': 'WPN_STATION_ARMED',
@@ -1468,6 +1618,46 @@ def _radio_audio_for(role: str, text: str, *, event_id: str | None, event_ctx: D
     return None
 
 
+def is_permission_request_radio(role: str | None, text: str | None) -> bool:
+    """Detect pilot permission-request radio chatter for conditional suppression."""
+    role_norm = str(role or '').strip().lower()
+    if role_norm != 'pilot':
+        return False
+    msg = str(text or '').lower()
+    return 'permission to engage' in msg or 'request permission' in msg
+
+
+def suppress_permission_request_audio(window_s: float = 4.0) -> None:
+    """Prevent stale permission requests from playing once clearance is granted."""
+    try:
+        deadline = time.time() + max(0.5, float(window_s))
+    except Exception:
+        deadline = time.time() + 4.0
+    flags = _ensure_audio_flags()
+    prev = 0.0
+    try:
+        prev = float(flags.get('suppress_permission_request_until', 0.0) or 0.0)
+    except Exception:
+        prev = 0.0
+    flags['suppress_permission_request_until'] = max(prev, deadline)
+    try:
+        with STATE_LOCK:
+            if isinstance(RADIO_QUEUE, list) and RADIO_QUEUE:
+                RADIO_QUEUE[:] = [
+                    entry for entry in RADIO_QUEUE
+                    if not is_permission_request_radio(entry.get('role'), entry.get('text'))
+                ]
+            current = AUDIO_STATE.get('radio')
+            if is_permission_request_radio((current or {}).get('role'), (current or {}).get('text')):
+                AUDIO_STATE['radio'] = None
+                try:
+                    RADIO_STATE['busy_until'] = min(time.time(), float(RADIO_STATE.get('busy_until', 0.0) or 0.0))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def _sanitize_radio_prefix(msg: str, role_str: str) -> str:
     cleaned = str(msg or '')
     try:
@@ -1508,6 +1698,8 @@ def record_officer(role: str, text: str, *, channel: int | None = None,
     low = msg.lower()
     prio = (role_str in ("Fire Control",)) or any(w in low for w in ("priority", "threat", "hit", "miss", "locked", "destroyed"))
     channel_id = _normalize_channel(role_str, channel)
+    if str(event_id) == 'cap.permission.authorized':
+        suppress_permission_request_audio()
     audio_info = _radio_audio_for(role_str, msg, event_id=event_id, event_ctx=event_ctx)
     with STATE_LOCK:
         ts = time.time()
@@ -1556,6 +1748,58 @@ def record_officer(role: str, text: str, *, channel: int | None = None,
             RADIO_HISTORY.append({"ts": ts, "role": role_str, "text": msg, "channel": channel_id, "guard": guard_flag})
         except Exception:
             pass
+
+
+def schedule_radio_tts(role: str, text: str) -> None:
+    role_key = str(role or "").strip()
+    message = str(text or "").strip()
+    if not message:
+        return
+    key = (role_key, message)
+    with _TTS_LOCK:
+        if key in _TTS_IN_FLIGHT:
+            return
+        _TTS_IN_FLIGHT.add(key)
+
+    def _worker() -> None:
+        try:
+            path = core._tts_synthesize(message, role_key)
+            if not path:
+                return
+            try:
+                with STATE_LOCK:
+                    current = AUDIO_STATE.get('radio')
+                    if not isinstance(current, dict):
+                        return
+                    cur_role = str(current.get('role') or "").strip()
+                    cur_text = str(current.get('text') or "").strip()
+                    if cur_role != role_key or cur_text != message:
+                        return
+                    updated = dict(current)
+                    updated['file'] = path
+                    if not updated.get('dur'):
+                        try:
+                            words = max(1, len(message.split()))
+                            commas = message.count(',') + message.count(';') + message.count('—')
+                            pauses = message.count('.') + message.count('!') + message.count('?') + message.count(':')
+                            hyphen_pauses = message.count('-')
+                            chars = len(message)
+                            est = 0.32 * words + 0.18 * commas + 0.16 * pauses + 0.04 * hyphen_pauses + 0.45
+                            if chars > 90:
+                                est += 0.0025 * (chars - 90)
+                            updated['dur'] = float(max(0.95, min(8.5, est)))
+                        except Exception:
+                            pass
+                    AUDIO_STATE['radio'] = updated
+            except Exception:
+                logging.exception("failed to update radio TTS state", exc_info=True)
+        except Exception:
+            logging.exception("radio TTS worker failed", exc_info=True)
+        finally:
+            with _TTS_LOCK:
+                _TTS_IN_FLIGHT.discard(key)
+
+    threading.Thread(target=_worker, name=f"radio-tts:{role_key}", daemon=True).start()
 
 
 def officer_say(role: str, key: str, ctx: Dict[str, Any] | None = None, fallback: str | None = None) -> None:

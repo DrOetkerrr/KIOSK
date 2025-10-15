@@ -975,7 +975,52 @@ def load_arming() -> Dict[str,str]:
 
 
 def save_arming(d: Dict[str,str]) -> None:
-    _save_json(ARMING_PATH, d)
+    existing = _load_json(ARMING_PATH, {})
+    if not isinstance(existing, dict):
+        existing = {}
+    now = time.time()
+
+    def _coerce_state(val: Any) -> str:
+        s = str(val or '').strip()
+        if not s:
+            return 'Safe'
+        s_low = s.lower()
+        if s_low.startswith('armed'):
+            return 'Armed'
+        if s_low.startswith('arming'):
+            return 'Arming'
+        return 'Safe'
+
+    for name, state in (d or {}).items():
+        nm = str(name)
+        state_norm = _coerce_state(state)
+        container = existing
+        if 'weapons' in existing and isinstance(existing.get('weapons'), dict):
+            container = existing['weapons']
+        rec = container.get(nm) if isinstance(container, dict) else None
+        if not isinstance(rec, dict):
+            rec = {'armed': False, 'arming_until': 0.0, 'cooldown_until': 0.0}
+        cooldown = rec.get('cooldown_until', 0.0)
+        if state_norm == 'Armed':
+            rec['armed'] = True
+            rec['arming_until'] = 0.0
+        elif state_norm == 'Arming':
+            rec['armed'] = False
+            # Preserve existing arming window if set; otherwise leave countdown as-is
+            if float(rec.get('arming_until', 0.0) or 0.0) <= now:
+                default_delay = 10.0 if nm == 'Sea Dart SAM' else 5.0
+                rec['arming_until'] = rec.get('arming_until', now + default_delay)
+        else:
+            rec['armed'] = False
+            rec['arming_until'] = 0.0
+            cooldown = 0.0
+        rec['cooldown_until'] = float(cooldown or 0.0)
+        rec['state'] = state_norm
+        if isinstance(container, dict):
+            container[nm] = rec
+        else:
+            existing[nm] = rec
+    _save_json(ARMING_PATH, existing)
 
 
 def _primary_class(primary: Dict[str,Any] | None) -> str | None:
@@ -1485,12 +1530,77 @@ def _make_debug_contact(cell: str | None = None,
 
 
 # ---- Spawners reused by webdash ----
-def spawn_initial_friendlies(wd) -> None:
+def _ship_origin_xy(wd) -> tuple[float, float]:
+    def _finite_pair(x: float, y: float) -> bool:
+        try:
+            return math.isfinite(float(x)) and math.isfinite(float(y))
+        except Exception:
+            return False
+
     try:
-        st = wd.ENG.public_state() if hasattr(wd.ENG, "public_state") else {}
-        own_x, own_y = radar_xy_from_state(st)
+        if hasattr(wd, "ENG") and hasattr(wd.ENG, "public_state"):
+            st = wd.ENG.public_state() or {}
+        else:
+            st = {}
     except Exception:
-        own_x, own_y = (0.0, 0.0)
+        st = {}
+    if st:
+        try:
+            ox, oy = radar_xy_from_state(st)
+            if _finite_pair(ox, oy) and (abs(ox) >= 1e-3 or abs(oy) >= 1e-3):
+                return float(ox), float(oy)
+        except Exception:
+            pass
+
+    eng_obj = getattr(wd, "ENG", None)
+    if eng_obj is not None and hasattr(eng_obj, "_ship_xy"):
+        try:
+            sx, sy = eng_obj._ship_xy()
+            if _finite_pair(sx, sy) and (abs(sx) >= 1e-3 or abs(sy) >= 1e-3):
+                return float(sx), float(sy)
+        except Exception:
+            pass
+
+    runtime = getattr(wd, "RUNTIME", None)
+    if runtime is not None:
+        cache = getattr(runtime, "_engine_state_cache", None)
+        if isinstance(cache, dict):
+            ship_state = cache.get("ship", {})
+            if isinstance(ship_state, dict):
+                pos = ship_state.get("pos", {}) if isinstance(ship_state, dict) else {}
+                try:
+                    ox = float(pos.get("x"))
+                    oy = float(pos.get("y"))
+                    if _finite_pair(ox, oy) and (abs(ox) >= 1e-3 or abs(oy) >= 1e-3):
+                        return ox, oy
+                except Exception:
+                    pass
+        repo = getattr(runtime, "state_repo", None)
+        if repo is not None:
+            try:
+                data = repo.load_json(repo.state_dir / "falklands_state.json", {})
+            except Exception:
+                data = {}
+            if isinstance(data, dict):
+                for candidate in (data.get("ship"), data.get("ship_position")):
+                    if isinstance(candidate, dict):
+                        col = candidate.get("col") or candidate.get("col_f")
+                        row = candidate.get("row") or candidate.get("row_f")
+                        if col is not None and row is not None:
+                            st_fallback = {"ship": {"col": col, "row": row}}
+                            try:
+                                ox, oy = radar_xy_from_state(st_fallback)
+                                if _finite_pair(ox, oy) and (abs(ox) >= 1e-3 or abs(oy) >= 1e-3):
+                                    return float(ox), float(oy)
+                            except Exception:
+                                pass
+
+    mid = float(WORLD_N) / 2.0
+    return mid, mid
+
+
+def spawn_initial_friendlies(wd) -> None:
+    own_x, own_y = _ship_origin_xy(wd)
     try:
         with _SPAWN_BOOTSTRAP_LOCK:
             radar = getattr(wd, 'RADAR', None)
@@ -1742,7 +1852,9 @@ def cap_ui_snapshot(wd) -> Dict[str, Any]:
                     aircraft_range_nm = 0.0 if target_xy is not None else None
                 elif status_lc in ('airborne', 'onstation', 'cap'):
                     try:
-                        pos_xy = _as_xy((meta_rec or {}).get('cur_xy'))
+                        pos_xy = _as_xy(m.get('position_xy'))
+                        if pos_xy is None:
+                            pos_xy = _as_xy((meta_rec or {}).get('cur_xy'))
                         if pos_xy is None and pos_cell:
                             pos_xy = _cell_to_xy(pos_cell)
                         if pos_xy is None:
@@ -2415,7 +2527,7 @@ def engine_thread_run(wd) -> None:
                                 pass
                             try:
                                 if hasattr(wd, 'clear_weapon_arming'):
-                                    wd.clear_weapon_arming(weapon)
+                                    wd.clear_weapon_arming(weapon, target_state='Armed', armed=True)
                             except Exception:
                                 pass
                             try:
@@ -2428,10 +2540,14 @@ def engine_thread_run(wd) -> None:
                             try:
                                 raw = wd._load_json(wd.ARMING_PATH, {})
                                 if isinstance(raw, dict):
-                                    rec = raw.get(weapon)
+                                    container = raw.get('weapons') if isinstance(raw.get('weapons'), dict) else raw
+                                    if not isinstance(container, dict):
+                                        container = raw
+                                    rec = container.get(weapon)
                                     if isinstance(rec, dict):
                                         rec['cooldown_until'] = 0.0
-                                        raw[weapon] = rec
+                                        rec['state'] = 'Armed'
+                                        container[weapon] = rec
                                         wd._save_json(wd.ARMING_PATH, raw)
                             except Exception:
                                 pass

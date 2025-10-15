@@ -1,7 +1,7 @@
 {
   "cap_config": {
     "aircraft_type": "Sea Harrier FRS.1",
-    "cruise_speed_kts": 420,
+    "cruise_speed_kts": 500,
     "deck_cycle_per_pair_s": 60,
     "intercept_deck_cycle_s": 12,
     "max_ready_pairs": 6,
@@ -9,6 +9,7 @@
     "pair_rearm_refuel_min": 5,
     "scramble_cooldown_min": 1,
     "min_launch_interval_s": 60,
+    "takeoff_roll_s": 30,
     "default_pair_size": 2,
     "default_onstation_min": 10,
     "intercept_onstation_min": 2,
@@ -16,8 +17,10 @@
     "station_radius_nm": 10,
     "max_pairs_on_task": 3,
     "surge_pairs_on_task": 4,
-    "intercept_speed_kts": 600,
+    "intercept_speed_kts": 800,
     "intercept_target_kts": 340,
+    "hermes_follow_radius_nm": 5,
+    "hermes_follow_orbit_period_s": 240,
     "effects": {
       "spawn_weight_multiplier": {
         "A-4 Skyhawk": 0.6,
@@ -28,14 +31,14 @@
         "Canberra bomber": 0.8
       },
       "intercept_prob_pre_release": {
-        "A-4 Skyhawk": 0.50,
-        "Dagger (Mirage V)": 0.50,
+        "A-4 Skyhawk": 0.5,
+        "Dagger (Mirage V)": 0.5,
         "Mirage III": 0.45,
-        "Pucar\u00e1": 0.70,
-        "Super \u00c9tendard": 0.30,
-        "Canberra bomber": 0.40
+        "Pucar\u00e1": 0.7,
+        "Super \u00c9tendard": 0.3,
+        "Canberra bomber": 0.4
       },
-      "defence_bonus_if_not_intercepted": 0.10
+      "defence_bonus_if_not_intercepted": 0.1
     },
     "weapons": {
       "aim9": {
@@ -44,7 +47,24 @@
         "missiles_total": 4,
         "inventory_total": 40,
         "engagement_cooldown_s": 5,
-        "pk_points": [[2.0,0.90],[3.0,0.80],[4.0,0.70],[5.0,0.60]]
+        "pk_points": [
+          [
+            2.0,
+            0.9
+          ],
+          [
+            3.0,
+            0.8
+          ],
+          [
+            4.0,
+            0.7
+          ],
+          [
+            5.0,
+            0.6
+          ]
+        ]
       },
       "bombs": {
         "bombs_total": 4,

@@ -106,6 +106,10 @@ body{
 .btn.engage-toggle:hover{background:#093116;color:var(--accent)}
 .btn.engage-toggle.engaged{background:#1a7331;border-color:#36d27b;color:#e0ffef;box-shadow:0 0 18px rgba(54,210,123,0.45)}
 .btn.engage-toggle.engaged:hover{background:#228d3f;color:#f1fff8}
+.btn.engage-toggle.pending{cursor:progress}
+.btn.engage-toggle.pending:hover{background:#0b3b16;color:var(--accent)}
+.btn.engage-toggle.engaged[disabled]{opacity:1}
+.btn.engage-toggle.pending[disabled]{opacity:0.65}
 .panel{padding:10px;height:100%;overflow-y:auto;box-sizing:border-box}
 h2{margin:0 0 8px;font-size:15px;color:var(--accent);text-transform:uppercase;letter-spacing:1px}
 table{width:100%;border-collapse:separate;border-spacing:0 6px;color:var(--text)}
@@ -279,6 +283,32 @@ tbody tr.locked-row .btn:hover{background:#7a1c1c;color:#ffe3e3}
 .eng-commit.assigned:hover{background:#146027}
 .eng-commit[disabled]{opacity:0.65;cursor:default}
 .eng-note{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
+
+/* SYS station radar grid */
+.sys-grid-wrap{display:flex;flex-direction:column;gap:12px;align-items:center;margin-top:8px}
+.sys-grid-header{letter-spacing:1px;text-transform:uppercase;color:var(--muted);font-size:12px}
+.sys-grid{border-collapse:collapse;border:1px solid var(--border);background:rgba(2,10,20,0.45);box-shadow:0 0 20px rgba(0,0,0,0.35)}
+.sys-grid th,.sys-grid td{border:1px solid rgba(80,110,140,0.35);width:20px;height:20px;text-align:center;font-size:11px;font-family:ui-monospace,Menlo,Consolas,monospace;padding:0}
+.sys-grid-corner{background:rgba(4,20,35,0.65)}
+.sys-grid-col,.sys-grid-row{background:rgba(4,26,42,0.75);color:var(--muted);font-weight:600}
+.sys-grid-row{width:20px}
+.sys-cell{color:var(--muted);text-transform:uppercase;transition:background 0.2s,color 0.2s}
+.sys-cell--friendly{color:#36d878;font-weight:700}
+.sys-cell--sheffield{color:#ffffff;font-weight:700}
+.sys-cell--hermes{color:#9fd0ff;font-weight:700}
+.sys-cell--harrier{color:#8fe9ff;font-weight:700}
+.sys-cell--hostile{color:#ff7373;font-weight:700}
+.sys-cell--mixed{color:#ffe16a;font-weight:700}
+.sys-grid-legend{display:flex;gap:16px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
+.sys-legend-item{display:flex;align-items:center;gap:6px}
+.sys-legend-swatch{width:14px;height:14px;border:1px solid var(--border);background:rgba(4,20,35,0.6);box-shadow:0 0 6px rgba(0,0,0,0.35)}
+.sys-legend--friendly{background:#0e3c25;border-color:#36d878}
+.sys-legend--sheffield{background:#1b1b1b;border-color:#ffffff}
+.sys-legend--hermes{background:#12324a;border-color:#9fd0ff}
+.sys-legend--harrier{background:#09324a;border-color:#4cc3ff}
+.sys-legend--hostile{background:#431414;border-color:#ff7373}
+.sys-legend--mixed{background:#453a14;border-color:#ffe16a}
+.sys-grid-empty{margin-top:4px}
 
 .log-wrap{display:flex;flex-direction:column;gap:14px;height:100%;padding:14px;background:rgba(3,18,7,0.8);border:1px solid var(--border);box-shadow:0 0 22px rgba(0,0,0,0.55)}
 .log-title{font-size:16px;letter-spacing:2px;text-transform:uppercase;color:var(--accent)}

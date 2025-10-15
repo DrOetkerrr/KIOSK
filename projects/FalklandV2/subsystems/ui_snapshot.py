@@ -16,6 +16,7 @@ from projects.falklandV2.subsystems import radar as rdar
 from projects.falklandV2.subsystems import contacts as cons
 from projects.falklandV2.subsystems import nav as navi
 from projects.falklandV2.subsystems import weapons as weap
+from projects.falklandV2.subsystems import webcore as core
 
 
 # ---------- small helpers
@@ -67,6 +68,32 @@ def weapons_snapshot(data_path: Path, locked_range_nm: Optional[float]) -> Dict[
         name = ship.get("name", ship_name)
         klass = ship.get("class", "")
         ship_name = f"{name} ({klass})" if klass else name
+        weapons_cfg = ship.get("weapons", {})
+        ammo_state: Dict[str, Any] = {}
+        try:
+            ammo_state = core.load_ammo()
+        except Exception:
+            ammo_state = {}
+        if isinstance(weapons_cfg, dict) and ammo_state:
+            sea_dart = ammo_state.get("Sea Dart SAM")
+            if sea_dart is not None and "seacat" in weapons_cfg:
+                weapons_cfg["seacat"]["rounds"] = int(sea_dart)
+            gun_ammo = ammo_state.get("4.5 inch Mk.8 gun")
+            if gun_ammo is not None and "gun_4_5in" in weapons_cfg:
+                weapons_cfg["gun_4_5in"]["ammo_he"] = int(gun_ammo)
+            oerlikon_ammo = ammo_state.get("20mm Oerlikon")
+            if oerlikon_ammo is not None and "oerlikon_20mm" in weapons_cfg:
+                weapons_cfg["oerlikon_20mm"]["rounds"] = int(oerlikon_ammo)
+            gam_ammo = ammo_state.get("20mm GAM-BO1 (twin)")
+            if gam_ammo is not None and "gam_bo1_20mm" in weapons_cfg:
+                weapons_cfg["gam_bo1_20mm"]["rounds"] = int(gam_ammo)
+            exocet_ammo = ammo_state.get("MM38 Exocet")
+            if exocet_ammo is not None and "exocet_mm38" in weapons_cfg:
+                weapons_cfg["exocet_mm38"]["rounds"] = int(exocet_ammo)
+            chaff_amt = ammo_state.get("Corvus chaff")
+            if chaff_amt is not None and "corvus_chaff" in weapons_cfg:
+                weapons_cfg["corvus_chaff"]["salvoes"] = int(chaff_amt)
+
         status_line = weap.weapons_status(ship)
 
         w = ship.get("weapons", {})
@@ -75,36 +102,58 @@ def weapons_snapshot(data_path: Path, locked_range_nm: Optional[float]) -> Dict[
         if "gun_4_5in" in w:
             g = w["gun_4_5in"]
             ammo = int(g.get("ammo_he", 0))
+            override = ammo_state.get("4.5 inch Mk.8 gun") if ammo_state else None
+            if override is not None:
+                ammo = int(override)
             rdef = g.get("effective_max_nm", g.get("range_nm"))
             ready = _in_range(rdef, locked_range_nm)
             table.append({"name": "4.5in Mk.8", "ammo": ammo, "range": _rng_text(rdef), "ready": (ready and ammo > 0)})
 
         # Sea Dart (legacy key 'seacat')
         if "seacat" in w:
-            sc = w["seacat"]; rounds = int(sc.get("rounds", 0)); rdef = sc.get("range_nm")
+            sc = w["seacat"]; rounds = int(sc.get("rounds", 0))
+            override = ammo_state.get("Sea Dart SAM") if ammo_state else None
+            if override is not None:
+                rounds = int(override)
+            rdef = sc.get("range_nm")
             ready = _in_range(rdef, locked_range_nm)
             table.append({"name": "Sea Dart", "ammo": rounds, "range": _rng_text(rdef), "ready": (ready and rounds > 0)})
 
         # 20mm
         if "oerlikon_20mm" in w:
-            o = w["oerlikon_20mm"]; rounds = int(o.get("rounds", 0)); rdef = o.get("range_nm")
+            o = w["oerlikon_20mm"]; rounds = int(o.get("rounds", 0))
+            override = ammo_state.get("20mm Oerlikon") if ammo_state else None
+            if override is not None:
+                rounds = int(override)
+            rdef = o.get("range_nm")
             ready = _in_range(rdef, locked_range_nm)
             table.append({"name": "20mm Oerlikon", "ammo": rounds, "range": _rng_text(rdef), "ready": (ready and rounds > 0)})
 
         if "gam_bo1_20mm" in w:
-            g2 = w["gam_bo1_20mm"]; rounds = int(g2.get("rounds", 0)); rdef = g2.get("range_nm")
+            g2 = w["gam_bo1_20mm"]; rounds = int(g2.get("rounds", 0))
+            override = ammo_state.get("20mm GAM-BO1 (twin)") if ammo_state else None
+            if override is not None:
+                rounds = int(override)
+            rdef = g2.get("range_nm")
             ready = _in_range(rdef, locked_range_nm)
             table.append({"name": "GAM-BO1 20mm", "ammo": rounds, "range": _rng_text(rdef), "ready": (ready and rounds > 0)})
 
         # Exocet
         if "exocet_mm38" in w:
-            ex = w["exocet_mm38"]; rounds = int(ex.get("rounds", 0)); rdef = ex.get("range_nm")
+            ex = w["exocet_mm38"]; rounds = int(ex.get("rounds", 0))
+            override = ammo_state.get("MM38 Exocet") if ammo_state else None
+            if override is not None:
+                rounds = int(override)
+            rdef = ex.get("range_nm")
             ready = _in_range(rdef, locked_range_nm)
             table.append({"name": "Exocet MM38", "ammo": rounds, "range": _rng_text(rdef), "ready": (ready and rounds > 0)})
 
         # Chaff
         if "corvus_chaff" in w:
             ch = w["corvus_chaff"]; salvoes = int(ch.get("salvoes", 0))
+            override = ammo_state.get("Corvus chaff") if ammo_state else None
+            if override is not None:
+                salvoes = int(override)
             table.append({"name": "Corvus chaff", "ammo": salvoes, "range": "—", "ready": None})
 
         return {"ship_name": ship_name, "status_line": status_line, "table": table}
