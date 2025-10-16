@@ -30,6 +30,15 @@ check:
 	@echo "→ Legacy grid guard (AA00 only)"
 	@python3 ./tools/check_legacy_coords.py || (echo "legacy grid patterns detected (use AA00)" && exit 3)
 
+.PHONY: trmnl-render trmnl-push
+trmnl-render:
+	@echo "→ Rendering radar snapshot to tmp/trmnl/radar_snapshot.png"
+	@PYTHONPATH=. python3 tools/render_radar_snapshot.py
+
+trmnl-push:
+	@echo "→ Rendering and uploading radar snapshot to TRMNL"
+	@PYTHONPATH=. python3 tools/push_trmnl_radar.py
+
 .PHONY: desktop
 desktop:
 	@echo "→ Starting server (if needed) and launching desktop UI"

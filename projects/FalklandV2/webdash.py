@@ -6,7 +6,7 @@ from typing import Any, Dict, Callable
 from datetime import datetime, timezone
 from collections import deque
 
-from flask import jsonify, send_from_directory  # type: ignore
+from flask import jsonify, send_from_directory, render_template, request, redirect, send_file, url_for  # type: ignore
 
 # Repo root for absolute imports
 HERE = Path(__file__).resolve()
@@ -26,6 +26,8 @@ from projects.falklandV2.web import create_app, runtime as runtime_mgr, fallback
 from projects.falklandV2.core.engine import Engine
 from projects.falklandV2.radar import Radar, Contact, HOSTILES, WORLD_N, HOSTILE_SPEED_SCALE  # noqa: F401
 from projects.falklandV2.subsystems.hermes_cap import HermesCAP
+from projects.falklandV2.radar_render import render_radar_png, render_test_pattern_png
+from projects.falklandV2.radar_snapshot import build_radar_view
 try:
     from projects.falklandV2.subsystems.convoy import Convoy
 except Exception:
@@ -102,6 +104,15 @@ def _ensure_audio_flags() -> Dict[str, Any]:
 def get_audio_flags() -> Dict[str, Any]:
     """Expose mutable audio flag storage to other subsystems."""
     return _ensure_audio_flags()
+
+
+def _radio_audio_lookup(key: str | None) -> Dict[str, Any] | None:
+    if not key:
+        return None
+    info = RADIO_AUDIO_LIBRARY.get(str(key).upper())
+    if info:
+        return dict(info)
+    return None
 
 
 def _reset_audio_state() -> None:
@@ -442,8 +453,9 @@ def _bind_runtime(rt: GameRuntime) -> None:
     except Exception:
         pass
     # Resupply state (Sea King)
-    if 'RESUPPLY' not in globals():
-        RESUPPLY = {"active": False, "eta_ts": 0.0, "started_ts": 0.0, "stage": None}
+if 'RESUPPLY' not in globals():
+    RESUPPLY = {"active": False, "eta_ts": 0.0, "started_ts": 0.0, "stage": None,
+                "origin_cell": None, "origin_xy": None, "target_cell": None, "target_xy": None}
     hook = globals().get('record_event')
     if CAP is not None and callable(hook):
         try:
@@ -1248,6 +1260,117 @@ def about():
         return jsonify(payload), 500
 
 
+@app.route("/sys/radar", methods=["GET", "POST"])
+def sys_radar_view() -> str:
+    from projects.falklandV2.subsystems.status import build as build_status
+
+    # TRMNL plugins may POST to fetch content; treat POST like GET.
+    if request.method == "POST":
+        logging.info("POST /sys/radar received; returning snapshot for external client")
+
+    payload = build_status()
+    context = build_radar_view(payload)
+    return render_template("sys_radar.html", **context)
+
+
+@app.route("/sys/radar/docs", methods=["GET", "POST"])
+def sys_radar_docs() -> str:
+    """Minimal helper page for TRMNL plugin management callbacks."""
+    if request.method == "POST":
+        logging.info("POST /sys/radar/docs received; returning status for external client")
+    info = {
+        "ok": True,
+        "message": "Hermes radar feed is online.",
+        "endpoints": {
+            "snapshot": "/sys/radar",
+            "install": "/trmnl/install",
+        },
+        "generated": datetime.now(timezone.utc).isoformat(),
+    }
+    return jsonify(info)
+
+
+def _render_trmnl_snapshot() -> Path:
+    from projects.falklandV2.subsystems.status import build as build_status
+
+    payload = build_status()
+    context = build_radar_view(payload)
+    output = REPO_ROOT / "tmp" / "trmnl" / "radar_snapshot.png"
+    return render_radar_png(context, output)
+
+
+@app.get("/trmnl/radar/latest.png")
+def trmnl_radar_image():
+    """Serve the latest radar snapshot as a PNG for TRMNL devices."""
+    try:
+        path = _render_trmnl_snapshot()
+        response = send_file(path, mimetype="image/png", max_age=0, conditional=False)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+    except Exception as exc:
+        logging.exception("Failed to render TRMNL radar image: %s", exc)
+        return jsonify({"ok": False, "error": "render_failed"}), 500
+
+
+@app.get("/trmnl/radar/redirect")
+def trmnl_radar_redirect():
+    """Return a Redirect-plugin payload pointing to the radar snapshot."""
+    try:
+        path = _render_trmnl_snapshot()
+        image_url = url_for("trmnl_radar_image", _external=True)
+        filename = f"radar-{int(path.stat().st_mtime)}"
+        payload = {
+            "filename": filename,
+            "url": image_url,
+            "refresh_rate": 60,
+        }
+        return jsonify(payload)
+    except Exception as exc:
+        logging.exception("Failed to build TRMNL redirect payload: %s", exc)
+        return jsonify({"ok": False, "error": "render_failed"}), 500
+
+
+@app.get("/trmnl/testcard.png")
+def trmnl_testcard_image():
+    """Serve a high-contrast test pattern to validate TRMNL rendering."""
+    try:
+        path = REPO_ROOT / "tmp" / "trmnl" / "testcard.png"
+        render_test_pattern_png(path)
+        response = send_file(path, mimetype="image/png", max_age=0, conditional=False)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+    except Exception as exc:
+        logging.exception("Failed to render TRMNL testcard image: %s", exc)
+        return jsonify({"ok": False, "error": "render_failed"}), 500
+
+
+@app.get("/trmnl/install")
+def trmnl_install() -> str:
+    """Lightweight install handshake for TRMNL BYOD plugins."""
+    callback = request.args.get("installation_callback_url")
+    code = request.args.get("code")
+    if callback:
+        try:
+            return redirect(callback, code=302)
+        except Exception:
+            pass
+    body = [
+        "<html>",
+        "<body style='font-family: sans-serif; background:#0b121a; color:#e2edf9; padding:2rem;'>",
+        "<h1>Hermes Radar</h1>",
+        "<p>Installation handshake completed.</p>",
+        "<p>If you reached this page in a browser you can close it now.</p>",
+    ]
+    if code:
+        body.append(f"<p>Install code: <code>{code}</code></p>")
+    body.append("</body></html>")
+    return "\n".join(body), 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
 # ---- Crew config (messages) ----
 def _load_crew() -> Dict[str, Any]:
     try:
@@ -1878,4 +2001,5 @@ except Exception:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     print(f"[webdash] templates -> {TPL_DIR}")
-    app.run(host="127.0.0.1", port=PORT, debug=False, threaded=True)
+    host = os.environ.get("HOST") or os.environ.get("FLASK_RUN_HOST") or "0.0.0.0"
+    app.run(host=host, port=PORT, debug=False, threaded=True)

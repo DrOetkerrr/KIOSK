@@ -23,6 +23,36 @@ def build() -> Dict[str, Any]:
 
     now = time.time()
 
+    def _cell_to_xy(label: str) -> tuple[float, float] | None:
+        if not label:
+            return None
+        try:
+            from projects.falklandV2.grid.mapping import label_to_world  # type: ignore
+            world_n = float(getattr(wd, 'WORLD_N', 40))
+            x, y = label_to_world(str(label).strip().upper(), world_n=world_n)
+            return float(x), float(y)
+        except Exception:
+            return None
+
+    def _xy_to_cell(x: float, y: float) -> str | None:
+        try:
+            from projects.falklandV2.grid.mapping import world_to_label  # type: ignore
+            world_n = float(getattr(wd, 'WORLD_N', 40))
+            return str(world_to_label(float(x), float(y), world_n=world_n))
+        except Exception:
+            return None
+
+    def _lerp_xy(origin: tuple[float, float] | None, target: tuple[float, float] | None, progress: float) -> tuple[float, float] | None:
+        if origin is None and target is None:
+            return None
+        if origin is None:
+            return target
+        if target is None:
+            return origin
+        ox, oy = origin
+        tx, ty = target
+        return (ox + (tx - ox) * progress, oy + (ty - oy) * progress)
+
     # Advance radar simulation so subsequent snapshots reflect motion.
     try:
         runtime = getattr(wd, 'RUNTIME', None)
@@ -308,17 +338,39 @@ def build() -> Dict[str, Any]:
     try:
         rs = getattr(wd, 'RESUPPLY', {}) if hasattr(wd, 'RESUPPLY') else {}
         if isinstance(rs, dict) and bool(rs.get('active', False)) and str(rs.get('stage') or '') in ('enroute','landing'):
-            cell = str(rs.get('origin_cell') or '')
-            if cell:
+            if not any(str(d.get('hull') or '').strip().lower() == 'resupply' for d in radar_list):
+                origin_cell = str(rs.get('origin_cell') or '').strip().upper()
+                target_cell = str(rs.get('target_cell') or '').strip().upper()
+                origin_xy = rs.get('origin_xy') if isinstance(rs.get('origin_xy'), (tuple, list)) else None
+                target_xy = rs.get('target_xy') if isinstance(rs.get('target_xy'), (tuple, list)) else None
+                if origin_xy is None:
+                    origin_xy = _cell_to_xy(origin_cell)
+                if target_xy is None:
+                    target_xy = _cell_to_xy(target_cell)
+                start_ts = float(rs.get('started_ts', 0.0) or 0.0)
+                eta_ts = float(rs.get('eta_ts', 0.0) or 0.0)
+                if str(rs.get('stage')) == 'landing':
+                    progress = 1.0
+                elif eta_ts > start_ts:
+                    progress = max(0.0, min(1.0, (now - start_ts) / (eta_ts - start_ts)))
+                else:
+                    progress = 0.0
+                pos_xy = _lerp_xy(origin_xy, target_xy, progress)
+                cell_label = None
+                if pos_xy is not None:
+                    cell_label = _xy_to_cell(*pos_xy)
+                if cell_label is None:
+                    cell_label = origin_cell or target_cell
+                rng = None
                 try:
-                    mx, my = wd.cell_to_world(cell)
-                    ox, oy = own_xy
-                    rng = ((float(mx)-float(ox))**2 + (float(my)-float(oy))**2) ** 0.5
+                    if pos_xy is not None and own_xy:
+                        ox, oy = own_xy
+                        rng = ((float(pos_xy[0])-float(ox))**2 + (float(pos_xy[1])-float(oy))**2) ** 0.5
                 except Exception:
                     rng = None
                 radar_list.append({
                     'id': 'resupply:seaking',
-                    'cell': cell,
+                    'cell': cell_label or '',
                     'name': 'Sea King Helicopter',
                     'type': 'Friendly',
                     'class': 'Helicopter',
@@ -326,6 +378,7 @@ def build() -> Dict[str, Any]:
                     'course': None,
                     'speed': 90,
                     'hull': 'resupply',
+                    'meta': {'resupply': True, 'stage': rs.get('stage')},
                 })
     except Exception:
         pass

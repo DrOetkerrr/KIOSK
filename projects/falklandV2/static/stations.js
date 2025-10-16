@@ -61,6 +61,127 @@ const STATION_KEYS = ['NAV','RADAR','WPN','RADIO','ENG'];
 const STATION_LABELS = { NAV: 'NAV', RADAR: 'RDR', WPN: 'WPN', RADIO: 'COMMS', ENG: 'ENG' };
 const VOICE_DEVICE_STORAGE_KEY = 'voice_device_id';
 
+const POLL_DEFAULT_INTERVAL_MS = 1500;
+const POLL_MAX_INTERVAL_MS = 12000;
+const POLL_TIMEOUT_MS = 4000;
+let pollTimer = null;
+let pollAbortController = null;
+let pollIntervalMs = POLL_DEFAULT_INTERVAL_MS;
+let pollConsecutiveErrors = 0;
+let pollLastOkTs = 0;
+
+function ensureConnectionBanner(){
+  let banner = document.getElementById('connection-banner');
+  if(!banner){
+    banner = document.createElement('div');
+    banner.id = 'connection-banner';
+    banner.className = 'connection-banner hidden';
+    banner.setAttribute('role', 'status');
+    banner.setAttribute('aria-live', 'polite');
+    banner.innerHTML = '<span class="connection-dot">●</span><span class="connection-text">Connecting…</span>';
+    document.body.appendChild(banner);
+  }
+  return banner;
+}
+
+function setConnectionBanner(state, message){
+  const banner = ensureConnectionBanner();
+  if(state === 'ok'){
+    banner.classList.add('hidden');
+    banner.classList.remove('warn', 'error');
+    banner.setAttribute('aria-hidden', 'true');
+    return;
+  }
+  banner.classList.remove('hidden');
+  banner.classList.toggle('warn', state === 'warn');
+  banner.classList.toggle('error', state === 'error');
+  banner.setAttribute('aria-hidden', 'false');
+  const dot = banner.querySelector('.connection-dot');
+  const textNode = banner.querySelector('.connection-text');
+  if(dot){
+    dot.textContent = state === 'error' ? '⨂' : state === 'warn' ? '◐' : '●';
+  }
+  if(textNode){
+    textNode.textContent = message || (state === 'warn' ? 'Connection hiccup — retrying…' : 'Connection lost — retrying…');
+  }
+}
+
+function scheduleNextPoll(delay){
+  if(pollTimer){
+    clearTimeout(pollTimer);
+  }
+  pollTimer = setTimeout(runPoll, delay);
+}
+
+async function runPoll(){
+  const headers = {};
+  if(window.__stations_build){
+    headers['X-Stations-Build'] = String(window.__stations_build);
+  }
+  pollAbortController = new AbortController();
+  const timeoutId = setTimeout(() => {
+    try{ pollAbortController.abort(); }catch(_){}
+  }, POLL_TIMEOUT_MS);
+  try{
+    const response = await fetch('/api/status', {
+      cache: 'no-store',
+      signal: pollAbortController.signal,
+      headers
+    });
+    if(!response.ok){
+      throw new Error(`status ${response.status}`);
+    }
+    const data = await response.json();
+    window._status = data;
+    try{
+      render(data);
+      trackEvents(data);
+    }catch(err){
+      console.error('[stations] render error', err);
+    }
+    pollConsecutiveErrors = 0;
+    pollIntervalMs = POLL_DEFAULT_INTERVAL_MS;
+    pollLastOkTs = Date.now();
+    setConnectionBanner('ok');
+  }catch(err){
+    pollConsecutiveErrors += 1;
+    pollIntervalMs = Math.min(
+      POLL_DEFAULT_INTERVAL_MS * Math.pow(1.6, pollConsecutiveErrors),
+      POLL_MAX_INTERVAL_MS
+    );
+    const sinceOk = pollLastOkTs ? Math.round((Date.now() - pollLastOkTs) / 1000) : null;
+    const msg = sinceOk !== null && sinceOk > 5
+      ? `Connection lost ${sinceOk}s ago — retrying…`
+      : 'Connection hiccup — retrying…';
+    setConnectionBanner(pollConsecutiveErrors > 2 ? 'error' : 'warn', msg);
+    console.warn('[stations] poll error', err);
+  }finally{
+    clearTimeout(timeoutId);
+    pollAbortController = null;
+    scheduleNextPoll(pollIntervalMs);
+  }
+}
+
+function startPolling(){
+  pollConsecutiveErrors = 0;
+  pollIntervalMs = POLL_DEFAULT_INTERVAL_MS;
+  pollLastOkTs = Date.now();
+  scheduleNextPoll(0);
+}
+
+async function forceRefreshStatus(){
+  if(pollTimer){
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+  if(pollAbortController){
+    try{ pollAbortController.abort(); }catch(_){ }
+    pollAbortController = null;
+  }
+  pollIntervalMs = POLL_DEFAULT_INTERVAL_MS;
+  await runPoll();
+}
+
 function stationLabel(key){
   return STATION_LABELS[key] || key;
 }
@@ -788,7 +909,7 @@ async function _runNavOrder(order){
     return false;
   }
   try{
-    await poll();
+    await forceRefreshStatus();
   }catch(_){ }
   return true;
 }
@@ -1362,7 +1483,7 @@ function renderNAV(j){
           hermesMsg.textContent = summary || 'Order acknowledged';
           hermesMsg.className='mono ok';
         }
-        await poll().catch(()=>{});
+        await forceRefreshStatus();
       }else{
         hermesMsg.textContent = (data && data.error)? String(data.error) : 'Command failed';
         hermesMsg.className='mono err';
@@ -1547,7 +1668,7 @@ function renderRADAR(j){
       if(!ST.radar || typeof ST.radar!=='object') ST.radar = {};
       ST.radar.lockedId = Number.isFinite(numericId) ? numericId : null;
       appendConsole(`[radar] lock OK ${data && data.result ? data.result : id}`);
-      await poll().catch(()=>{});
+      await forceRefreshStatus();
     }catch(err){
       appendConsole(`[radar] lock ERR ${err}`);
     }
@@ -1609,11 +1730,11 @@ function renderRADAR(j){
 
   const controls=document.createElement('div'); controls.className='row section radar-controls';
   const scanBtn=document.createElement('button'); scanBtn.className='btn'; scanBtn.textContent='SCAN';
-  scanBtn.onclick=async function(){ await fetch('/api/command?cmd='+encodeURIComponent('/radar scan')); await poll().catch(()=>{}); };
+  scanBtn.onclick=async function(){ await fetch('/api/command?cmd='+encodeURIComponent('/radar scan')); await forceRefreshStatus(); };
   const lockNearest=document.createElement('button'); lockNearest.className='btn'; lockNearest.textContent='GO';
-  lockNearest.onclick=async function(){ await fetch('/api/command?cmd='+encodeURIComponent('/radar lock nearest')); await poll().catch(()=>{}); };
+  lockNearest.onclick=async function(){ await fetch('/api/command?cmd='+encodeURIComponent('/radar lock nearest')); await forceRefreshStatus(); };
   const unlockBtn=document.createElement('button'); unlockBtn.className='btn'; unlockBtn.textContent='UNLOCK';
-  unlockBtn.onclick=async function(){ await fetch('/api/command?cmd='+encodeURIComponent('/radar unlock')); await poll().catch(()=>{}); };
+  unlockBtn.onclick=async function(){ await fetch('/api/command?cmd='+encodeURIComponent('/radar unlock')); await forceRefreshStatus(); };
   controls.appendChild(scanBtn); controls.appendChild(lockNearest); controls.appendChild(unlockBtn); p.appendChild(controls);
 }
 
@@ -1816,7 +1937,7 @@ function renderWPN(j){
           const stLabel = String(payload.state || next || 'OK').toUpperCase();
           msg.textContent=stLabel;
           msg.className='wpn-msg ok';
-          await poll().catch(()=>{});
+          await forceRefreshStatus();
         }else{
           msg.textContent = payload && payload.error ? String(payload.error) : 'ERR';
           msg.className='wpn-msg err';
@@ -1882,7 +2003,7 @@ function renderWPN(j){
           pushEvent('weapon.fire', label);
         }catch(_){ }
       }
-      await poll().catch(()=>{});
+      await forceRefreshStatus();
     };
     tdF.appendChild(fb);
     tdF.appendChild(msg);
@@ -1968,7 +2089,7 @@ function renderRADIO(j){
         }else{
           setHermesMsg(summary || 'Order acknowledged','ok');
         }
-        await poll().catch(()=>{});
+        await forceRefreshStatus();
       }else{
         setHermesMsg((data && data.error)? String(data.error) : 'Command failed','err');
       }
@@ -2466,7 +2587,7 @@ let missionValid=false;
         const data=await res.json();
         if(data && data.ok){
           setStatus((data.message && String(data.message)) || summaryLabel || 'Intercept pair launching','ok');
-          await poll().catch(()=>{});
+          await forceRefreshStatus();
         }else{
           setStatus((data && (data.message || data.error))? String(data.message || data.error) : 'Intercept request failed','err');
         }
@@ -2478,7 +2599,7 @@ let missionValid=false;
         if(data && data.ok){
           const msg = (data.message && String(data.message)) || (summaryLabel || (mission.follow==='hermes'? 'CAP launching to defend Hermes' : `CAP launching to ${mission.cell}`));
           setStatus(msg,'ok');
-          await poll().catch(()=>{});
+          await forceRefreshStatus();
         }else{
           setStatus((data && (data.message || data.error))? String(data.message || data.error) : 'CAP request failed','err');
         }
@@ -2504,7 +2625,7 @@ let missionValid=false;
       const data=await res.json();
       if(data && data.ok){
         setStatus('Resupply helicopter launched','ok');
-        await poll().catch(()=>{});
+        await forceRefreshStatus();
       }else{
         setStatus((data && data.error)? String(data.error) : 'Resupply failed','err');
       }
@@ -2563,7 +2684,7 @@ let missionValid=false;
       }else{
         setStatus(`SHAR ${missionId} retasked`,'ok');
       }
-      await poll().catch(()=>{});
+      await forceRefreshStatus();
     }catch(_){
       setStatus('Retask failed','err');
     }finally{
@@ -2650,7 +2771,7 @@ let missionValid=false;
             authorized = (typeof data.authorized === 'boolean') ? data.authorized : nextAuthorize;
             syncEngageState();
             setStatus(authorized ? 'Engagement authorized' : 'Engagement revoked', 'ok');
-            await poll().catch(()=>{});
+            await forceRefreshStatus();
           }else{
             authorized = prevAuthorized;
             syncEngageState();
@@ -2699,7 +2820,7 @@ let missionValid=false;
         const data=await res.json();
         if(data && data.ok){
           setStatus(data.message || `SHAR ${missionId} RTB`, 'ok');
-          await poll().catch(()=>{});
+          await forceRefreshStatus();
         }else{
           setStatus((data && (data.message || data.error))? String(data.message || data.error) : 'RTB order failed','err');
           rtbBtn.disabled = false;
@@ -2810,7 +2931,7 @@ function renderENG(j){
       const payload = await res.json().catch(()=>({}));
       if(!(payload && payload.ok)){ console.warn('ENG action failed', payload); }
     }catch(err){ console.error('ENG action error', err); }
-    await poll().catch(()=>{});
+    await forceRefreshStatus();
   }
 
   const table=document.createElement('table'); table.className='eng-table';
@@ -2929,40 +3050,8 @@ function renderLOG(){
 function renderSYS(j){
   const p=$('#station-panel'); p.innerHTML='';
   if(!ST.sys) ST.sys = {};
-  const row=document.createElement('div'); row.className='row section';
-  const bScan=document.createElement('button'); bScan.className='btn'; bScan.textContent='Scan'; bScan.onclick=async function(){ await fetch('/api/command?cmd='+encodeURIComponent('/radar scan')); };
-  const bAir=document.createElement('button'); bAir.className='btn'; bAir.textContent='Spawn Near Aircraft'; bAir.onclick=async function(){ await fetch('/radar/force_spawn_near?class=Aircraft&range=2.5'); };
-  const bShip=document.createElement('button'); bShip.className='btn'; bShip.textContent='Spawn Near Ship'; bShip.onclick=async function(){ await fetch('/radar/force_spawn_near?class=Ship&range=4'); };
-  row.appendChild(bScan); row.appendChild(bAir); row.appendChild(bShip); p.appendChild(row);
 
-  const quitRow=document.createElement('div'); quitRow.className='row section';
-  const quitBtn=document.createElement('button'); quitBtn.className='btn danger'; quitBtn.textContent='QUIT GAME';
-  const quitMsg=document.createElement('span'); quitMsg.className='sys-msg muted';
-  quitBtn.onclick=async function(){
-    if(quitBtn.disabled) return;
-    quitBtn.disabled = true;
-    quitMsg.textContent = 'Shutting down…';
-    quitMsg.className = 'sys-msg muted';
-    try{
-      const res = await fetch('/diag/quit',{method:'POST'});
-      let payload = {};
-      try{ payload = await res.json(); }catch(_){ payload = {}; }
-      if(res.ok && (!payload || payload.ok !== false)){
-        quitMsg.textContent = 'Server exiting';
-        quitMsg.className = 'sys-msg ok';
-      }else{
-        const errTxt = payload && payload.error ? String(payload.error) : 'Failed';
-        quitMsg.textContent = errTxt;
-        quitMsg.className = 'sys-msg err';
-      }
-    }catch(e){
-      quitMsg.textContent = 'Connection lost (exit expected)';
-      quitMsg.className = 'sys-msg ok';
-    }
-  };
-  quitRow.appendChild(quitBtn);
-  quitRow.appendChild(quitMsg);
-  p.appendChild(quitRow);
+  // Controls removed per kiosk requirements; system station remains read-only.
 
   const contacts = Array.isArray(j.contacts) ? j.contacts.slice() : [];
   const gridInfo = typeof j.grid === 'object' && j.grid ? j.grid : {};
@@ -3195,16 +3284,6 @@ function render(j){
   if(ST.active==='SYS') return renderSYS(j);
 }
 
-async function poll(){
-  try{
-    const r=await fetch('/api/status',{cache:'no-store'});
-    const j=await r.json();
-    window._status=j;
-    render(j);
-    trackEvents(j);
-  }catch(e){}
-}
-
 function playKlik(){ try{ const a=new Audio('/data/sounds/klik.m4a'); a.volume=0.6; a.play().catch(function(){}); }catch(e){} }
 
 
@@ -3220,7 +3299,8 @@ function wire(){
   // Global KLIK on all button presses
   document.addEventListener('click', function(ev){ const t=ev.target; if(t && t.matches && t.matches('button.btn')){ playKlik(); } }, true);
   renderEventConsole();
-  setActive('NAV'); poll(); setInterval(poll, 1500);
+  setActive('NAV');
+  startPolling();
 }
 
 document.addEventListener('DOMContentLoaded', wire);

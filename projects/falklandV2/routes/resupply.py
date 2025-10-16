@@ -51,23 +51,39 @@ def resupply_launch():
         state['eta_ts'] = now + max(5, int(eta_s))
         state['stage'] = 'enroute'
         state['ready_announced'] = False
-        # Seed origin_cell so radar can place Sea King contact
+        # Seed launch/target positions so radar can place Sea King contact
         try:
-            st = L['ENG'].public_state() if hasattr(L['ENG'], 'public_state') else {}
-            own_x, own_y = L['radar_xy_from_state'](st)
-            ship = (st or {}).get('ship', {}) if isinstance(st, dict) else {}
-            try:
-                crs = float(ship.get('heading', 0.0) or 0.0)
-            except Exception:
+            if hasattr(L['ENG'], '_ship_xy'):
+                own_x, own_y = L['ENG']._ship_xy()
+            else:
+                st = L['ENG'].public_state() if hasattr(L['ENG'], 'public_state') else {}
+                own_x, own_y = L['radar_xy_from_state'](st)
+            if hasattr(L['ENG'], '_ship_course_speed'):
+                crs, _ = L['ENG']._ship_course_speed()
+            else:
                 crs = 0.0
+        except Exception:
+            own_x, own_y, crs = 0.0, 0.0, 0.0
+
+        try:
             convoy = L.get('CONVOY')
             if convoy is not None:
                 hx, hy, hermes_cell = convoy.escort_world_cell('hermes', own_x, own_y, crs)
             else:
-                hermes_cell = L['ship_cell_from_state'](st)
+                hx, hy = own_x, max(0.0, own_y - 2.0)
+                hermes_cell = L['world_to_cell'](hx, hy)
             state['origin_cell'] = hermes_cell
+            state['origin_xy'] = (float(hx), float(hy))
         except Exception:
-            pass
+            state['origin_cell'] = L['world_to_cell'](own_x, own_y)
+            state['origin_xy'] = (float(own_x), float(own_y))
+
+        try:
+            state['target_cell'] = L['world_to_cell'](own_x, own_y)
+            state['target_xy'] = (float(own_x), float(own_y))
+        except Exception:
+            state['target_cell'] = None
+            state['target_xy'] = None
         try:
             L['record_event']('resupply.launch', {
                 'eta_s': int(max(0, state['eta_ts'] - now)),
@@ -99,6 +115,10 @@ def resupply_cancel():
         state['eta_ts'] = 0.0
         state['started_ts'] = 0.0
         state['ready_announced'] = False
+        state['origin_cell'] = None
+        state['origin_xy'] = None
+        state['target_cell'] = None
+        state['target_xy'] = None
         payload = {"ok": True, "resupply": dict(state)}
         L['record_flight']({"route": route, "method": request.method, "status": 200,
                            "duration_ms": int((time.time()-t0)*1000),
@@ -143,6 +163,10 @@ def resupply_complete():
         state['completed_ts'] = now
         state['eta_ts'] = 0.0
         state['ready_announced'] = False
+        state['origin_cell'] = None
+        state['origin_xy'] = None
+        state['target_cell'] = None
+        state['target_xy'] = None
         try:
             L['record_event']('resupply.complete', {'completed_ts': now})
         except Exception:

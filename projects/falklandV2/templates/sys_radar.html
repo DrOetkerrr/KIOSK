@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Hermes Radar Snapshot</title>
+    <meta name="viewport" content="width=800, height=480, user-scalable=no">
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #04080f;
+        --panel: #121b27;
+        --panel-soft: rgba(16, 26, 40, 0.85);
+        --border: rgba(82, 112, 152, 0.35);
+        --muted: #8fa4c2;
+        --accent: #4cc2ff;
+        --friendly: rgba(76, 175, 80, 0.65);
+        --hostile: rgba(217, 83, 79, 0.78);
+        --mixed: rgba(255, 193, 7, 0.68);
+        --sheffield: rgba(148, 110, 255, 0.7);
+        --hermes: rgba(255, 152, 0, 0.7);
+        --harrier: rgba(0, 188, 212, 0.65);
+        --resupply: rgba(126, 200, 255, 0.7);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 800px;
+        height: 480px;
+        background: var(--bg);
+        color: #e5f0ff;
+        font-family: "Inter", "Segoe UI", sans-serif;
+      }
+
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .canvas {
+        width: 780px;
+        height: 460px;
+        padding: 16px 20px;
+        border-radius: 18px;
+        border: 1px solid rgba(70, 100, 140, 0.4);
+        background: radial-gradient(circle at top, rgba(24, 34, 48, 0.9), rgba(6, 12, 20, 0.95));
+        box-shadow: 0 16px 40px rgba(4, 8, 14, 0.6);
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        gap: 12px;
+      }
+
+      header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+      }
+
+      header h1 {
+        margin: 0;
+        font-size: 1.15rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #f3f7ff;
+      }
+
+      header p {
+        margin: 2px 0 0;
+        font-size: 0.65rem;
+        color: var(--muted);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .summary-inline {
+        display: flex;
+        gap: 14px;
+        font-family: "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+        font-size: 0.68rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+
+      .summary-inline span {
+        color: #f1f6ff;
+      }
+
+      .main {
+        display: flex;
+        gap: 18px;
+        min-height: 0;
+      }
+
+      .grid-panel {
+        flex: 1;
+        background: var(--panel);
+        border-radius: 16px;
+        border: 1px solid var(--border);
+        padding: 10px 12px 12px;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .grid-panel h2 {
+        margin: 0 0 6px;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.09em;
+        color: var(--muted);
+      }
+
+      .grid-wrapper {
+        flex: 1;
+        overflow: hidden;
+      }
+
+      table.sys-grid {
+        width: 100%;
+        height: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+        font-family: "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+        font-size: 0.46rem;
+        background: rgba(8, 14, 24, 0.82);
+      }
+
+      table.sys-grid thead th {
+        border: 1px solid rgba(66, 96, 128, 0.32);
+        background: rgba(18, 26, 40, 0.92);
+        color: var(--muted);
+        font-weight: 600;
+        height: 12px;
+        padding: 0;
+        text-align: center;
+      }
+
+      table.sys-grid tbody th {
+        border: 1px solid rgba(66, 96, 128, 0.3);
+        background: rgba(18, 26, 40, 0.92);
+        color: var(--muted);
+        font-weight: 600;
+        height: 11px;
+        padding: 0;
+        text-align: center;
+      }
+
+      table.sys-grid td {
+        border: 1px solid rgba(60, 92, 126, 0.22);
+        height: 11px;
+        padding: 0;
+        text-align: center;
+        position: relative;
+        transition: background 0.2s ease;
+      }
+
+      table.sys-grid td::after {
+        content: attr(data-label);
+        display: block;
+        font-weight: 600;
+        color: #0a121c;
+      }
+
+      .sys-cell {
+        background: transparent;
+      }
+
+      .sys-cell--hostile {
+        background: var(--hostile);
+        color: #fff;
+      }
+
+      .sys-cell--friendly {
+        background: var(--friendly);
+        color: #072006;
+      }
+
+      .sys-cell--mixed {
+        background: var(--mixed);
+        color: #1a1100;
+      }
+
+      .sys-cell--sheffield {
+        background: var(--sheffield);
+        color: #fff;
+      }
+
+      .sys-cell--hermes {
+        background: var(--hermes);
+        color: #281100;
+      }
+
+      .sys-cell--harrier {
+        box-shadow: inset 0 0 0 1px rgba(0, 188, 212, 0.9);
+      }
+
+      .sys-cell--resupply {
+        background: var(--resupply);
+        color: #05223b;
+        font-weight: 700;
+      }
+
+      .sidebar {
+        width: 240px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-height: 0;
+      }
+
+      .legend {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px 10px;
+        font-size: 0.6rem;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .legend-swatch {
+        width: 14px;
+        height: 14px;
+        border-radius: 4px;
+        background: rgba(68, 96, 128, 0.5);
+        box-shadow: inset 0 0 0 1px rgba(90, 122, 160, 0.5);
+      }
+
+      .legend-swatch.hostile { background: var(--hostile); }
+      .legend-swatch.friendly { background: var(--friendly); }
+      .legend-swatch.mixed { background: var(--mixed); }
+      .legend-swatch.sheffield { background: var(--sheffield); }
+      .legend-swatch.hermes { background: var(--hermes); }
+      .legend-swatch.harrier { background: var(--harrier); }
+      .legend-swatch.resupply { background: var(--resupply); }
+
+      .contacts-panel {
+        flex: 1;
+        background: var(--panel-soft);
+        border-radius: 16px;
+        border: 1px solid var(--border);
+        padding: 10px 12px;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      .contacts-panel h2 {
+        margin: 0 0 6px;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+
+      .contact-list {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        overflow: hidden;
+      }
+
+      .contact {
+        display: grid;
+        grid-template-columns: 46px 1fr;
+        gap: 6px;
+        align-items: center;
+        padding: 6px 8px;
+        border-radius: 10px;
+        background: rgba(10, 18, 28, 0.92);
+        border: 1px solid rgba(68, 100, 140, 0.25);
+      }
+
+      .contact--hostile {
+        background: rgba(54, 20, 26, 0.85);
+        border-color: rgba(217, 83, 79, 0.6);
+      }
+
+      .contact--friendly {
+        background: rgba(22, 36, 16, 0.85);
+        border-color: rgba(76, 175, 80, 0.55);
+      }
+
+      .contact--neutral {
+        background: rgba(24, 30, 42, 0.85);
+      }
+
+      .contact-cell {
+        font-family: "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+        font-size: 0.64rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        text-align: center;
+        color: #f2f6ff;
+      }
+
+      .contact-name {
+        font-size: 0.72rem;
+        font-weight: 600;
+        color: #f7fbff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .contact-meta {
+        font-size: 0.6rem;
+        color: var(--muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .contact-empty {
+        font-size: 0.64rem;
+        color: var(--muted);
+        text-align: center;
+        padding: 18px 0;
+      }
+
+      footer {
+        font-size: 0.6rem;
+        color: var(--muted);
+        letter-spacing: 0.06em;
+        text-align: right;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="canvas">
+      <header>
+        <div>
+          <h1>Hermes Radar</h1>
+          <p>Contact snapshot</p>
+        </div>
+        <div class="summary-inline">
+          <div>Friendlies <span>{{ friendly_total }}</span></div>
+          <div>Hostiles <span>{{ hostile_total }}</span></div>
+        </div>
+      </header>
+      <main class="main">
+        <section class="grid-panel">
+          <h2>Contact Map</h2>
+          <div class="grid-wrapper">
+            <table class="sys-grid">
+              <thead>
+                <tr>
+                  <th></th>
+                  {% for col in columns %}
+                    <th>{{ col }}</th>
+                  {% endfor %}
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in rows %}
+                  <tr>
+                    <th>{{ row.label }}</th>
+                    {% for cell in row.cells %}
+                      <td class="{{ cell.classes }}" data-label="{{ cell.label }}" {% if cell.tooltip %}title="{{ cell.tooltip }}"{% endif %}></td>
+                    {% endfor %}
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <aside class="sidebar">
+          <div class="legend">
+            <div class="legend-item"><span class="legend-swatch hostile"></span>Hostile</div>
+            <div class="legend-item"><span class="legend-swatch friendly"></span>Friendly</div>
+            <div class="legend-item"><span class="legend-swatch hermes"></span>Hermes</div>
+            <div class="legend-item"><span class="legend-swatch sheffield"></span>Sheffield</div>
+            <div class="legend-item"><span class="legend-swatch resupply"></span>Sea King</div>
+            <div class="legend-item"><span class="legend-swatch harrier"></span>Harrier Flight</div>
+            <div class="legend-item"><span class="legend-swatch mixed"></span>Mixed</div>
+          </div>
+          <div class="contacts-panel">
+            <h2>Priorities</h2>
+            <div class="contact-list">
+              {% set listed = 0 %}
+              {% for contact in contact_rows %}
+                {% if listed < 8 %}
+                  {% set meta_parts = [] %}
+                  {% if contact.range_nm %}
+                    {% set meta_parts = meta_parts + [contact.range_nm ~ ' nm'] %}
+                  {% endif %}
+                  {% if contact.speed %}
+                    {% set meta_parts = meta_parts + [contact.speed ~ ' kts'] %}
+                  {% endif %}
+                  {% if contact.course %}
+                    {% set meta_parts = meta_parts + [contact.course ~ '°'] %}
+                  {% endif %}
+                  {% set meta = meta_parts | join(' · ') %}
+                  {% set listed = listed + 1 %}
+                  {% set allegiance = contact.allegiance | lower %}
+                  <div class="contact contact--{{ 'hostile' if allegiance == 'hostile' else ('friendly' if allegiance == 'friendly' else 'neutral') }}">
+                    <div class="contact-cell">{{ contact.cell }}</div>
+                    <div>
+                      <div class="contact-name">{{ contact.name }}</div>
+                      {% if meta %}
+                        <div class="contact-meta">{{ meta }}</div>
+                      {% endif %}
+                    </div>
+                  </div>
+                {% endif %}
+              {% endfor %}
+              {% if listed == 0 %}
+                <div class="contact-empty">No contacts tracked.</div>
+              {% endif %}
+            </div>
+          </div>
+        </aside>
+      </main>
+      <footer>Generated {{ generated }}</footer>
+    </div>
+  </body>
+</html>

@@ -73,6 +73,7 @@ def contact_to_ui(c: Contact, own_xy: Tuple[float, float]) -> Dict[str, Any]:
     typ = str(c.allegiance)
     name = str(c.name)
     # Flat primitives with exact keys the UI reads; include label-style aliases for compatibility
+    meta = getattr(c, 'meta', {}) or {}
     ui = {
         "id": cid,
         "ID": cid,
@@ -102,6 +103,10 @@ def contact_to_ui(c: Contact, own_xy: Tuple[float, float]) -> Dict[str, Any]:
         display_name = meta.get('display_name')
         if display_name and not name:
             ui['name'] = str(display_name)
+        if meta.get('resupply') or str(meta.get('hull') or '').strip().lower() == 'resupply':
+            ui['hull'] = 'resupply'
+        if 'resupply_stage' in meta:
+            ui.setdefault('meta', {})['resupply_stage'] = meta['resupply_stage']
     except Exception:
         pass
     return ui

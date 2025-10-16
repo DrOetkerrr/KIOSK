@@ -1026,22 +1026,59 @@ class Radar:
                 self.contacts = [c for c in self.contacts if int(getattr(c,'id',-1)) != int(self._resupply_contact_id)]
                 self._resupply_contact_id = None
             return
-        cell = str(st.get('origin_cell') or st.get('cell') or '')
-        if not cell:
-            return
+        origin_cell = str(st.get('origin_cell') or st.get('cell') or '').strip().upper()
+        target_cell = str(st.get('target_cell') or origin_cell).strip().upper()
+        origin_xy = st.get('origin_xy') if isinstance(st.get('origin_xy'), (tuple, list)) else None
+        target_xy = st.get('target_xy') if isinstance(st.get('target_xy'), (tuple, list)) else None
         try:
             from projects.falklandV2.grid.mapping import label_to_world  # late import
-            x, y = label_to_world(cell, world_n=float(WORLD_N))
         except Exception:
+            label_to_world = None  # type: ignore
+        if origin_xy is None and origin_cell and label_to_world is not None:
+            try:
+                ox, oy = label_to_world(origin_cell, world_n=float(WORLD_N))
+                origin_xy = (float(ox), float(oy))
+            except Exception:
+                origin_xy = None
+        if target_xy is None and target_cell and label_to_world is not None:
+            try:
+                tx, ty = label_to_world(target_cell, world_n=float(WORLD_N))
+                target_xy = (float(tx), float(ty))
+            except Exception:
+                target_xy = origin_xy
+        if origin_xy is None:
             return
+        if target_xy is None:
+            target_xy = origin_xy
+        start_ts = float(st.get('started_ts', 0.0) or 0.0)
+        eta_ts = float(st.get('eta_ts', 0.0) or 0.0)
+        if stage == 'landing':
+            progress = 1.0
+        elif eta_ts > start_ts:
+            progress = clamp((time.time() - start_ts) / (eta_ts - start_ts), 0.0, 1.0)
+        else:
+            progress = 0.0
+        ox, oy = origin_xy
+        tx, ty = target_xy
+        x = float(ox + (tx - ox) * progress)
+        y = float(oy + (ty - oy) * progress)
         if self._resupply_contact_id is not None:
             c = next((k for k in self.contacts if int(getattr(k,'id',-1)) == int(self._resupply_contact_id)), None)
             if c is not None:
                 c.x = float(x); c.y = float(y)
+                try:
+                    meta = getattr(c, 'meta', {})
+                    if isinstance(meta, dict):
+                        meta['resupply'] = True
+                        meta['stage'] = stage
+                        meta['resupply_stage'] = stage
+                        c.meta = meta
+                except Exception:
+                    pass
                 return
         # Create contact
         cid = int(self._next_id); self._next_id += 1
-        meta = {'resupply': True, 'stage': stage}
+        meta = {'resupply': True, 'stage': stage, 'resupply_stage': stage}
         c = Contact(id=cid, name='Sea King Helicopter', allegiance='Friendly', x=float(x), y=float(y), course_deg=0.0, speed_kts=90.0, threat='low', meta=meta)
         self.contacts.append(c)
         self._resupply_contact_id = cid

@@ -310,6 +310,12 @@ tbody tr.locked-row .btn:hover{background:#7a1c1c;color:#ffe3e3}
 .sys-legend--mixed{background:#453a14;border-color:#ffe16a}
 .sys-grid-empty{margin-top:4px}
 
+.connection-banner{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:rgba(10,18,28,0.92);color:#d7e6ff;border:1px solid rgba(110,140,180,0.45);box-shadow:0 18px 40px rgba(5,10,20,0.55);padding:8px 18px;border-radius:16px;font-size:11px;letter-spacing:0.11em;text-transform:uppercase;font-family:ui-monospace,Menlo,Consolas,monospace;display:flex;align-items:center;gap:10px;z-index:999}
+.connection-banner .connection-dot{font-size:12px}
+.connection-banner.warn{border-color:rgba(255,193,7,0.5);color:#ffd45a}
+.connection-banner.error{border-color:rgba(244,67,54,0.65);color:#ff9f9a}
+.connection-banner.hidden{display:none}
+
 .log-wrap{display:flex;flex-direction:column;gap:14px;height:100%;padding:14px;background:rgba(3,18,7,0.8);border:1px solid var(--border);box-shadow:0 0 22px rgba(0,0,0,0.55)}
 .log-title{font-size:16px;letter-spacing:2px;text-transform:uppercase;color:var(--accent)}
 .log-headline{padding:18px 12px;text-align:center;font-size:24px;letter-spacing:3px;border:1px solid var(--border);background:rgba(2,10,5,0.9);box-shadow:inset 0 0 20px rgba(0,0,0,0.45)}
