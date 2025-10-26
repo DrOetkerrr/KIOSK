@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://falklandv2.example.com/schema/command.json",
+  "version": "1.0.0",
+  "title": "Falkland V2 Command Response",
+  "type": "object",
+  "required": ["ok"],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "message": {"type": ["string", "null"]},
+    "result": {},
+    "error": {"type": ["string", "null"]}
+  },
+  "additionalProperties": true
+}

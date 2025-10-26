@@ -27,6 +27,8 @@ def _lazy():
     pending_arming_left = getattr(_wd, 'pending_arming_left', lambda *_args, **_kwargs: 0)
     get_weapon_state = getattr(_wd, 'get_weapon_state', lambda name: {'state': 'Safe', 'armed': False, 'cooldown_until': 0.0, 'arming_until': 0.0})
     update_weapon_state = getattr(_wd, 'update_weapon_state', lambda name, **kwargs: kwargs)
+    weapon_arm_delay = getattr(_wd, 'weapon_arm_delay', lambda *_args, **_kwargs: 5.0)
+    weapon_cooldown = getattr(_wd, 'weapon_cooldown', lambda *_args, **_kwargs: 2.0)
     return locals()
 
 
@@ -61,7 +63,7 @@ def weapons_arm():
         state = _arg_or_json(request, 'state', '')
         if not name or state not in ("Armed","Safe"):
             return jsonify({'ok': False, 'error': 'bad params'}), 400
-        arm_delay = 10.0 if name == 'Sea Dart SAM' else 5.0
+        arm_delay = float(L['weapon_arm_delay'](name))
         now = time.time()
         rec = L['get_weapon_state'](name)
         disp_state = state
@@ -159,24 +161,6 @@ def weapons_fire():
                 L['update_weapon_state'](nm, cooldown_until=float(until))
             except Exception:
                 pass
-        def _cooldown_seconds_by_class(nm: str) -> float:
-            try:
-                if nm == 'Sea Dart SAM':
-                    return 10.0
-                wrec = next((w for w in L['WEAP_CATALOG'] if w.get('name') == nm), None)
-                cls = (wrec or {}).get('class', 'Other')
-                if (wrec or {}).get('cooldown_s') is not None:
-                    return float(wrec['cooldown_s'])
-                if cls == 'Missile':
-                    return 8.0
-                if cls == 'SAM':
-                    return 6.0
-                if cls == 'Decoy':
-                    return 5.0
-                # Guns & other
-                return 2.0
-            except Exception:
-                return 3.0
         # Enforce cooldown
         now = time.time()
         if _get_cooldown_until(name) > now:
@@ -245,7 +229,10 @@ def weapons_fire():
             except Exception:
                 pass
             # Apply cooldown
-            cooldown_s = _cooldown_seconds_by_class(name)
+            try:
+                cooldown_s = float(L['weapon_cooldown'](name))
+            except Exception:
+                cooldown_s = 3.0
             _set_cooldown_until(name, now + cooldown_s)
             try:
                 L['record_event']('weapon.reload.start', {'name': name, 'mode': mode, 'cooldown_s': cooldown_s})
@@ -286,22 +273,22 @@ def weapons_fire():
                 L['record_event']('weapon.fire.rejected', {'name': name, 'reason': 'NO_PRIMARY', 'mode': mode})
             except Exception:
                 pass
-            # Fallback to last primary cached by status builder (if any)
-            try:
-                fallback_primary = getattr(L.get('_wd'), 'LAST_PRIMARY_UI', None)
-            except Exception:
-                fallback_primary = None
-            if fallback_primary:
-                primary = fallback_primary
-            else:
+            if mode == 'test' and primary is None:
                 try:
-                    own = (own_x, own_y)
-                    for c in reversed(L['RADAR'].contacts):
-                        if getattr(c, 'allegiance', '') == 'Hostile':
-                            primary = L['contact_to_ui'](c, own)
-                            break
+                    fallback_primary = getattr(L.get('_wd'), 'LAST_PRIMARY_UI', None)
                 except Exception:
-                    primary = None
+                    fallback_primary = None
+                if fallback_primary:
+                    primary = fallback_primary
+                else:
+                    try:
+                        own = (own_x, own_y)
+                        for c in reversed(L['RADAR'].contacts):
+                            if getattr(c, 'allegiance', '') == 'Hostile':
+                                primary = L['contact_to_ui'](c, own)
+                                break
+                    except Exception:
+                        primary = None
             if not primary:
                 return jsonify({'ok': False, 'error': 'NO_PRIMARY'}), 400
         # Invariant guard: consistency suite — enforce in_range before any shot is created
@@ -354,7 +341,10 @@ def weapons_fire():
         except Exception:
             pass
         # Apply cooldown
-        cooldown_s = _cooldown_seconds_by_class(name)
+        try:
+            cooldown_s = float(L['weapon_cooldown'](name))
+        except Exception:
+            cooldown_s = 3.0
         _set_cooldown_until(name, now + cooldown_s)
         try:
             L['record_event']('weapon.reload.start', {'name': name, 'mode': mode, 'cooldown_s': cooldown_s})

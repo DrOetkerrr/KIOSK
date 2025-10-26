@@ -12,20 +12,20 @@
     "cooldown_until": 0.0
   },
   "Sea Dart SAM": {
-    "state": "Armed",
-    "armed": true,
-    "arming_until": 0.0,
-    "cooldown_until": 1760562105.761546
+    "state": "Arming",
+    "armed": false,
+    "arming_until": 1761395059.64007,
+    "cooldown_until": 0.0
   },
   "20mm Oerlikon": {
-    "state": "Armed",
-    "armed": true,
+    "state": "Safe",
+    "armed": false,
     "arming_until": 0.0,
     "cooldown_until": 0.0
   },
   "20mm GAM-BO1 (twin)": {
-    "state": "Armed",
-    "armed": true,
+    "state": "Safe",
+    "armed": false,
     "arming_until": 0.0,
     "cooldown_until": 0.0
   },

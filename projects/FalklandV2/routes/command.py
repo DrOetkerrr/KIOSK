@@ -4,7 +4,39 @@ import logging
 import time
 from flask import Blueprint, jsonify, request
 
+from ..subsystems import response_schema
+
 bp = Blueprint("command", __name__)
+
+
+def _prepare_command_payload(payload: dict) -> dict:
+    try:
+        response_schema.embed_schema_version(payload, "command")
+    except Exception:
+        logging.exception("command schema embed failed")
+    try:
+        errors = response_schema.validate("command", payload) or []
+        if errors:
+            logging.warning("/api/command schema validation issues: %s", "; ".join(errors))
+    except Exception:
+        logging.exception("command schema validation failed")
+    return payload
+
+
+def _finalize_command_response(payload: dict, status_code: int = 200):
+    try:
+        spec = response_schema.get_schema("command")
+    except Exception:
+        spec = None
+    response = jsonify(payload)
+    if spec is not None:
+        try:
+            response.headers['X-Schema-Version'] = spec.version
+        except Exception:
+            pass
+    if status_code == 200:
+        return response
+    return response, status_code
 
 
 @bp.route("/api/command", methods=["GET", "POST"])
@@ -52,14 +84,20 @@ def api_command():
     except Exception:
         cmd = ""
 
-    if not cmd:
-        payload = {"ok": False, "error": "missing cmd"}
+    def respond(payload: dict, status_code: int = 200):
+        prepared = _prepare_command_payload(payload)
         record_flight({
-            "route": route, "method": request.method, "status": 400,
+            "route": route,
+            "method": request.method,
+            "status": status_code,
             "duration_ms": int((time.time()-t0)*1000),
-            "request": {"cmd": cmd}, "response": payload,
+            "request": {"cmd": cmd},
+            "response": prepared,
         })
-        return jsonify(payload), 400
+        return _finalize_command_response(prepared, status_code)
+
+    if not cmd:
+        return respond({"ok": False, "error": "missing cmd"}, 400)
 
     try:
         s = cmd.strip()
@@ -124,13 +162,7 @@ def api_command():
                     voice_emit('nav.set.speed.ack', {'spd': round(spd_new), 'hdg': round(hdg3)}, fallback=f'Speed now {round(spd_new)} knots; heading {round(hdg3)}°.', role='Navigation')
                 except Exception:
                     pass
-            payload = {"ok": True, "result": result}
-            record_flight({
-                "route": route, "method": request.method, "status": 200,
-                "duration_ms": int((time.time()-t0)*1000),
-                "request": {"cmd": cmd}, "response": payload,
-            })
-            return jsonify(payload)
+            return respond({"ok": True, "result": result})
 
         # NAV Hermes helper commands: /nav hermes close_in | stand_off
         if s.lower().startswith('/nav hermes'):
@@ -155,17 +187,11 @@ def api_command():
                     payload = {"ok": True, "result": "Hermes nav ack"}
                 else:
                     payload = {"ok": False, "error": "Hermes not in convoy"}
-                record_flight({"route": route, "method": request.method, "status": (200 if payload.get('ok') else 404),
-                               "duration_ms": int((time.time()-t0)*1000),
-                               "request": {"cmd": cmd}, "response": payload})
-                return jsonify(payload), (200 if payload.get('ok') else 404)
+                status_code = 200 if payload.get('ok') else 404
+                return respond(payload, status_code)
             except Exception as e:
                 logging.exception("/api/command hermes error: %s", e)
-                payload = {"ok": False, "error": str(e)}
-                record_flight({"route": route, "method": request.method, "status": 500,
-                               "duration_ms": int((time.time()-t0)*1000),
-                               "request": {"cmd": cmd}, "response": payload})
-                return jsonify(payload), 500
+                return respond({"ok": False, "error": str(e)}, 500)
 
         # Radar lock/unlock helpers
         if s.lower().startswith("/radar unlock"):
@@ -178,11 +204,7 @@ def api_command():
                 record_event('weapon.target.unlocked', {})
             except Exception:
                 pass
-            payload = {"ok": True, "result": "UNLOCKED"}
-            record_flight({"route": route, "method": request.method, "status": 200,
-                           "duration_ms": int((time.time()-t0)*1000),
-                           "request": {"cmd": cmd}, "response": payload})
-            return jsonify(payload)
+            return respond({"ok": True, "result": "UNLOCKED"})
 
         if s.lower().startswith("/radar lock"):
             parts = s.split()
@@ -225,13 +247,7 @@ def api_command():
                     avail = [int(getattr(c,'id',-1)) for c in RADAR.contacts]
                 except Exception:
                     avail = []
-                payload = {"ok": False, "error": "contact not found", "available_ids": avail[:10]}
-                record_flight({
-                    "route": route, "method": request.method, "status": 404,
-                    "duration_ms": int((time.time()-t0)*1000),
-                    "request": {"cmd": cmd}, "response": payload,
-                })
-                return jsonify(payload), 404
+                return respond({"ok": False, "error": "contact not found", "available_ids": avail[:10]}, 404)
             tid = int(getattr(target, 'id', 0))
             try:
                 set_primary_contact(tid)
@@ -266,13 +282,7 @@ def api_command():
                     record_event('weapon.target.locked', {'id': tid})
                 except Exception:
                     pass
-            payload = {"ok": True, "result": f"LOCKED id={tid}"}
-            record_flight({
-                "route": route, "method": request.method, "status": 200,
-                "duration_ms": int((time.time()-t0)*1000),
-                "request": {"cmd": cmd}, "response": payload,
-            })
-            return jsonify(payload), 200
+            return respond({"ok": True, "result": f"LOCKED id={tid}"})
 
         # Special-case radar scan to use RADAR directly
         elif s.lower().startswith("/radar scan"):
@@ -303,22 +313,10 @@ def api_command():
         else:
             result = "ERR: command interface unavailable"
 
-        payload = {"ok": True, "result": result}
-        record_flight({
-            "route": route, "method": request.method, "status": 200,
-            "duration_ms": int((time.time()-t0)*1000),
-            "request": {"cmd": cmd}, "response": payload,
-        })
-        return jsonify(payload)
+        return respond({"ok": True, "result": result})
     except Exception as e:
         logging.exception("/api/command error: %s", e)
-        payload = {"ok": False, "error": str(e)}
-        record_flight({
-            "route": route, "method": request.method, "status": 500,
-            "duration_ms": int((time.time()-t0)*1000),
-            "request": {"cmd": cmd}, "response": payload,
-        })
-        return jsonify(payload), 500
+        return respond({"ok": False, "error": str(e)}, 500)
 
 
 @bp.post("/api/nav/set")
@@ -384,13 +382,13 @@ def api_nav_set():
                 record_event('nav.speed.set', {'speed': round(float(spd))})
         except Exception:
             pass
-        payload = {"ok": True}
+        payload = _prepare_command_payload({"ok": True})
         record_flight({"route": route, "method": request.method, "status": 200,
                        "duration_ms": int((time.time()-t0)*1000), "request": data, "response": payload})
-        return jsonify(payload)
+        return _finalize_command_response(payload)
     except Exception as e:
         logging.exception("/api/nav/set error: %s", e)
-        payload = {"ok": False, "error": str(e)}
+        payload = _prepare_command_payload({"ok": False, "error": str(e)})
         record_flight({"route": route, "method": request.method, "status": 500,
                        "duration_ms": int((time.time()-t0)*1000), "request": {}, "response": payload})
-        return jsonify(payload), 500
+        return _finalize_command_response(payload, 500)

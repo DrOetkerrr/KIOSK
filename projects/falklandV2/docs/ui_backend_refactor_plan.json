@@ -1,0 +1,194 @@
+{
+  "context": {
+    "generated_at": "2025-10-26T00:00:00Z",
+    "intent": "Strengthen backend↔UI interaction reliability without breaking gameplay functionality.",
+    "pain_points": [
+      "Monolithic Flask surface in webdash.py (~2.4k LOC) mixes routing, state orchestration, and event handling.",
+      "status.py mirrors large portions of webdash state with ad-hoc guards, making /api/status fragile.",
+      "stations/main.js (~3.3k LOC) handles rendering, polling, state management, and UI logic in one file.",
+      "Loose JSON contracts between backend and UI; schema drift causes runtime errors rather than compile-time signals.",
+      "Global mutable singletons (RADAR, CAP, RUNTIME) make it hard to reason about lifecycle and introduce race conditions."
+    ],
+    "guardrails": [
+      "Preserve existing gameplay flows after each phase; no large flag-day changes.",
+      "Maintain API compatibility until explicit version bump and UI migration are ready.",
+      "Add regression harnesses before code motion to avoid repeated hotfix cycles."
+    ]
+  },
+  "phases": [
+    {
+      "id": "phase-0-baseline",
+      "name": "Baseline & Guardrails",
+      "objectives": [
+        "Capture the current backend↔UI contract and add automated monitors so regressions are caught early."
+      ],
+      "key_actions": [
+        "Extract JSON snapshots of /api/status, /radar endpoints, and CAP mission payloads; store under docs/contracts/ with dated fixtures.",
+        "Add pytest integration tests that call the real Flask app (or GameRuntime) to validate status payload shape and watchdog behaviour.",
+        "Introduce lightweight smoke CLI (bin/status_probe.py) to replicate the Stations polling loop for manual verification.",
+        "Configure watchdog thresholds and logging to emit structured events instead of stack dumps, making stalls diagnosable."
+      ],
+      "deliverables": [
+        "docs/contracts/status_v1.sample.json",
+        "tests/integration/test_status_contract.py covering success + degraded scenarios",
+        "CI rule to run the smoke probe on every build"
+      ],
+      "verification": [
+        "Smoke probe runs for 5 simulated minutes without watchdog resets.",
+        "Contract tests pass on CI."
+      ],
+      "dependencies": []
+    },
+    {
+      "id": "phase-1-runtime-facade",
+      "name": "Runtime Facade & Event Bus",
+      "objectives": [
+        "Isolate cross-module state access behind a typed service layer and replace ad-hoc globals with an event bus."
+      ],
+      "key_actions": [
+        "Create projects/falklandV2/services/runtime_facade.py exposing read-only views for radar, cap, mission, audio.",
+        "Route all status-building code through the facade; forbid direct imports of webdash globals outside the Flask app.",
+        "Introduce a simple synchronous event bus (pub/sub) to broadcast spawn, cap, and audio events to interested modules.",
+        "Backfill unit tests that ensure facade methods return serialisable, finite values."
+      ],
+      "deliverables": [
+        "services/runtime_facade.py with docstrings and type hints",
+        "tests/services/test_runtime_facade.py",
+        "migration guide documenting which modules switch to the facade"
+      ],
+      "verification": [
+        "Existing unit/integration tests remain green.",
+        "Logging shows facade usage (no direct RADAR attribute access in new code)."
+      ],
+      "dependencies": [
+        "phase-0-baseline"
+      ]
+    },
+    {
+      "id": "phase-2-contracts",
+      "name": "Typed API Contracts",
+      "objectives": [
+        "Define explicit schemas for backend responses to prevent UI drift."
+      ],
+      "key_actions": [
+        "Adopt Pydantic (or dataclasses + jsonschema) for status payloads, radar contacts, and CAP missions.",
+        "Generate JSON schema documents automatically as part of build (e.g., scripts/generate_schema.py).",
+        "Embed schema version and Git SHA in every payload; add server-side validation before responses leave Flask.",
+        "Add backward-compatible coercion paths so older UI clients continue working during rollout."
+      ],
+      "deliverables": [
+        "projects/falklandV2/api/schemas/status.py",
+        "docs/contracts/status_v2.schema.json",
+        "Fail-fast validation middleware raising descriptive errors."
+      ],
+      "verification": [
+        "Contract tests validate payloads against generated schema.",
+        "Runtime logs show zero schema validation failures during soak tests."
+      ],
+      "dependencies": [
+        "phase-1-runtime-facade"
+      ]
+    },
+    {
+      "id": "phase-3-backend-modularisation",
+      "name": "Modularise Backend Endpoints",
+      "objectives": [
+        "Split monolithic webdash Flask app into focused blueprints/services and remove circular imports."
+      ],
+      "key_actions": [
+        "Create projects/falklandV2/api/__init__.py with Flask blueprint per domain (status, radar, cap, diagnostics).",
+        "Move watchdog utilities into projects/falklandV2/services/watchdog_service.py with clear interface.",
+        "Refactor status.py to consume the facade + schemas, returning dataclasses rather than dict assembly.",
+        "Introduce background scheduler (e.g., APScheduler or custom loop) for periodic tasks instead of sharing Flask threads."
+      ],
+      "deliverables": [
+        "New api package with blueprint registration in serve.py",
+        "Refactored tests pointing at blueprint endpoints",
+        "Deprecation notes for legacy webdash helpers"
+      ],
+      "verification": [
+        "Flask app imports without touching heavy globals.",
+        "Integration tests continue to pass; manual UI smoke confirms endpoints unchanged."
+      ],
+      "dependencies": [
+        "phase-2-contracts"
+      ]
+    },
+    {
+      "id": "phase-4-frontend-split",
+      "name": "Frontend Modularisation",
+      "objectives": [
+        "Break stations/main.js into composable modules with explicit data adapters."
+      ],
+      "key_actions": [
+        "Introduce projects/falklandV2/static/src/ directory with ES modules (e.g., apiClient.js, radarView.js, capPanel.js).",
+        "Add a lightweight build step (esbuild or Rollup) producing static/stations/main.bundle.js while keeping legacy file for fallback.",
+        "Implement a central store (simple event emitter) to manage status polling and deliver updates to feature modules.",
+        "Map schema objects to view models in a dedicated adapter layer; reject incomplete payloads early with user-friendly toasts."
+      ],
+      "deliverables": [
+        "static/src/api/client.js with retry/backoff logic",
+        "static/src/ui/radarView.js and capView.js modules",
+        "Updated HTML referencing bundled assets with cache-busting hashes"
+      ],
+      "verification": [
+        "UI smoke scenarios (radar updates, CAP launches, audio events) run without console errors.",
+        "Bundle build succeeds on CI; linting and unit tests cover new modules."
+      ],
+      "dependencies": [
+        "phase-3-backend-modularisation"
+      ]
+    },
+    {
+      "id": "phase-5-resilience",
+      "name": "Interaction Resilience & Telemetry",
+      "objectives": [
+        "Add observability, graceful degradation, and rollback levers once modular pieces are in place."
+      ],
+      "key_actions": [
+        "Implement circuit-breaker style behaviour in the frontend polling client to show stale data warnings instead of hard stalls.",
+        "Add structured telemetry (e.g., OpenTelemetry exporters or JSON logs) for key interactions: status poll latency, schema mismatches, CAP engagement events.",
+        "Introduce feature flags to toggle new modules or schemas, enabling incremental rollout.",
+        "Document recovery procedures and add automated rollback scripts."
+      ],
+      "deliverables": [
+        "telemetry/ folder with config + exporters",
+        "Feature flag registry (config/feature_flags.json)",
+        "Runbook in docs/ui_backend_refactor_runbook.md"
+      ],
+      "verification": [
+        "Chaos test: simulate backend delays and verify UI shows fallback state.",
+        "Feature flags allow switching between legacy and new bundles without redeploy."
+      ],
+      "dependencies": [
+        "phase-4-frontend-split"
+      ]
+    }
+  ],
+  "risks": [
+    {
+      "id": "risk-schema-drift",
+      "description": "Frontend clients that are not upgraded may reject stricter schemas.",
+      "mitigations": [
+        "Maintain compatibility layer during phases 2-4.",
+        "Announce schema versioning via release notes."
+      ]
+    },
+    {
+      "id": "risk-build-pipeline",
+      "description": "Introducing a JS build step may complicate deployment.",
+      "mitigations": [
+        "Start with esbuild single file bundle executed via simple npm script in CI.",
+        "Provide prebuilt bundle artefacts for environments lacking Node."
+      ]
+    },
+    {
+      "id": "risk-resource",
+      "description": "Refactor spans multiple domains; availability of SMEs may slow progress.",
+      "mitigations": [
+        "Run parallel spikes per phase with clear owners.",
+        "Timebox phases and merge partial wins rather than blocking on perfection."
+      ]
+    }
+  ]
+}

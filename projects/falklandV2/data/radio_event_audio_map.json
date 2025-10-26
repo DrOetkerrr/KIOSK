@@ -35,6 +35,8 @@
   "pilot.target_hit": "/data/radiomsg/SHAR_splash_bandit.wav",
   "pilot.target_miss": "/data/radiomsg/SHAR_target_missed.wav",
   "pilot.vector": "/data/radiomsg/SHAR_engaging.wav",
+  "radar.scan.start": "/data/radiomsg/RDR_scan_start.wav",
+  "radar.scan.complete": "/data/radiomsg/RDR_scan_complete.wav",
   "radar.contact.spawn": "/data/radiomsg/RDR_new_radar_contact_hostile.wav",
   "radar.target.locked": "/data/radiomsg/RDR_primary_target_locked.wav",
   "radar.target.unlocked": "/data/radiomsg/RDR_primary_target_unlocked.wav",

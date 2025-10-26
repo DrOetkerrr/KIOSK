@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os, sys, time, threading, logging, hashlib, math, contextlib, wave, json, faulthandler
+import os, sys, time, threading, logging, hashlib, math, contextlib, wave, json, faulthandler, re
 from pathlib import Path
 from typing import Any, Dict, Callable
 from datetime import datetime, timezone
@@ -19,8 +19,10 @@ import requests  # noqa: F401
 
 # Core helpers (paths, JSON, weapons, audio, grid, voice, recorders)
 from projects.falklandV2.subsystems import webcore as core
+from projects.falklandV2.subsystems import response_schema
 from projects.falklandV2.runtime_service import GameRuntime
 from projects.falklandV2.web import create_app, runtime as runtime_mgr, fallbacks as fallback_mgr
+from projects.falklandV2 import watchdog
 
 # Engine + Radar
 from projects.falklandV2.core.engine import Engine
@@ -43,6 +45,7 @@ except Exception:
 # ---- Flask app ----
 TPL_DIR = Path(__file__).parent / "templates"
 app = create_app()
+WATCHDOG_ENABLED = os.environ.get('DISABLE_WATCHDOG', '').strip().lower() not in ('1', 'true', 'yes')
 
 LOG_DIR = REPO_ROOT / 'logs'
 try:
@@ -52,6 +55,135 @@ except Exception:
 
 # Ensure CAP fallbacks remain available when imported via webdash module
 fallback_mgr.ensure_cap_fallbacks(app, sys.modules[__name__])
+
+
+class StatusPollMonitor:
+    """Tracks /api/status polling cadence and logs gaps for observability."""
+
+    def __init__(self, *, warn_after_s: float = 8.0, check_interval_s: float = 5.0, warn_every_s: float = 30.0):
+        self.warn_after_s = max(1.0, float(warn_after_s))
+        self.check_interval_s = max(1.0, float(check_interval_s))
+        self.warn_every_s = max(5.0, float(warn_every_s))
+        self._lock = threading.Lock()
+        self._timer: threading.Timer | None = None
+        self._last_ok_ts: float = 0.0
+        self._last_ok_duration_ms: float | None = None
+        self._last_failure_ts: float = 0.0
+        self._consecutive_failures: int = 0
+        self._last_error: str | None = None
+        self._last_warn_ts: float = 0.0
+        self._started = False
+        self.start()
+
+    def start(self) -> None:
+        with self._lock:
+            if self._started:
+                return
+            self._started = True
+        self._schedule()
+
+    def stop(self) -> None:
+        with self._lock:
+            timer = self._timer
+            self._timer = None
+            self._started = False
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+
+    def _schedule(self) -> None:
+        timer = threading.Timer(self.check_interval_s, self._check_gap)
+        timer.daemon = True
+        with self._lock:
+            if not self._started:
+                return
+            try:
+                timer.start()
+            except Exception:
+                return
+            self._timer = timer
+
+    def _check_gap(self) -> None:
+        now = time.time()
+        with self._lock:
+            last_ok = self._last_ok_ts
+            last_warn = self._last_warn_ts
+        gap = None
+        if last_ok > 0.0:
+            gap = now - last_ok
+        if gap is not None and gap > self.warn_after_s and (now - last_warn) >= self.warn_every_s:
+            self._emit_gap_warning(gap, now)
+            with self._lock:
+                self._last_warn_ts = now
+        self._schedule()
+
+    def _emit_gap_warning(self, gap: float, now: float) -> None:
+        msg = f"/api/status polls quiet for {gap:.1f}s (warn>{self.warn_after_s:.1f}s)"
+        logging.warning(msg)
+        rf = globals().get('record_flight')
+        if callable(rf):
+            try:
+                rf({
+                    'route': '/diag.status.poll_gap',
+                    'method': 'INT',
+                    'status': 200,
+                    'duration_ms': 0,
+                    'request': {'gap_s': round(gap, 2), 'warn_threshold_s': self.warn_after_s},
+                    'response': {'ts': now}
+                })
+            except Exception:
+                pass
+
+    def record_success(self, duration_ms: float | int | None) -> None:
+        now = time.time()
+        with self._lock:
+            self._last_ok_ts = now
+            try:
+                self._last_ok_duration_ms = float(duration_ms) if duration_ms is not None else None
+            except Exception:
+                self._last_ok_duration_ms = None
+            self._consecutive_failures = 0
+            self._last_error = None
+        try:
+            watchdog.record_frontend_poll(now)
+        except Exception:
+            pass
+
+    def record_failure(self, error: str | None = None) -> None:
+        now = time.time()
+        with self._lock:
+            self._last_failure_ts = now
+            self._consecutive_failures += 1
+            if error:
+                self._last_error = str(error)
+
+    def snapshot(self) -> Dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            last_ok = self._last_ok_ts
+            last_duration = self._last_ok_duration_ms
+            last_fail = self._last_failure_ts
+            consecutive = self._consecutive_failures
+            last_error = self._last_error
+        gap = None
+        if last_ok > 0.0:
+            gap = max(0.0, now - last_ok)
+        snapshot: Dict[str, Any] = {
+            'last_ok_ts': last_ok,
+            'last_ok_iso': datetime.fromtimestamp(last_ok, timezone.utc).isoformat() if last_ok else None,
+            'last_duration_ms': last_duration,
+            'gap_s': gap,
+            'consecutive_failures': consecutive,
+            'last_failure_ts': last_fail,
+            'last_failure_iso': datetime.fromtimestamp(last_fail, timezone.utc).isoformat() if last_fail else None,
+            'last_error': last_error,
+        }
+        return snapshot
+
+
+STATUS_POLL_MONITOR = StatusPollMonitor()
 
 
 # One-shot startup selftest
@@ -88,6 +220,9 @@ except Exception:
 RUNTIME = runtime_mgr.init_runtime(port=PORT, reset=True)
 runtime_mgr.attach_runtime(app, RUNTIME)
 APP_STARTED = RUNTIME.app_started
+
+RADAR: Radar | None = None
+CAP: HermesCAP | None = None
 
 
 def _ensure_audio_flags() -> Dict[str, Any]:
@@ -174,6 +309,14 @@ def set_primary_contact(contact_id: Any, *, manual: bool = True) -> None:
 
 def clear_primary_contact(*, manual: bool = True) -> None:
     set_primary_contact(None, manual=manual)
+    try:
+        globals()['LAST_PRIMARY_UI'] = None
+    except Exception:
+        pass
+    try:
+        globals()['LAST_PRIMARY_UI'] = None
+    except Exception:
+        pass
 
 
 def _reset_runtime_globals() -> None:
@@ -229,6 +372,10 @@ def _reset_runtime_globals() -> None:
         pass
     try:
         RADIO_HISTORY.clear()
+    except Exception:
+        pass
+    try:
+        watchdog.record_runtime_tick('reset_globals', time.time())
     except Exception:
         pass
     try:
@@ -339,6 +486,23 @@ def update_weapon_state(name: str, **changes: Any) -> Dict[str, float | str | bo
                 rec[key] = value
         _persist_arming_state_locked()
         return dict(rec)
+
+
+def _watchdog_reset(details: Dict[str, Any]) -> None:
+    reason = "; ".join(details.get("reasons", [])) or "watchdog"
+    logging.warning("Watchdog initiating soft reset: %s", reason)
+    try:
+        runtime = globals().get('RUNTIME')
+        if runtime is None:
+            watchdog.note_reset(reason, False, error="runtime unavailable")
+            return
+        runtime.reset_state()
+        _reset_runtime_globals()
+        watchdog.note_reset(reason, True)
+        watchdog.record_runtime_tick('reset', time.time())
+    except Exception as exc:
+        watchdog.note_reset(reason, False, error=str(exc))
+        logging.exception("Watchdog reset failed: %s", exc)
 
 
 def _bind_runtime(rt: GameRuntime) -> None:
@@ -452,19 +616,21 @@ def _bind_runtime(rt: GameRuntime) -> None:
             RADAR.bind_wave_schedule(getattr(rt, 'wave_schedule', None))  # type: ignore[arg-type]
     except Exception:
         pass
-    # Resupply state (Sea King)
-if 'RESUPPLY' not in globals():
-    RESUPPLY = {"active": False, "eta_ts": 0.0, "started_ts": 0.0, "stage": None,
-                "origin_cell": None, "origin_xy": None, "target_cell": None, "target_xy": None}
+    # Resupply state (Sea King) and CAP hooks
+    global RESUPPLY
+    if 'RESUPPLY' not in globals() or RESUPPLY is None:
+        RESUPPLY = {"active": False, "eta_ts": 0.0, "started_ts": 0.0, "stage": None,
+                    "origin_cell": None, "origin_xy": None, "target_cell": None, "target_xy": None}
     hook = globals().get('record_event')
-    if CAP is not None and callable(hook):
+    cap = globals().get('CAP')
+    if cap is not None and callable(hook):
         try:
-            CAP._event_hook = hook  # type: ignore[attr-defined]
+            cap._event_hook = hook  # type: ignore[attr-defined]
         except Exception:
             pass
-    if CAP is not None and hasattr(CAP, 'bind_voice_hook'):
+    if cap is not None and hasattr(cap, 'bind_voice_hook'):
         try:
-            CAP.bind_voice_hook(voice_emit)  # type: ignore[attr-defined]
+            cap.bind_voice_hook(voice_emit)  # type: ignore[attr-defined]
         except Exception:
             pass
     # Provide resupply state to radar for Sea King injection
@@ -478,6 +644,15 @@ if 'RESUPPLY' not in globals():
             RADAR.cap_missions_provider = (lambda: CAP.snapshot().get("missions") if CAP is not None else [])
     except Exception:
         pass
+    try:
+        watchdog.record_runtime_tick('bind', time.time())
+    except Exception:
+        pass
+    if WATCHDOG_ENABLED and not app.config.get('TESTING', False):
+        try:
+            watchdog.start(_watchdog_reset)
+        except Exception:
+            logging.exception("Watchdog failed to start")
 
 
 _bind_runtime(RUNTIME)
@@ -554,6 +729,8 @@ RADIO_EVENTS: Dict[str, str] = _load_radio_script()
 
 RADIO_AUDIO_DIR = core.DATA_DIR / "radiomsg"
 RADIO_AUDIO_LIBRARY: Dict[str, Dict[str, Any]] = {}
+SOUND_CLIP_CACHE: Dict[str, Dict[str, Any]] = {}
+CELL_AUDIO_PATTERN = re.compile(r"^([A-Z]{2})(\d{1,3})$")
 
 
 def _wav_duration_seconds(path: Path) -> float:
@@ -604,6 +781,114 @@ def _reload_radio_audio_library(base: Path | None = None) -> None:
 
 _reload_radio_audio_library(core.DATA_DIR / 'radiomsg')
 
+
+def _sounds_audio_dir() -> Path:
+    try:
+        base = DATA_DIR / 'sounds'
+        if base.exists():
+            return base
+    except Exception:
+        pass
+    try:
+        base = core.DATA_DIR / 'sounds'
+        if base.exists():
+            return base
+    except Exception:
+        pass
+    return Path(__file__).parent / 'data' / 'sounds'
+
+
+def _sound_clip_lookup(name: str) -> Dict[str, Any] | None:
+    key = str(name or '').strip().upper()
+    if not key:
+        return None
+    cached = SOUND_CLIP_CACHE.get(key)
+    if cached:
+        return dict(cached)
+    base = _sounds_audio_dir()
+    path = base / f"{key}.wav"
+    if not path.exists():
+        return None
+    dur = _wav_duration_seconds(path)
+    if dur <= 0.0:
+        dur = 0.6
+    info = {
+        'file': f"/data/sounds/{path.name}",
+        'duration': round(dur, 3),
+    }
+    SOUND_CLIP_CACHE[key] = info
+    return dict(info)
+
+
+def _cell_audio_tokens(cell: str | None) -> list[str]:
+    if not cell:
+        return []
+    try:
+        label = str(cell).strip().upper()
+    except Exception:
+        return []
+    match = CELL_AUDIO_PATTERN.match(label)
+    if not match:
+        return []
+    letters, digits = match.groups()
+    tokens: list[str] = [letters[0], letters[1]]
+    if digits:
+        num_token = digits if len(digits) >= 2 else digits.rjust(2, '0')
+        tokens.append(num_token)
+    return tokens
+
+
+def _compose_contact_spawn_audio(base: Dict[str, Any] | None, ctx: Dict[str, Any]) -> Dict[str, Any] | None:
+    base_info = dict(base or {})
+    playlist: list[str] = []
+    durations: list[float] = []
+    first_file = base_info.get('file')
+    if isinstance(first_file, str) and first_file:
+        playlist.append(first_file)
+        try:
+            durations.append(float(base_info.get('duration') or 0.0))
+        except Exception:
+            pass
+    tokens = _cell_audio_tokens((ctx or {}).get('cell'))
+    token_clips: list[Dict[str, Any]] = []
+    missing = False
+    for token in tokens:
+        clip = _sound_clip_lookup(token)
+        if clip is None:
+            logging.debug("Radar coordinate audio clip missing for token %s", token)
+            missing = True
+            break
+        token_clips.append(clip)
+    if not missing:
+        for clip in token_clips:
+            file_path = clip.get('file')
+            if isinstance(file_path, str) and file_path:
+                playlist.append(file_path)
+                try:
+                    durations.append(float(clip.get('duration') or 0.0))
+                except Exception:
+                    pass
+    if not playlist:
+        return base_info or None
+    total = 0.0
+    for val in durations:
+        try:
+            total += float(val)
+        except Exception:
+            continue
+    if total <= 0.0:
+        try:
+            total = float(base_info.get('duration') or 0.0)
+        except Exception:
+            total = 0.0
+    if total <= 0.0:
+        total = len(playlist) * 0.9
+    base_info['playlist'] = playlist
+    if 'file' not in base_info and playlist:
+        base_info['file'] = playlist[0]
+    base_info['duration'] = round(total, 3)
+    return base_info
+
 RADIO_ROLE_CHANNEL: Dict[str, int] = {
     'Navigation': 1,
     'Radar': 2,
@@ -641,8 +926,6 @@ RADIO_SKIP_VOICE: set[str] = {
 
 def _radio_role_for_event(event_id: str) -> str:
     eid = str(event_id)
-    if eid in ('radar.target.locked', 'radar.target.unlocked'):
-        return 'Fire Control'
     if eid.startswith('radar.'):
         return 'Radar'
     if eid.startswith('weapon.'):
@@ -811,7 +1094,7 @@ DEFENSE_STATE: Dict[str, Any] = {"chaff_until": 0.0, "turn_until": 0.0}
 MOTION_STATE: Dict[str, Any] = {"last_heading": None, "last_ts": 0.0}
 SKIRMISH_ACTIVE: Dict[str, Any] = {"id": None, "started_ts": None}
 NAV_STATE: Dict[str, Any] = {"last_cell": None, "turn_target": None, "turn_hold_since": 0.0, "boundary_cooldown_until": 0.0}
-CAP: HermesCAP | None = RUNTIME.cap
+CAP = RUNTIME.cap
 CONVOY = (Convoy.load(DATA_DIR) if Convoy is not None else None)
 CAP_META: Dict[int, Dict[str, Any]] = {}
 if CAP is not None:
@@ -902,6 +1185,23 @@ def pending_arming_left(name: str, now: float | None = None) -> int:
     except Exception:
         return 0
 
+
+def weapon_arm_delay(name: str) -> float:
+    try:
+        return float(core.weapon_arm_delay(name))
+    except Exception:
+        try:
+            return float(getattr(core, 'ARM_DELAY_DEFAULT', 5.0))
+        except Exception:
+            return 5.0
+
+
+def weapon_cooldown(name: str) -> float:
+    try:
+        return float(core.weapon_cooldown(name))
+    except Exception:
+        return 2.0
+
 # Debug contacts
 DEBUG_CONTACTS = core.DEBUG_CONTACTS
 DEBUG_NEXT_ID = core.DEBUG_NEXT_ID
@@ -941,13 +1241,20 @@ class _RecorderLike:
                             rng = round(((wx-ox)**2 + (wy-oy)**2) ** 0.5, 1)
                         except Exception:
                             rng = None
+                    cell = None
+                    if wx is not None and wy is not None:
+                        try:
+                            cell = world_to_cell(float(wx), float(wy))
+                        except Exception:
+                            cell = None
                     record_event('radar.contact.spawn', {
                         'id': cid,
                         'name': name,
                         'class_name': cls or (data or {}).get('allegiance') or '',
                         'allegiance': (data or {}).get('allegiance'),
                         'range_nm': rng,
-                        'speed': speed
+                        'speed': speed,
+                        'cell': cell
                     })
                     try:
                         if str((data or {}).get('allegiance', '')).lower() == 'hostile' and cls.lower() == 'ship':
@@ -1188,13 +1495,46 @@ def api_status():
         from projects.falklandV2.subsystems.status import build as build_status
         build_start = time.time()
         payload = build_status()
+        try:
+            response_schema.embed_schema_version(payload, "status")
+        except Exception:
+            logging.exception("status schema embed failed")
+        schema_spec = None
+        try:
+            schema_spec = response_schema.get_schema("status")
+        except Exception:
+            schema_spec = None
         build_ms = int((time.time() - build_start) * 1000)
+        try:
+            STATUS_POLL_MONITOR.record_success(build_ms)
+        except Exception:
+            pass
         try:
             diag = payload.setdefault('diag', {}) if isinstance(payload, dict) else {}
             if isinstance(diag, dict):
                 diag.setdefault('build_ms', build_ms)
+                try:
+                    diag.setdefault('status_poll', STATUS_POLL_MONITOR.snapshot())
+                except Exception:
+                    pass
+                try:
+                    diag.setdefault('watchdog', watchdog.snapshot())
+                except Exception:
+                    pass
+                if schema_spec is not None:
+                    client_schema = request.headers.get('X-Stations-Schema', '').strip()
+                    if client_schema and client_schema != schema_spec.version:
+                        diag.setdefault('schema', {})['client_version'] = client_schema
+                        diag['schema']['server_version'] = schema_spec.version
         except Exception:
             pass
+        if schema_spec is not None:
+            try:
+                errors = response_schema.validate("status", payload) or []
+                if errors:
+                    logging.warning("/api/status schema validation issues: %s", "; ".join(errors))
+            except Exception:
+                logging.exception("/api/status schema validation failure")
         if build_ms > 2000:
             try:
                 record_flight({
@@ -1211,10 +1551,31 @@ def api_status():
         record_flight({"route": route, "method": "GET", "status": 200,
                        "duration_ms": int((time.time()-t0)*1000),
                        "request": {}, "response": payload})
-        return jsonify(payload)
+        response = jsonify(payload)
+        if schema_spec is not None:
+            try:
+                response.headers['X-Schema-Version'] = schema_spec.version
+            except Exception:
+                pass
+        return response
     except Exception as e:
         logging.exception("/api/status error: %s", e)
+        try:
+            STATUS_POLL_MONITOR.record_failure(str(e))
+        except Exception:
+            pass
+        diag_snapshot: Dict[str, Any] = {}
+        try:
+            diag_snapshot = STATUS_POLL_MONITOR.snapshot()
+        except Exception:
+            diag_snapshot = {}
         payload = {"ok": False, "error": str(e)}
+        if diag_snapshot:
+            payload['diag'] = {'status_poll': diag_snapshot}
+        try:
+            response_schema.embed_schema_version(payload, "status")
+        except Exception:
+            pass
         record_flight({"route": route, "method": "GET", "status": 500,
                        "duration_ms": int((time.time()-t0)*1000),
                        "request": {}, "response": payload})
@@ -1606,6 +1967,8 @@ RADIO_EVENT_AUDIO_MAP: Dict[str, Callable[[Dict[str, Any]], str | None]] = {
     'radar.target.locked': lambda ctx: 'RDR_PRIMARY_TARGET_LOCKED',
     'radar.target.unlocked': lambda ctx: 'RDR_PRIMARY_TARGET_UNLOCKED',
     'radar.contact.spawn': _audio_key_from_contact_spawn,
+    'radar.scan.start': lambda ctx: 'RDR_SCAN_START',
+    'radar.scan.complete': lambda ctx: 'RDR_SCAN_COMPLETE',
     'cap.launch': lambda ctx: 'SHAR2_TAKING_OFF',
     'cap.intercept.launch': lambda ctx: 'SHAR2_TAKING_OFF',
     'cap.onstation': lambda ctx: 'SHAR_ON_STATION',
@@ -1736,6 +2099,10 @@ def _radio_audio_for(role: str, text: str, *, event_id: str | None, event_ctx: D
     if not key:
         key = _text_audio_key(role_name, text)
     info = _radio_audio_lookup(key)
+    if event_id == 'radar.contact.spawn':
+        combo = _compose_contact_spawn_audio(info, event_ctx or {})
+        if combo:
+            return dict(combo)
     if info:
         return dict(info)
     return None
@@ -1860,6 +2227,13 @@ def record_officer(role: str, text: str, *, channel: int | None = None,
             file_path = audio_info.get('file')
             if file_path:
                 entry['file'] = file_path
+            playlist_val = audio_info.get('playlist')
+            if isinstance(playlist_val, (list, tuple)):
+                seq = [str(p) for p in playlist_val if isinstance(p, str) and p]
+                if seq:
+                    entry['playlist'] = seq
+                    if 'file' not in entry:
+                        entry['file'] = seq[0]
             try:
                 dur = float(audio_info.get('duration') or 0.0)
             except Exception:
@@ -1932,8 +2306,8 @@ def officer_say(role: str, key: str, ctx: Dict[str, Any] | None = None, fallback
     """
     # Map common role+key pairs to canonical event ids
     ROLE_KEY_TO_EVENT = {
-        ('Fire Control', 'locked'): 'radar.target.locked',
-        ('Fire Control', 'unlocked'): 'radar.target.unlocked',
+        ('Fire Control', 'locked'): 'weapon.target.locked',
+        ('Fire Control', 'unlocked'): 'weapon.target.unlocked',
         ('Radar', 'scanning'): 'radar.scan.start',
         ('Radar', 'scan_report'): 'radar.scan.complete',
         ('Weapons', 'ready'): 'weapon.arm',

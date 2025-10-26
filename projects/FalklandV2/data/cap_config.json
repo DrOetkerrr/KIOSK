@@ -31,12 +31,12 @@
         "Canberra bomber": 0.8
       },
       "intercept_prob_pre_release": {
-        "A-4 Skyhawk": 0.5,
-        "Dagger (Mirage V)": 0.5,
-        "Mirage III": 0.45,
-        "Pucar\u00e1": 0.7,
-        "Super \u00c9tendard": 0.3,
-        "Canberra bomber": 0.4
+        "A-4 Skyhawk": 0.33,
+        "Dagger (Mirage V)": 0.33,
+        "Mirage III": 0.33,
+        "Pucar\u00e1": 0.33,
+        "Super \u00c9tendard": 0.33,
+        "Canberra bomber": 0.33
       },
       "defence_bonus_if_not_intercepted": 0.1
     },

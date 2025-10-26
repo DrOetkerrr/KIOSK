@@ -191,11 +191,41 @@ class Contact:
 
     def tick(self, dt_s: float, own_x: float, own_y: float):
         # Guidance: hostiles gently steer towards own ship; missiles fly straight
+        meta_obj = self.meta if isinstance(self.meta, dict) else {}
         retreat_heading = None
-        if self.allegiance == "Hostile" and str(self.meta.get('kind','')) != 'missile':
-            if self.meta.get('retreating'):
+        if self.allegiance == "Hostile" and str(meta_obj.get('kind', '')).lower() != 'missile':
+            intercept_xy: Optional[Tuple[float, float]] = None
+            intercept_payload = meta_obj.get('r550_target')
+            if isinstance(intercept_payload, dict):
+                tx = intercept_payload.get('x')
+                ty = intercept_payload.get('y')
+                if isinstance(tx, (int, float)) and isinstance(ty, (int, float)):
+                    fx = float(tx)
+                    fy = float(ty)
+                    if math.isfinite(fx) and math.isfinite(fy):
+                        intercept_xy = (fx, fy)
+            if intercept_xy is not None:
+                target_x, target_y = intercept_xy
+                desired = math.degrees(math.atan2(target_x - self.x, -(target_y - self.y))) % 360.0
                 try:
-                    retreat_heading = float(self.meta.get('retreat_heading', self.course_deg))
+                    rng_nm = nm_distance(self.x, self.y, target_x, target_y)
+                except Exception:
+                    rng_nm = None
+                if rng_nm is not None:
+                    if not math.isfinite(rng_nm):
+                        rng_nm = None
+                if rng_nm is not None:
+                    try:
+                        if isinstance(intercept_payload, dict):
+                            prev = float(intercept_payload.get('range_nm', rng_nm))
+                            if not math.isfinite(prev) or abs(prev - rng_nm) > 0.05:
+                                intercept_payload['range_nm'] = float(rng_nm)
+                                meta_obj['r550_target'] = intercept_payload
+                    except Exception:
+                        pass
+            elif meta_obj.get('retreating'):
+                try:
+                    retreat_heading = float(meta_obj.get('retreat_heading', self.course_deg))
                 except Exception:
                     retreat_heading = self.course_deg
                 desired = retreat_heading
@@ -207,15 +237,27 @@ class Contact:
             turn_clamped = clamp(turn, -max_turn_per_s * dt_s, max_turn_per_s * dt_s)
             self.course_deg = (self.course_deg + turn_clamped) % 360.0
             if retreat_heading is not None:
-                self.meta['retreat_heading'] = retreat_heading
+                meta_obj['retreat_heading'] = retreat_heading
+            if meta_obj is not self.meta:
+                try:
+                    self.meta = meta_obj
+                except Exception:
+                    pass
 
         if self.speed_kts > 0:
             nm = (self.speed_kts * HOSTILE_SPEED_SCALE) * (dt_s / 3600.0)
             rad = math.radians(self.course_deg)
             dx = math.sin(rad) * nm
             dy = -math.cos(rad) * nm
-            self.x = clamp(self.x + dx, 0.0, float(WORLD_N))
-            self.y = clamp(self.y + dy, 0.0, float(WORLD_N))
+            next_x = self.x + dx
+            next_y = self.y + dy
+            if self.allegiance == "Hostile" and self.meta.get('retreating') and str(self.meta.get('kind', '')) != 'missile':
+                # Allow retreating aircraft to depart the battlespace without being clamped back in.
+                self.x = float(next_x)
+                self.y = float(next_y)
+            else:
+                self.x = clamp(next_x, 0.0, float(WORLD_N))
+                self.y = clamp(next_y, 0.0, float(WORLD_N))
 
 # --- Radar -------------------------------------------------------------------
 class Radar:
@@ -357,6 +399,11 @@ class Radar:
             except Exception:
                 pass
 
+            try:
+                self._assign_r550_intercepts()
+            except Exception:
+                pass
+
             # motion
             for c in self.contacts:
                 c.tick(dt_s, ox, oy)
@@ -377,14 +424,20 @@ class Radar:
             except Exception:
                 pass
 
-            # priority + alarms
-            self._select_priority(ox, oy)
-            self._check_close_alarm(ox, oy)
             # morale effects: some Argentine aircraft abort when Harriers are close
             try:
                 self._apply_harrier_deterrence()
             except Exception:
                 pass
+
+            try:
+                self._prune_retreating_contacts(ox, oy)
+            except Exception:
+                pass
+
+            # priority + alarms
+            self._select_priority(ox, oy)
+            self._check_close_alarm(ox, oy)
 
             # cap count
             try:
@@ -770,6 +823,128 @@ class Radar:
             "wingman_id": wingman.id,
             "spacing_nm": spacing_nm,
         }
+
+    def _is_r550_interceptor(self, contact: Contact) -> bool:
+        try:
+            if str(getattr(contact, 'allegiance', '')).lower() != 'hostile':
+                return False
+            name = str(getattr(contact, 'name', '')).strip()
+            if name == 'Mirage III (R550)':
+                return True
+            meta = getattr(contact, 'meta', {}) or {}
+            if isinstance(meta, dict):
+                primary = meta.get('primary_weapon')
+                if not primary and isinstance(meta.get('cap'), dict):
+                    primary = meta['cap'].get('primary_weapon')
+                if isinstance(primary, str) and 'r550' in primary.lower():
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def _is_shar_contact(self, contact: Contact) -> bool:
+        try:
+            if str(getattr(contact, 'allegiance', '')).lower() != 'friendly':
+                return False
+            name = str(getattr(contact, 'name', '')).lower()
+            if 'sea harrier' in name or name == 'shar':
+                return True
+            meta = getattr(contact, 'meta', {}) or {}
+            if isinstance(meta, dict):
+                if meta.get('cap_flight'):
+                    disp = str(meta.get('display_name') or meta.get('callsign') or name).lower()
+                    if 'harrier' in disp or 'shar' in disp:
+                        return True
+        except Exception:
+            return False
+        return False
+
+    @staticmethod
+    def _finite_xy(x: Any, y: Any) -> Optional[Tuple[float, float]]:
+        try:
+            fx = float(x)
+            fy = float(y)
+        except Exception:
+            return None
+        if not (math.isfinite(fx) and math.isfinite(fy)):
+            return None
+        return (fx, fy)
+
+    def _assign_r550_intercepts(self) -> None:
+        if not self.contacts:
+            return
+        shar_contacts = [c for c in self.contacts if self._is_shar_contact(c)]
+        if not shar_contacts:
+            for hostile in self.contacts:
+                if not self._is_r550_interceptor(hostile):
+                    continue
+                meta_obj = getattr(hostile, 'meta', {}) or {}
+                if not isinstance(meta_obj, dict):
+                    continue
+                if 'r550_target' in meta_obj:
+                    meta = dict(meta_obj)
+                    meta.pop('r550_target', None)
+                    hostile.meta = meta
+            return
+
+        for hostile in self.contacts:
+            if not self._is_r550_interceptor(hostile):
+                continue
+            nearest = None
+            nearest_nm = None
+            nearest_xy: Optional[Tuple[float, float]] = None
+            for shar in shar_contacts:
+                if shar is hostile:
+                    continue
+                shar_xy = self._finite_xy(getattr(shar, 'x', 0.0), getattr(shar, 'y', 0.0))
+                hostile_xy = self._finite_xy(getattr(hostile, 'x', 0.0), getattr(hostile, 'y', 0.0))
+                if shar_xy is None or hostile_xy is None:
+                    continue
+                try:
+                    dist = nm_distance(hostile_xy[0], hostile_xy[1], shar_xy[0], shar_xy[1])
+                except Exception:
+                    continue
+                if not math.isfinite(dist):
+                    continue
+                if nearest_nm is None or dist < nearest_nm:
+                    nearest_nm = dist
+                    nearest = shar
+                    nearest_xy = shar_xy
+
+            meta_obj = getattr(hostile, 'meta', {}) or {}
+            meta = dict(meta_obj) if isinstance(meta_obj, dict) else {}
+            changed = False
+            if nearest is not None and nearest_nm is not None and nearest_nm <= 15.0 and nearest_xy is not None:
+                target_xy = nearest_xy
+                target_payload = {
+                    'id': getattr(nearest, 'id', None),
+                    'x': target_xy[0],
+                    'y': target_xy[1],
+                    'range_nm': float(nearest_nm),
+                }
+                if meta.get('r550_target') != target_payload:
+                    meta['r550_target'] = target_payload
+                    changed = True
+                if meta.pop('retreating', None) is not None:
+                    changed = True
+                if meta.pop('retreat_heading', None) is not None:
+                    changed = True
+                if meta.pop('retreat_since', None) is not None:
+                    changed = True
+                if getattr(hostile, 'threat', '') != 'high':
+                    hostile.threat = 'high'
+            else:
+                if meta.pop('r550_target', None) is not None:
+                    changed = True
+                if meta.pop('retreating', None) is not None:
+                    changed = True
+                if meta.pop('retreat_heading', None) is not None:
+                    changed = True
+                if meta.pop('retreat_since', None) is not None:
+                    changed = True
+
+            if changed:
+                hostile.meta = meta
 
     def force_spawn(self, own_x: float, own_y: float, allegiance: str, bearing_deg: float, range_nm: float) -> Contact:
         log_contact: Optional[Dict[str, Any]] = None
@@ -1635,6 +1810,8 @@ class Radar:
             try:
                 if str(getattr(hostile, 'allegiance', '')) != 'Hostile':
                     continue
+                if self._is_r550_interceptor(hostile):
+                    continue
                 if str(getattr(hostile, 'meta', {}).get('kind', '')) == 'missile':
                     continue
                 meta = getattr(hostile, 'meta', {})
@@ -1682,6 +1859,86 @@ class Radar:
                     pass
             except Exception:
                 continue
+
+    def _prune_retreating_contacts(self, own_x: float, own_y: float) -> None:
+        try:
+            margin = float(self.cfg.get("retreat_despawn_margin_nm", 5.0))
+        except Exception:
+            margin = 5.0
+        try:
+            horizon = float(self.cfg.get("offboard_max_nm", 40.0))
+        except Exception:
+            horizon = 40.0
+        limit_nm = max(0.0, horizon) + max(0.0, margin)
+        world_margin = max(0.0, margin)
+        survivors: List[Contact] = []
+        removed: List[Tuple[Contact, float]] = []
+        for contact in self.contacts:
+            try:
+                if str(getattr(contact, 'allegiance', '')).lower() != 'hostile':
+                    survivors.append(contact)
+                    continue
+                meta = getattr(contact, 'meta', {}) or {}
+                if not meta.get('retreating'):
+                    survivors.append(contact)
+                    continue
+                if str(meta.get('kind', '')).lower() == 'missile':
+                    survivors.append(contact)
+                    continue
+                rng = nm_distance(float(contact.x), float(contact.y), float(own_x), float(own_y))
+                x = float(getattr(contact, 'x', 0.0))
+                y = float(getattr(contact, 'y', 0.0))
+                if rng < limit_nm and (-world_margin <= x <= float(WORLD_N) + world_margin) and (-world_margin <= y <= float(WORLD_N) + world_margin):
+                    survivors.append(contact)
+                    continue
+                removed.append((contact, rng))
+            except Exception:
+                survivors.append(contact)
+        if not removed:
+            return
+        self.contacts = survivors
+        for contact, _rng in removed:
+            try:
+                cid = int(getattr(contact, 'id', -1))
+                self._pending_detection.discard(cid)
+            except Exception:
+                pass
+            try:
+                formation = getattr(contact, 'meta', {}).get('formation', {})
+                fid = int(formation.get('id')) if isinstance(formation, dict) and formation.get('id') is not None else None
+            except Exception:
+                fid = None
+            if fid is not None:
+                self._enemy_formations.pop(fid, None)
+                for other in self.contacts:
+                    try:
+                        meta = getattr(other, 'meta', {}) or {}
+                        f = meta.get('formation') if isinstance(meta, dict) else None
+                        oid = int(f.get('id')) if isinstance(f, dict) and f.get('id') is not None else None
+                    except Exception:
+                        oid = None
+                    if oid == fid:
+                        try:
+                            meta.pop('formation', None)
+                            other.meta = meta
+                        except Exception:
+                            pass
+            if self.priority_id == getattr(contact, 'id', None):
+                self.priority_id = None
+        if self.rec:
+            for contact, rng in removed:
+                try:
+                    self.rec.log("radar.retreat_despawn", {
+                        "id": int(getattr(contact, 'id', -1)),
+                        "name": getattr(contact, 'name', 'Bandit'),
+                        "range_nm": round(rng, 2),
+                        "world_xy": [
+                            round(float(getattr(contact, 'x', 0.0)), 2),
+                            round(float(getattr(contact, 'y', 0.0)), 2),
+                        ],
+                    })
+                except Exception:
+                    pass
 
     def set_manual_lock(self, contact_id: Optional[int]) -> None:
         if contact_id is None:

@@ -819,6 +819,41 @@ WEAP_DEFAULT_ARMING = {
     "Corvus chaff": "Safe",
 }
 
+ARM_DELAY_DEFAULT = 5.0
+
+
+def weapon_arm_delay(name: str) -> float:
+    """Return the arming delay (seconds) for a given weapon, defaults to spec."""
+    try:
+        rec = WEAP_MAP.get(str(name))
+        if isinstance(rec, dict):
+            delay = rec.get('arm_delay_s')
+            if delay is not None:
+                return float(delay)
+    except Exception:
+        pass
+    return ARM_DELAY_DEFAULT
+
+
+def weapon_cooldown(name: str) -> float:
+    """Return the cooldown duration (seconds) for a weapon according to class/spec."""
+    try:
+        rec = WEAP_MAP.get(str(name))
+        cls = str((rec or {}).get('class', 'Other')).lower()
+        if isinstance(rec, dict) and rec.get('cooldown_s') is not None:
+            return float(rec['cooldown_s'])
+    except Exception:
+        cls = 'other'
+    if cls == 'missile':
+        return 8.0
+    if cls == 'sam':
+        return 6.0
+    if cls == 'decoy':
+        return 5.0
+    if cls == 'gun':
+        return 2.0
+    return 2.0
+
 
 def _normalize_weapon_name(name: str) -> str:
     s = (name or "").strip().lower()
@@ -1006,10 +1041,11 @@ def save_arming(d: Dict[str,str]) -> None:
             rec['arming_until'] = 0.0
         elif state_norm == 'Arming':
             rec['armed'] = False
-            # Preserve existing arming window if set; otherwise leave countdown as-is
-            if float(rec.get('arming_until', 0.0) or 0.0) <= now:
-                default_delay = 10.0 if nm == 'Sea Dart SAM' else 5.0
-                rec['arming_until'] = rec.get('arming_until', now + default_delay)
+            existing_until = float(rec.get('arming_until', 0.0) or 0.0)
+            if existing_until > now:
+                rec['arming_until'] = existing_until
+            else:
+                rec['arming_until'] = now + weapon_arm_delay(nm)
         else:
             rec['armed'] = False
             rec['arming_until'] = 0.0
@@ -1034,14 +1070,30 @@ def compute_in_range(weapon_name: str, primary: Dict[str,Any] | None) -> bool:
     if not primary: return False
     w = WEAP_MAP.get(weapon_name)
     if not w: return False
+    rng = None
     try:
         rng = float(primary.get('range_nm'))
     except Exception:
-        return False
+        alt = primary.get('Range') if isinstance(primary, dict) else None
+        if alt is None:
+            alt = primary.get('range') if isinstance(primary, dict) else None
+        if alt is not None:
+            try:
+                rng = float(alt)
+            except Exception:
+                rng = None
+    if rng is None:
+        # Unknown distance; treat as within envelope so downstream gating can decide.
+        return True
     klass = _primary_class(primary)
     supports = [str(x) for x in (w.get('supports') or [])]
-    if not klass or (supports and klass not in supports):
-        return False
+    if supports:
+        if klass:
+            if klass not in supports:
+                return False
+        else:
+            # Unknown class: allow range gating to decide so UI/system stay permissive.
+            klass = None
     try:
         mn = float(w.get('min_nm', 0.0)); mx = float(w.get('max_nm', 0.0))
     except Exception:

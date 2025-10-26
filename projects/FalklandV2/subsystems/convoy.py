@@ -3,7 +3,7 @@
 Convoy subsystem (stable)
 - Reads escorts from data/convoy.json
 - Keeps escorts in formation with the leader (own ship)
-- Applies a 30s "order lag" before escorts adopt new course/speed
+- Smoothly converges escort course/speed toward the leader (no instant jumps)
 - Returns escort snapshots for HUD / radar lists
 
 Public surface
@@ -13,15 +13,13 @@ Public surface
 """
 
 from __future__ import annotations
-import json, math, time, random
+import json, math, time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from projects.falklandV2.subsystems import nav as navi
 from projects.falklandV2.subsystems import contacts as cons
-
-DELAY_S = 30  # adopt new course/speed after this delay
 
 @dataclass
 class EscortDef:
@@ -52,10 +50,13 @@ class Convoy:
         self._escorts = escorts
         self._offsets_base = {e.id: (float(e.offset_cells[0]), float(e.offset_cells[1])) for e in escorts}
         self._offsets = dict(self._offsets_base)
-        self._last_course: float = 0.0
-        self._last_speed: float = 0.0
-        self._last_set: float = 0.0
-        self._delay_s: float = 30.0
+        self._current_course: float = 0.0
+        self._current_speed: float = 0.0
+        self._target_course: float = 0.0
+        self._target_speed: float = 0.0
+        self._last_update_ts: float | None = None
+        self._max_course_rate: float = 4.0   # degrees per second (slow turn for large vessels)
+        self._max_speed_rate: float = 1.5    # knots per second acceleration/deceleration
         self._init = False
 
     @classmethod
@@ -89,24 +90,54 @@ class Convoy:
         ry = dx * sin_a + dy * cos_a
         return rx, ry
 
-    def _lagged_course_speed(self, course_deg: float, speed_kts: float) -> Tuple[float, float]:
+    @staticmethod
+    def _normalize_course(course_deg: float) -> float:
+        return float(course_deg) % 360.0
+
+    @staticmethod
+    def _step_toward_angle(current: float, target: float, max_step: float) -> float:
+        if max_step <= 0.0:
+            return Convoy._normalize_course(current)
+        diff = ((target - current + 180.0) % 360.0) - 180.0
+        if abs(diff) <= max_step:
+            return Convoy._normalize_course(target)
+        step = math.copysign(min(abs(diff), max_step), diff)
+        return Convoy._normalize_course(current + step)
+
+    @staticmethod
+    def _step_toward_scalar(current: float, target: float, max_step: float) -> float:
+        if max_step <= 0.0:
+            return float(current)
+        diff = target - current
+        if abs(diff) <= max_step:
+            return float(target)
+        return float(current + math.copysign(max_step, diff))
+
+    def _smoothed_course_speed(self, course_deg: float, speed_kts: float) -> Tuple[float, float]:
         now = time.time()
         if not self._init:
-            self._last_course = course_deg
-            self._last_speed = speed_kts
-            self._last_set = now
-            self._delay_s = random.uniform(30.0, 50.0)
+            self._current_course = self._normalize_course(course_deg)
+            self._current_speed = max(0.0, float(speed_kts))
+            self._target_course = self._current_course
+            self._target_speed = self._current_speed
+            self._last_update_ts = now
             self._init = True
-            return self._last_course, self._last_speed
+            return self._current_course, self._current_speed
 
-        changed = (abs((course_deg - self._last_course) % 360.0) > 0.1) or (abs(speed_kts - self._last_speed) > 0.1)
-        if changed and (now - self._last_set) >= self._delay_s:
-            self._last_course = course_deg % 360.0
-            self._last_speed = max(0.0, speed_kts)
-            self._last_set = now
-            self._delay_s = random.uniform(30.0, 50.0)
+        self._target_course = self._normalize_course(course_deg)
+        self._target_speed = max(0.0, float(speed_kts))
 
-        return self._last_course, self._last_speed
+        last_ts = self._last_update_ts or now
+        dt = max(0.0, float(now - last_ts))
+        self._last_update_ts = now
+
+        course_step = self._max_course_rate * dt
+        speed_step = self._max_speed_rate * dt
+
+        self._current_course = self._step_toward_angle(self._current_course, self._target_course, course_step)
+        self._current_speed = self._step_toward_scalar(self._current_speed, self._target_speed, speed_step)
+
+        return self._current_course, self._current_speed
 
     def update(self,
                own_x: float,
@@ -115,7 +146,7 @@ class Convoy:
                speed_kts: float,
                grid: Any) -> List[EscortSnap]:
         out: List[EscortSnap] = []
-        eff_course, eff_speed = self._lagged_course_speed(course_deg, speed_kts)
+        eff_course, eff_speed = self._smoothed_course_speed(course_deg, speed_kts)
         for e in self._escorts:
             offset = self._offsets.get(e.id) or self._offsets_base.get(e.id) or (0.0, 0.0)
             odx, ody = float(offset[0]), float(offset[1])

@@ -25,12 +25,18 @@
     miss: "miss.wav",
     enemy_bomb_hit: "incoming.wav",
     enemy_bomb_miss: "miss.wav",
+    new_contact: "newcontact.wav",
     // alarms
     red_alert: "red-alert.wav",
   };
 
   const BASE = "/data/sounds/";
   let unlocked = false;
+  const fetchWithTimeoutLocal = typeof window.fetchWithTimeout === 'function'
+    ? (url, options = {}, timeoutMs) => window.fetchWithTimeout(url, options, timeoutMs)
+    : (url, options = {}, _timeoutMs) => fetch(url, options);
+  const AUDIO_POLL_TIMEOUT_MS = 6000;
+  let audioPollInFlight = false;
 
   // Feature flags via URL or localStorage
   function _qsFlag(name){
@@ -410,6 +416,34 @@
     }
   }
 
+  function playRadioSequence(files, baseOpts, done){
+    const list = Array.isArray(files) ? files.filter((f)=>typeof f === 'string' && f) : [];
+    if(!list.length){
+      if(typeof done === 'function') done();
+      return;
+    }
+    const lastIndex = list.length - 1;
+    const playAt = (idx) => {
+      if(idx > lastIndex){
+        if(typeof done === 'function') done();
+        return;
+      }
+      const file = list[idx];
+      const isLast = idx === lastIndex;
+      const opts = Object.assign({}, baseOpts || {});
+      if(!isLast){
+        opts.onEndUrl = null;
+        const fadeVal = Number.isFinite(opts.fadeOutMs) ? Number(opts.fadeOutMs) : RADIO_FADE_MS;
+        opts.fadeOutMs = Math.min(Math.max(60, fadeVal), 220);
+        opts.onDone = () => playAt(idx + 1);
+      }else{
+        opts.onDone = done;
+      }
+      playRadio(file, opts);
+    };
+    playAt(0);
+  }
+
   function drainRadioQueue(){
     if(introActive) return;
     if(radioBusy) return;
@@ -423,7 +457,9 @@
       radioQueue.unshift(item);
       return;
     }
-    if(!item.file){
+    const playlist = Array.isArray(item.playlist) ? item.playlist.filter((f)=>typeof f === 'string' && f) : null;
+    const files = (playlist && playlist.length) ? playlist.slice() : (item.file ? [item.file] : []);
+    if(!files.length){
       drainRadioQueue();
       return;
     }
@@ -459,15 +495,15 @@
     const vol = Number.isFinite(Number(item.vol)) ? Math.max(0, Math.min(1, Number(item.vol))) : 0.8;
     const fadeOut = Math.max(80, Number(item.fadeOutMs) || RADIO_FADE_MS);
     setDucking(true, Math.max(0.5, durationSec - 0.15));
-    playRadio(item.file, {
+    const baseOpts = {
       vol,
       fadeOutMs: fadeOut,
       onEndUrl: item.onEndUrl,
-      onDone: () => {
-        radioBusy = false;
-        maybeRestoreDuck();
-        drainRadioQueue();
-      }
+    };
+    playRadioSequence(files, baseOpts, () => {
+      radioBusy = false;
+      maybeRestoreDuck();
+      drainRadioQueue();
     });
   }
 
@@ -491,9 +527,13 @@
   }
 
   async function pollLaunchAndPlay() {
+    if (audioPollInFlight) {
+      return;
+    }
+    audioPollInFlight = true;
     _syncActiveStation();
     try {
-      const r = await fetch("/api/status", { cache: "no-store" });
+      const r = await fetchWithTimeoutLocal("/api/status", { cache: "no-store" }, AUDIO_POLL_TIMEOUT_MS);
       const j = await r.json();
 
       // 1) Weapon / chaff launches
@@ -592,8 +632,9 @@
           let channelId = parseInt(rs.channel, 10);
           if(!Number.isFinite(channelId)) channelId = _roleChannel(roleLabel);
           const guardFlag = !!(rs.guard || channelId === 6);
+          const playlistArr = Array.isArray(rs.playlist) ? rs.playlist.filter((f)=>typeof f === 'string' && f) : null;
           lastRadio = { ts: ts3, role: roleLabel, channel: channelId };
-          if (rs.file){
+          if (rs.file || (playlistArr && playlistArr.length)){
             const payload = {
               ts: ts3,
               role: roleLabel,
@@ -605,6 +646,12 @@
               fadeOutMs: Number((rs && rs.fade_ms)!=null ? rs.fade_ms : 250),
               onEndUrl: rs.on_end_url || null
             };
+            if(playlistArr && playlistArr.length){
+              payload.playlist = playlistArr;
+              if(!payload.file){
+                payload.file = playlistArr[0];
+              }
+            }
             if(_shouldPlay(channelId, guardFlag)) enqueueRadioMessage(payload);
             else if(!guardFlag) deferRadioItem(channelId, payload);
             else enqueueRadioMessage(payload);
@@ -680,8 +727,12 @@
 
       // 6) Fly-by trigger (any aircraft within 0.3 nm crossing inward)
       updateFlyby(j);
+      // 7) Hostile contact arrival cue
+      detectNewHostiles(j);
     } catch (_) {
       // never break the UI
+    } finally {
+      audioPollInFlight = false;
     }
   }
 
@@ -723,6 +774,28 @@
   // ---- Fly-by detector (client-side threshold from status contacts) ----
   const FLY_THRESH = 0.3; // nm
   let lastNear = new Set(); // ids that were <= thresh last tick
+  let knownHostileIds = new Set();
+
+  function detectNewHostiles(statusJson) {
+    const list = Array.isArray(statusJson?.contacts) ? statusJson.contacts : [];
+    const next = new Set();
+    let hasNew = false;
+    for (const c of list) {
+      if (!c) continue;
+      const allegiance = String(c.type || c.allegiance || '').toLowerCase();
+      if (allegiance !== 'hostile') continue;
+      const idVal = c.id ?? c.ID ?? c.ident ?? c.track ?? c.name ?? `${c.cell || ''}:${c.class || ''}`;
+      const key = String(idVal || `${c.cell || ''}:${c.name || ''}`);
+      next.add(key);
+      if (!knownHostileIds.has(key)) {
+        hasNew = true;
+      }
+    }
+    if (hasNew && !introActive && unlocked) {
+      playOne(SOUND_MAP.new_contact || "newcontact.wav");
+    }
+    knownHostileIds = next;
+  }
 
   function updateFlyby(statusJson) {
     if (!unlocked) return;

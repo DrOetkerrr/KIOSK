@@ -6,6 +6,7 @@ import threading
 from flask import Blueprint, jsonify, request
 from flask import current_app
 import os
+from projects.falklandV2 import watchdog
 bp = Blueprint("diag", __name__)
 
 
@@ -129,12 +130,30 @@ def reset_runtime():
                                "request": {'clear_tts': clear_tts}, "response": {"ok": True}})
         except Exception:
             pass
+        try:
+            watchdog.note_reset('manual', True)
+            watchdog.record_runtime_tick('reset', time.time())
+        except Exception:
+            pass
         return jsonify({"ok": True, "clear_tts": clear_tts})
     except Exception as e:
         try:
             L['record_flight']({"route": "/diag/reset", "method": "POST", "status": 500, "duration_ms": 0, "request": {}, "response": {"ok": False, "error": str(e)}})
         except Exception:
             pass
+        try:
+            watchdog.note_reset('manual', False, error=str(e))
+        except Exception:
+            pass
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@bp.get("/diag/heartbeat")
+def watchdog_status():
+    try:
+        return jsonify({"ok": True, "heartbeat": watchdog.snapshot()})
+    except Exception as e:
+        logging.exception("/diag/heartbeat error: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
 
 

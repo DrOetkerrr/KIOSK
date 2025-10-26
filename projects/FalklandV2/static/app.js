@@ -7,8 +7,115 @@ const $$ = (sel)=>document.querySelectorAll(sel);
 const fmt = (v, d=0)=> (v===undefined||v===null) ? '—' : Number(v).toFixed(d);
 const text = (el, s)=>{ if(el) el.textContent = s; };
 const introOverlay = document.getElementById('intro-overlay');
-function showIntroOverlay(){ if(introOverlay) introOverlay.classList.remove('hidden'); }
-function hideIntroOverlay(){ if(introOverlay) introOverlay.classList.add('hidden'); }
+const introSkipBtn = introOverlay ? introOverlay.querySelector('[data-skip-intro]') : null;
+let introReturnFocus = null;
+function showIntroOverlay(){
+  if(!introOverlay) return;
+  try{
+    const active = document.activeElement;
+    if(active && active !== document.body && !introOverlay.contains(active)){
+      introReturnFocus = active;
+    }
+  }catch(_){
+    introReturnFocus = null;
+  }
+  introOverlay.classList.remove('hidden');
+  introOverlay.removeAttribute('aria-hidden');
+  try{ introOverlay.removeAttribute('inert'); }catch(_){}
+  if(introSkipBtn){
+    try{ introSkipBtn.tabIndex = 0; }catch(_){}
+  }
+  try{
+    if(introSkipBtn && typeof introSkipBtn.focus === 'function'){ introSkipBtn.focus({preventScroll:true}); }
+  }catch(_){}
+}
+function hideIntroOverlay(){
+  if(!introOverlay) return;
+  let nextFocus = null;
+  try{
+    const target = introReturnFocus;
+    introReturnFocus = null;
+    if(target && typeof target.focus === 'function' && !(target instanceof HTMLElement && target.hasAttribute('disabled'))){
+      nextFocus = target;
+    }else{
+      const focusables = document.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+      for(const el of focusables){
+        if(introOverlay.contains(el)) continue;
+        if(el instanceof HTMLElement && !el.hasAttribute('disabled')){
+          nextFocus = el;
+          break;
+        }
+      }
+    }
+  }catch(_){
+    nextFocus = null;
+  }
+  try{
+    const active = document.activeElement;
+    if(active && introOverlay.contains(active) && typeof active.blur === 'function'){
+      active.blur();
+    }
+  }catch(_){}
+  if(introSkipBtn){
+    try{
+      introSkipBtn.tabIndex = -1;
+      introSkipBtn.blur();
+    }catch(_){}
+  }
+  if(nextFocus){
+    try{ nextFocus.focus({preventScroll:true}); }catch(_){}
+  }
+  introOverlay.classList.add('hidden');
+  introOverlay.setAttribute('aria-hidden', 'true');
+  try{ introOverlay.setAttribute('inert',''); }catch(_){}
+}
+const ApiClient = (typeof window !== 'undefined' && window.ApiClient) ? window.ApiClient : null;
+const DEFAULT_FETCH_TIMEOUT = ApiClient && Number.isFinite(ApiClient.DEFAULT_TIMEOUT_MS)
+  ? ApiClient.DEFAULT_TIMEOUT_MS
+  : 4500;
+const fetchWithTimeout = (ApiClient && typeof ApiClient.fetchWithTimeout === 'function')
+  ? (url, options={}, timeoutMs=DEFAULT_FETCH_TIMEOUT)=> ApiClient.fetchWithTimeout(url, options, timeoutMs)
+  : async function(url, options={}, timeoutMs=DEFAULT_FETCH_TIMEOUT){
+      let controller = null;
+      let timer = null;
+      try{
+        if(typeof AbortController !== 'undefined' && !(options && options.signal)){
+          controller = new AbortController();
+          timer = setTimeout(()=> controller && controller.abort(), Math.max(500, Number(timeoutMs)||DEFAULT_FETCH_TIMEOUT));
+        }
+        const opts = Object.assign({}, options);
+        if(controller) opts.signal = controller.signal;
+        return await fetch(url, opts);
+      }catch(err){
+        if(controller && err && err.name === 'AbortError'){
+          const e = new Error(`timeout ${timeoutMs}ms ${url}`);
+          e.name = 'TimeoutError';
+          throw e;
+        }
+        throw err;
+      }finally{
+        if(timer) clearTimeout(timer);
+      }
+    };
+const fetchJson = (ApiClient && typeof ApiClient.fetchJson === 'function')
+  ? (url, options={}, timeoutMs=DEFAULT_FETCH_TIMEOUT)=> ApiClient.fetchJson(url, options, timeoutMs)
+  : async function(url, options={}, _timeoutMs=DEFAULT_FETCH_TIMEOUT){
+      const res = await fetchWithTimeout(url, options, DEFAULT_FETCH_TIMEOUT);
+      if(!res.ok) throw new Error(`${res.status} ${url}`);
+      return await res.json();
+    };
+const createPoller = ApiClient && typeof ApiClient.createPoller === 'function'
+  ? (cfg)=> ApiClient.createPoller(cfg)
+  : null;
+const STATUS_SCHEMA_VERSION = '1.0.0';
+const STATUS_REQUEST_HEADERS = (() => {
+  const headers = {};
+  if(typeof window !== 'undefined' && window.__stations_build){
+    headers['X-Stations-Build'] = String(window.__stations_build);
+  }
+  headers['X-Stations-Schema'] = STATUS_SCHEMA_VERSION;
+  return headers;
+})();
 if(introOverlay){
   if(window.__introActive){ showIntroOverlay(); }
   window.addEventListener('intro:start', showIntroOverlay);
@@ -34,11 +141,14 @@ function badge(txt, cls='badge'){ const span=document.createElement('span'); spa
 
 let lastOK=false, lastPoll=0, pendingLockId=null;
 let __serverVersion=null;
+const STATUS_POLL_INTERVAL_MS = 1500;
+const STATUS_POLL_TIMEOUT_MS = 9000;
+let statusPoller = null;
 
 // ---------- Poll status ----------
 async function getJSON(url){
   const t0=performance.now();
-  const r = await fetch(url, {cache:'no-store'});
+  const r = await fetchWithTimeout(url, {cache:'no-store'});
   lastPoll = Math.round(performance.now()-t0);
   if(!r.ok) throw new Error(r.status+' '+url);
   return await r.json();
@@ -132,7 +242,7 @@ function renderWeapons(arr){
 
 async function toggleArm(name, state){
   try{
-    const r = await fetch('/weapons/arm',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name,state})});
+    const r = await fetchWithTimeout('/weapons/arm',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name,state})});
     const j=await r.json();
     if(!j.ok) throw new Error('arm failed');
     poll();
@@ -141,7 +251,7 @@ async function toggleArm(name, state){
 
 async function fireWeapon(name, mode){
   try{
-    const r = await fetch('/weapons/fire',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name,mode})});
+    const r = await fetchWithTimeout('/weapons/fire',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name,mode})});
     const j=await r.json();
     appendConsole(`[fire] ${j.ok?'OK':'ERR'} ${j.result||''}`);
     poll();
@@ -306,7 +416,7 @@ async function unlockNow(){
 }
 
 async function doGET(url){
-  const r = await fetch(url, {cache:'no-store'});
+  const r = await fetchWithTimeout(url, {cache:'no-store'});
   if(!r.ok) throw new Error(r.status+' '+url);
   return r.json();
 }
@@ -325,7 +435,7 @@ async function doGET(url){
       const rn = Number(capRad?.value||'10');
       if(!cell){ appendConsole('[cap] ERR cell?'); return; }
       const body = JSON.stringify({cell, station_minutes:nmin, radius_nm:rn});
-      const r = await fetch('/cap/launch_to',{method:'POST', headers:{'Content-Type':'application/json'}, body});
+      const r = await fetchWithTimeout('/cap/launch_to',{method:'POST', headers:{'Content-Type':'application/json'}, body});
       const j = await r.json();
       appendConsole(`[cap] ${j.ok?'OK':'ERR'} ${j.message||''}`);
     }catch(e){ appendConsole(`[cap] ERR ${e}`); }
@@ -335,7 +445,7 @@ async function doGET(url){
 // Radio input
 async function sendRadio(){
   const el=$('#radio-input'); if(!el) return; const s=(el.value||'').trim(); if(!s) return;
-  try{ const r=await fetch('/radio/ask',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text:s})});
+  try{ const r=await fetchWithTimeout('/radio/ask',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text:s})});
     const j=await r.json(); appendConsole(`[radio] ${j.ok?'OK':'ERR'} ${j.role||''}`); el.value=''; }
   catch(e){ appendConsole(`[radio] ERR ${e}`); }
 }
@@ -360,7 +470,7 @@ async function skirmishStart(){
   const id = Number(($('#skirmish-id').value||'').trim());
   if(!id){ appendConsole('[skirmish] ERR missing id'); return; }
   try{
-    const r=await fetch('/skirmish/start',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})});
+    const r=await fetchWithTimeout('/skirmish/start',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})});
     const j=await r.json();
     appendConsole(`[skirmish] start ${j.ok?'OK':'ERR'} id=${id}`);
   }catch(e){ appendConsole(`[skirmish] start ERR ${e}`); }
@@ -369,7 +479,7 @@ async function skirmishStop(){
   const idStr = ($('#skirmish-id').value||'').trim();
   const id = idStr? Number(idStr) : undefined;
   try{
-    const r=await fetch(id?`/skirmish/stop?id=${encodeURIComponent(id)}`:'/skirmish/stop',{method:'POST'});
+    const r=await fetchWithTimeout(id?`/skirmish/stop?id=${encodeURIComponent(id)}`:'/skirmish/stop',{method:'POST'});
     const j=await r.json();
     appendConsole(`[skirmish] stop ${j.ok?'OK':'ERR'} ${(j.summary&&JSON.stringify(j.summary))||''}`);
   }catch(e){ appendConsole(`[skirmish] stop ERR ${e}`); }
@@ -377,7 +487,7 @@ async function skirmishStop(){
 async function skirmishReview(){ window.location.href = '/skirmish'; }
 async function skirmishQuick(){
   try{
-    const r=await fetch('/skirmish/create',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
+    const r=await fetchWithTimeout('/skirmish/create',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
     const j=await r.json();
     if(j.ok){ $('#skirmish-id').value=String(j.id); appendConsole(`[skirmish] created id=${j.id}`);} else { appendConsole(`[skirmish] create ERR`);} 
   }catch(e){ appendConsole(`[skirmish] create ERR ${e}`); }
@@ -405,7 +515,7 @@ async function createSkirmishFromForm(){
   if(picks.length===0){ appendConsole('[skirmish] ERR add at least one target'); return; }
   const body = { name, notes, config: { hostiles: picks } };
   try{
-    const r=await fetch('/skirmish/create',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const r=await fetchWithTimeout('/skirmish/create',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
     const j=await r.json(); if(j.ok){ $('#skirmish-id').value=String(j.id); appendConsole(`[skirmish] created id=${j.id}`);} else { appendConsole(`[skirmish] create ERR`); }
   }catch(e){ appendConsole(`[skirmish] create ERR ${e}`); }
 }
@@ -425,7 +535,7 @@ const ownApply = $('#own-apply'); if (ownApply) ownApply.onclick = async ()=>{
   if (crStr !== '' && !Number.isNaN(Number(crStr))) payload['heading'] = Number(crStr);
   if(Object.keys(payload).length===0){ appendConsole('[nav] ERR missing values'); return; }
   try{
-    const r = await fetch('/api/nav/set',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    const r = await fetchWithTimeout('/api/nav/set',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
     const j = await r.json();
     appendConsole(`[nav] ${j.ok?'OK':'ERR'}`);
     poll();
@@ -434,7 +544,7 @@ const ownApply = $('#own-apply'); if (ownApply) ownApply.onclick = async ()=>{
 // CAP header controls wiring
 const capIntBtn = $('#cap-int-btn'); if (capIntBtn) capIntBtn.onclick = async ()=>{
   try{
-    const r = await fetch('/cap/request', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
+    const r = await fetchWithTimeout('/cap/request', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
     const j = await r.json(); appendConsole(`[cap intercept] ${j.ok?'OK':'ERR'} ${j.message||''}`);
     poll();
   }catch(e){ appendConsole(`[cap intercept] ERR ${e}`); }
@@ -444,7 +554,7 @@ const capHeadLaunch = $('#cap-head-launch'); if (capHeadLaunch) capHeadLaunch.on
   if(!cell){ appendConsole('[CAP] ERR missing cell'); return; }
   (async ()=>{
     try{
-      const r = await fetch('/cap/launch_to',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({cell, station_minutes:10, radius_nm:10})});
+      const r = await fetchWithTimeout('/cap/launch_to',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({cell, station_minutes:10, radius_nm:10})});
       const j = await r.json(); appendConsole(`[CAP->${cell}] ${j.ok?'OK':'ERR'} ${j.message||''}`);
       poll();
     }catch(e){ appendConsole(`[CAP->${cell}] ERR ${e}`); }
@@ -460,7 +570,8 @@ const cmdUnlockBtn = $('#cmd-unlock'); if (cmdUnlockBtn) cmdUnlockBtn.onclick = 
 // Self test button
 const btnSelf = $('#selftest-run'); if (btnSelf) btnSelf.onclick = async ()=>{
   try{
-    const r = await fetch('/diag/selftest'); const j = await r.json();
+    const r = await fetchWithTimeout('/diag/selftest', {cache:'no-store'});
+    const j = await r.json();
     const R = j.results || {};
     const n = v => (v && v.ok ? 'OK' : 'ERR');
     appendConsole(`[selftest] nav=${n(R.nav)} radar=${n(R.radar)} weapons=${n(R.weapons)} cap=${n(R.cap)} radio=${n(R.radio)}`);
@@ -469,7 +580,7 @@ const btnSelf = $('#selftest-run'); if (btnSelf) btnSelf.onclick = async ()=>{
 // Commands card: Request CAP quick action
 const capReqBtn = $('#btn-cap-request'); if (capReqBtn) capReqBtn.onclick = async ()=>{
   try{
-    const r = await fetch('/cap/request', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
+    const r = await fetchWithTimeout('/cap/request', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
     const j = await r.json(); appendConsole(`[cap request] ${j.ok?'OK':'ERR'} ${j.message||''}`);
     poll();
   }catch(e){ appendConsole(`[cap request] ERR ${e}`); }
@@ -504,44 +615,101 @@ async function loadRadio(){
   }catch{ return []; }
 }
 
-// ---------- Main poll ----------
-async function poll(){
+async function fetchStatusSnapshot(opts={}){
+  const headers = Object.assign({}, STATUS_REQUEST_HEADERS);
+  const options = { cache:'no-store', headers };
+  if(opts && opts.signal){ options.signal = opts.signal; }
+  const t0 = performance.now();
+  const res = await fetchWithTimeout('/api/status', options, STATUS_POLL_TIMEOUT_MS);
+  lastPoll = Math.round(performance.now()-t0);
+  if(!res.ok){
+    const err = new Error(`status ${res.status}`);
+    err.status = res.status;
+    err.response = res;
+    throw err;
+  }
+  return await res.json();
+}
+
+async function handleStatusSnapshot(j){
+  lastOK = !!(j && j.ok !== false);
   try{
-    const j = await getJSON('/api/status');
-    lastOK = !!j.ok;
-    setHUD(j);
-    renderOwnFleet(j.ownfleet);
-    renderPrimary(j.primary);
-    renderWeapons(j.weapons);
-    renderCAP(j.cap);
-    // Enable/disable CAP header buttons
-    try{
-      const hasPrimary = !!j.primary;
-      const ready = !!(j.cap && j.cap.ready);
-      const capIntBtn = $('#cap-int-btn'); if (capIntBtn) { capIntBtn.disabled = !(hasPrimary && ready); capIntBtn.classList.toggle('danger', hasPrimary && ready); }
-      const cellEl = $('#cap-head-cell'); const capHeadLaunch = $('#cap-head-launch');
-      if (capHeadLaunch) capHeadLaunch.disabled = !(ready && (cellEl && (cellEl.value||'').trim().length>0));
-    }catch(_){ }
-    // Enable CAP button only if a primary exists and CAP reports available
-    try{
-      const capBtn = $('#btn-cap-request');
-      if (capBtn) capBtn.disabled = !(j.primary && j.cap && j.cap.ready);
-    }catch(_){ }
-
-    // radio: prefer status.radio; else from recorder
-    if (Array.isArray(j.radio) && j.radio.length){
-      renderRadio(j.radio);
-    } else {
-      const r = await loadRadio();
-      renderRadio(r);
+    if(j && typeof j.schemaVersion === 'string' && j.schemaVersion !== STATUS_SCHEMA_VERSION){
+      console.warn('[status] schema mismatch', STATUS_SCHEMA_VERSION, '!=', j.schemaVersion);
     }
+  }catch(_){}
+  setHUD(j);
+  renderOwnFleet(j.ownfleet);
+  renderPrimary(j.primary);
+  renderWeapons(j.weapons);
+  renderCAP(j.cap);
+  try{
+    const hasPrimary = !!(j && j.primary);
+    const ready = !!(j && j.cap && j.cap.ready);
+    const capIntBtnLocal = $('#cap-int-btn');
+    if (capIntBtnLocal) {
+      capIntBtnLocal.disabled = !(hasPrimary && ready);
+      capIntBtnLocal.classList.toggle('danger', hasPrimary && ready);
+    }
+    const cellEl = $('#cap-head-cell');
+    const capHeadLaunchLocal = $('#cap-head-launch');
+    if (capHeadLaunchLocal) capHeadLaunchLocal.disabled = !(ready && (cellEl && (cellEl.value||'').trim().length>0));
+  }catch(_){}
+  try{
+    const capBtn = $('#btn-cap-request');
+    if (capBtn) capBtn.disabled = !(j && j.primary && j.cap && j.cap.ready);
+  }catch(_){}
+  if (Array.isArray(j && j.radio) && j.radio.length){
+    renderRadio(j.radio);
+  } else {
+    const r = await loadRadio();
+    renderRadio(r);
+  }
+  renderRadar(j ? j.contacts : []);
+}
 
-    renderRadar(j.contacts);
-
-  }catch(e){
-    lastOK=false;
-    $('#hud-dot').classList.remove('ok');
+async function legacyStatusPoll(){
+  try{
+    const snapshot = await fetchStatusSnapshot();
+    await handleStatusSnapshot(snapshot);
+  }catch(_){
+    lastOK = false;
+    const dot = $('#hud-dot');
+    if(dot) dot.classList.remove('ok');
   }
 }
-poll();
-setInterval(poll, 1500);
+
+// ---------- Main poll ----------
+async function poll(){
+  if(statusPoller){
+    try{
+      await statusPoller.force();
+    }catch(_){}
+    return;
+  }
+  await legacyStatusPoll();
+}
+
+if(createPoller){
+  statusPoller = createPoller({
+    name: 'status',
+    intervalMs: STATUS_POLL_INTERVAL_MS,
+    maxIntervalMs: STATUS_POLL_INTERVAL_MS,
+    backoffFactor: 1.3,
+    timeoutMs: STATUS_POLL_TIMEOUT_MS,
+    request: ({ signal }) => fetchStatusSnapshot({ signal }),
+    onSuccess: (data) => handleStatusSnapshot(data),
+    onError: () => {
+      lastOK = false;
+      const dot = $('#hud-dot');
+      if(dot) dot.classList.remove('ok');
+    }
+  });
+}
+
+if(statusPoller){
+  statusPoller.start(true);
+}else{
+  legacyStatusPoll();
+  setInterval(legacyStatusPoll, STATUS_POLL_INTERVAL_MS);
+}

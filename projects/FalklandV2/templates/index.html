@@ -72,12 +72,16 @@
       }
     })();
   </script>
+  <script src="{{ url_for('static', filename='apiClient.js', v=app_version|default('dev')) }}"></script>
   <script src="{{ url_for('static', filename='sound.js', v=app_version|default('dev')) }}"></script>
-  <script src="{{ url_for('static', filename='stations.js', v=app_version|default('dev')) }}" defer></script>
+  <script type="module" src="{{ url_for('static', filename='stations/index.js', v=app_version|default('dev')) }}"></script>
   <script>
     // Fallback if template tags were not rendered or request failed
+    if(!window.ApiClient){
+      document.write('<script src="/static/apiClient.js?v=dev"><\\/script>');
+    }
     if(!window.__stations_loaded){
-      document.write('<script src="/static/stations.js?v=dev" defer><\\/script>');
+      document.write('<script type="module" src="/static/stations/index.js?v=dev"><\\/script>');
     }
   </script>
 </body>

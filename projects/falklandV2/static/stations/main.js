@@ -3,6 +3,41 @@ const $$ = (sel)=>document.querySelectorAll(sel);
 const text = (el, s)=>{ if(el) el.textContent = s; };
 const fmt = (v, d)=> (v===undefined||v===null||Number.isNaN(Number(v))) ? '—' : Number(v).toFixed(d||0);
 
+let appendConsole = null;
+try{
+  if(typeof window !== 'undefined' && typeof window.appendConsole === 'function'){
+    const existing = window.appendConsole;
+    appendConsole = function(message){
+      try{
+        existing.call(window, message);
+      }catch(_){
+        console.log(String(message));
+      }
+    };
+  }
+}catch(_){ appendConsole = null; }
+if(!appendConsole){
+  appendConsole = function(message){
+    try{
+      if(typeof window !== 'undefined'){
+        const fn = window.appendConsole;
+        if(typeof fn === 'function' && fn !== appendConsole){
+          fn.call(window, message);
+          return;
+        }
+      }
+    }catch(_){ }
+    try{
+      console.log(String(message));
+    }catch(_){ }
+  };
+  try{
+    if(typeof window !== 'undefined' && typeof window.appendConsole !== 'function'){
+      window.appendConsole = appendConsole;
+    }
+  }catch(_){ }
+}
+
 try{
   window.__stations_build = '20251012_radar_delta';
   if(!window.__stations_log_once){
@@ -144,6 +179,12 @@ async function runPoll(){
     pollLastOkTs = Date.now();
     setConnectionBanner('ok');
   }catch(err){
+    const isAbort = err && (err.name === 'AbortError' || err === 'AbortError');
+    if(isAbort){
+      pollConsecutiveErrors = 0;
+      pollIntervalMs = POLL_DEFAULT_INTERVAL_MS;
+      return;
+    }
     pollConsecutiveErrors += 1;
     pollIntervalMs = Math.min(
       POLL_DEFAULT_INTERVAL_MS * Math.pow(1.6, pollConsecutiveErrors),

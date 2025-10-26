@@ -82,12 +82,15 @@ def build() -> Dict[str, Any]:
             pass
         return caps
 
+    schema_version = "1.0.0"
+
     payload: Dict[str, Any] = {
         "ok": True,
         "api_version": 1,
         "server_version": wd.APP_VERSION,
         "engine_kind": _engine_kind(),
         "capabilities": _capabilities(),
+        "schemaVersion": schema_version,
     }
 
     try:
@@ -762,6 +765,13 @@ def build() -> Dict[str, Any]:
                     file_path = str(pending_radio.get('file'))
             except Exception:
                 file_path = None
+            playlist_ref: List[str] | None = None
+            try:
+                playlist_val = pending_radio.get('playlist')
+                if isinstance(playlist_val, (list, tuple)):
+                    playlist_ref = [str(p) for p in playlist_val if isinstance(p, str) and p]
+            except Exception:
+                playlist_ref = None
             if file_path:
                 try:
                     val = pending_radio.get('duration')
@@ -770,10 +780,22 @@ def build() -> Dict[str, Any]:
                 except Exception:
                     duration_s = None
             if not file_path:
+                event_id = None
                 try:
-                    wd.schedule_radio_tts(role, text)
+                    event_id = str(pending_radio.get('event') or '')
                 except Exception:
-                    pass
+                    event_id = ''
+                mapped_event = False
+                try:
+                    if event_id and event_id in wd.RADIO_EVENT_AUDIO_MAP:
+                        mapped_event = True
+                except Exception:
+                    mapped_event = False
+                if not mapped_event:
+                    try:
+                        wd.schedule_radio_tts(role, text)
+                    except Exception:
+                        pass
             duration_s = _estimate_radio_duration(text, duration_s, file_path)
             radio_payload = {
                 'ts': time.time(),
@@ -784,6 +806,8 @@ def build() -> Dict[str, Any]:
                 'channel': channel_id,
                 'guard': channel_id == 6
             }
+            if playlist_ref:
+                radio_payload['playlist'] = playlist_ref
             with wd.STATE_LOCK:
                 try:
                     wd.AUDIO_STATE['radio'] = dict(radio_payload)

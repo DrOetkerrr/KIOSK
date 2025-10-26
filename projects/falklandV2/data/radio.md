@@ -1,9 +1,11 @@
 
 nav.course.set – “New course, heading {heading}°”
 nav.speed.set – “New speed is {speed} kn”
+radar.scan.start – “Captain, scanning radar.”
+radar.scan.complete – “Captain, radar scan complete: {contacts} contact(s); hostiles {hostiles}; friendlies {friendlies}.”
 radar.target.locked – “Target locked, grid cell, #{id} {name} — {range_nm} nautical mile”
 radar.target.unlocked – “Captain, target unlocked”
-radar.contact.spawn – “New radar contact: #{id} {name} {class_name} range {range_nm} nautical mile”
+radar.contact.spawn – “New radar contact: #{id} {name} {class_name}, grid {cell}, range {range_nm} nautical mile”
 weapon.target.locked – “weapon locked, ready to enagage #{id} {name}”
 weapon.target.unlocked – “Captain, weapons target cleared”
 weapon.arm – “{name} armed”

@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://falklandv2.example.com/schema/status.json",
+  "version": "1.0.0",
+  "title": "Falkland V2 Status Response",
+  "type": "object",
+  "required": ["ok"],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "api_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "server_version": {
+      "type": ["string", "null"]
+    },
+    "engine_kind": {
+      "type": ["string", "null"]
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "state": {
+      "type": "object",
+      "properties": {
+        "ship": {
+          "type": "object",
+          "properties": {
+            "col": {"type": ["number", "string", "null"]},
+            "row": {"type": ["number", "string", "null"]},
+            "heading": {"type": ["number", "string", "null"]},
+            "speed": {"type": ["number", "string", "null"]}
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "ownfleet": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "primary": {"type": ["object", "null"]},
+    "weapons": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "cap": {"type": ["object", "null"]},
+    "radio": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "contacts": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "diag": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": true
+}

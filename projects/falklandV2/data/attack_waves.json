@@ -1,11 +1,11 @@
 {
   "total_game_time_min": 20,
-  "start_wave": 2,
+  "start_wave": 1,
   "waves": [
     {
       "label": "Calm Seas",
-      "duration_min": 5,
-      "direction": "NE",
+      "duration_min": 8,
+      "direction": "NW",
       "spawn_rate_per_min": 0.0,
       "friendly_prob": 1.0,
       "spawns": {}
@@ -13,16 +13,16 @@
     {
       "label": "First Sortie",
       "duration_min": 5,
-      "direction": "NE",
-      "spawn_rate_per_min": 0.6,
+      "direction": "W",
+      "spawn_rate_per_min": 0.75,
       "friendly_prob": 0.05,
       "spawns": {
         "Mirage III": {
-          "chance": 0.8,
+          "chance": 0.6,
           "min_range_nm": 20
         },
         "Pucará": {
-          "chance": 0.35,
+          "chance": 0.25,
           "min_range_nm": 18
         }
       }
@@ -30,7 +30,7 @@
     {
       "label": "Missile Threat",
       "duration_min": 5,
-      "direction": "E",
+      "direction": "W",
       "spawn_rate_per_min": 1.0,
       "friendly_prob": 0.1,
       "spawns": {
@@ -55,7 +55,7 @@
     {
       "label": "Final Push",
       "duration_min": 5,
-      "direction": "SE",
+      "direction": "SW",
       "spawn_rate_per_min": 1.0,
       "friendly_prob": 0.05,
       "spawns": {

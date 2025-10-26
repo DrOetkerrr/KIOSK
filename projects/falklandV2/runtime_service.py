@@ -32,6 +32,7 @@ from projects.falklandV2.runtime_radar import RadarBridge
 from projects.falklandV2.runtime_cap import CAPOrchestrator
 from projects.falklandV2.runtime_audio import AudioCoordinator
 from projects.falklandV2.runtime_mission import MissionCoordinator
+from projects.falklandV2 import watchdog
 
 
 class GameRuntime:
@@ -535,6 +536,10 @@ class GameRuntime:
         last = getattr(self, '_last_engine_tick_ts', None)
         if last is None:
             self._last_engine_tick_ts = ts
+            try:
+                watchdog.record_runtime_tick('engine', ts)
+            except Exception:
+                pass
             return
         dt_total = max(0.0, float(ts) - float(last))
         if dt_total <= 0.0:
@@ -566,6 +571,10 @@ class GameRuntime:
                 except Exception:
                     pass
         self._last_engine_tick_ts = ts
+        try:
+            watchdog.record_runtime_tick('engine', ts)
+        except Exception:
+            pass
 
     def _advance_radar(self, *, now: Optional[float] = None) -> None:
         if not hasattr(self, 'radar') or self.radar is None:
@@ -575,6 +584,10 @@ class GameRuntime:
             last = getattr(self, '_last_radar_tick_ts', None)
             if last is None:
                 self._last_radar_tick_ts = ts
+                try:
+                    watchdog.record_runtime_tick('radar', ts)
+                except Exception:
+                    pass
                 return
             dt_total = max(0.0, float(ts) - float(last))
             if dt_total <= 0.0:
@@ -593,8 +606,17 @@ class GameRuntime:
             self._last_radar_tick_ts = ts
             self._apply_mission_contact_filters(self.radar)
             self._sync_engine_contacts()
+            try:
+                watchdog.record_runtime_tick('radar', ts)
+            except Exception:
+                pass
         except Exception:
-            self._last_radar_tick_ts = now if now is not None else time.time()
+            fallback_ts = now if now is not None else time.time()
+            self._last_radar_tick_ts = fallback_ts
+            try:
+                watchdog.record_runtime_tick('radar', fallback_ts)
+            except Exception:
+                pass
 
     def radar_scan(self) -> Dict[str, Any]:
         ox, oy = self._own_xy()
@@ -666,7 +688,10 @@ class GameRuntime:
             raw = core._load_json(self.arming_path, {})
             if not isinstance(raw, dict):
                 raw = {}
-            arm_delay = 10.0 if name == 'Sea Dart SAM' else 5.0
+            try:
+                arm_delay = float(core.weapon_arm_delay(name))
+            except Exception:
+                arm_delay = float(getattr(core, 'ARM_DELAY_DEFAULT', 5.0))
             container = raw.get('weapons') if isinstance(raw.get('weapons'), dict) else raw
             if not isinstance(container, dict):
                 container = raw
@@ -754,19 +779,7 @@ class GameRuntime:
 
     def _cooldown_seconds_by_class(self, nm: str) -> float:
         try:
-            if nm == 'Sea Dart SAM':
-                return 10.0
-            wrec = next((w for w in core.WEAP_CATALOG if w.get('name') == nm), None)
-            cls = (wrec or {}).get('class', 'Other')
-            if (wrec or {}).get('cooldown_s') is not None:
-                return float(wrec['cooldown_s'])
-            if cls == 'Missile':
-                return 8.0
-            if cls == 'SAM':
-                return 6.0
-            if cls == 'Decoy':
-                return 5.0
-            return 2.0
+            return float(core.weapon_cooldown(nm))
         except Exception:
             return 3.0
 
@@ -777,15 +790,12 @@ class GameRuntime:
         ammo = self.load_ammo() or {}
         ammo.setdefault(name, 0)
         now = time.time()
-        if self._cooldown_left_s(name) > 0:
-            return {'ok': False, 'error': 'COOLDOWN'}
         arming_state = self.load_arming() or {}
         if arming_state.get(name) != 'Armed':
             return {'ok': False, 'error': 'NOT_ARMED'}
         if int(ammo.get(name, 0)) <= 0:
             return {'ok': False, 'error': 'NO_AMMO'}
         if mode == 'real':
-            # compute primary and range gate
             primary = None
             try:
                 st = self.engine.public_state()
@@ -803,15 +813,23 @@ class GameRuntime:
                 if fallback:
                     primary = fallback
                 else:
-                    # last resort: first hostile contact
-                    for c in reversed(self.radar.contacts):
-                        if getattr(c, 'allegiance', '') == 'Hostile':
-                            primary = contact_to_ui(c, self._own_xy())
-                            break
+                    try:
+                        own = self._own_xy()
+                        for c in reversed(self.radar.contacts):
+                            if getattr(c, 'allegiance', '') == 'Hostile':
+                                primary = contact_to_ui(c, own)
+                                break
+                    except Exception:
+                        primary = None
             if not primary:
+                placeholder = {'name': 'Test Target', 'range_nm': float('inf')}
+                if not self.compute_in_range(name, placeholder):
+                    return {'ok': False, 'error': 'OUT_OF_RANGE'}
                 return {'ok': False, 'error': 'NO_PRIMARY'}
             if not self.compute_in_range(name, primary):
                 return {'ok': False, 'error': 'OUT_OF_RANGE'}
+        if self._cooldown_left_s(name) > 0:
+            return {'ok': False, 'error': 'COOLDOWN'}
         # consume ammo
         try:
             dec = 50 if name in ("20mm Oerlikon", "20mm GAM-BO1 (twin)") else 1
