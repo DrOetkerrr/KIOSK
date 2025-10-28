@@ -1,0 +1,558 @@
+{
+  "$defs": {
+    "AudioEventSnapshot": {
+      "properties": {
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "ts": {
+          "title": "Ts",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "message",
+        "ts"
+      ],
+      "title": "AudioEventSnapshot",
+      "type": "object"
+    },
+    "AudioSnapshot": {
+      "properties": {
+        "events": {
+          "items": {
+            "$ref": "#/$defs/AudioEventSnapshot"
+          },
+          "title": "Events",
+          "type": "array"
+        }
+      },
+      "required": [
+        "events"
+      ],
+      "title": "AudioSnapshot",
+      "type": "object"
+    },
+    "CAPSnapshot": {
+      "properties": {
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "sorties": {
+          "title": "Sorties",
+          "type": "integer"
+        },
+        "time_in_status_s": {
+          "title": "Time In Status S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "status",
+        "sorties",
+        "time_in_status_s"
+      ],
+      "title": "CAPSnapshot",
+      "type": "object"
+    },
+    "CapHistoryEntry": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "integer"
+        },
+        "ts": {
+          "title": "Ts",
+          "type": "number"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "sorties": {
+          "title": "Sorties",
+          "type": "integer"
+        },
+        "mission_status": {
+          "title": "Mission Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "ts",
+        "action",
+        "sorties",
+        "mission_status"
+      ],
+      "title": "CapHistoryEntry",
+      "type": "object"
+    },
+    "CapHistorySnapshot": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/CapHistoryEntry"
+          },
+          "title": "Entries",
+          "type": "array"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "title": "CapHistorySnapshot",
+      "type": "object"
+    },
+    "HealthAssetSnapshot": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "max_lives": {
+          "title": "Max Lives",
+          "type": "integer"
+        },
+        "lives": {
+          "title": "Lives",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "max_lives",
+        "lives"
+      ],
+      "title": "HealthAssetSnapshot",
+      "type": "object"
+    },
+    "HealthSnapshot": {
+      "properties": {
+        "assets": {
+          "items": {
+            "$ref": "#/$defs/HealthAssetSnapshot"
+          },
+          "title": "Assets",
+          "type": "array"
+        }
+      },
+      "required": [
+        "assets"
+      ],
+      "title": "HealthSnapshot",
+      "type": "object"
+    },
+    "MissionSnapshot": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "elapsed_s": {
+          "title": "Elapsed S",
+          "type": "number"
+        },
+        "time_left_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Time Left S"
+        },
+        "decision": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Decision"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "description",
+        "status",
+        "elapsed_s",
+        "time_left_s"
+      ],
+      "title": "MissionSnapshot",
+      "type": "object"
+    },
+    "NavCommandSnapshot": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "integer"
+        },
+        "ts": {
+          "title": "Ts",
+          "type": "number"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "ts",
+        "action",
+        "value"
+      ],
+      "title": "NavCommandSnapshot",
+      "type": "object"
+    },
+    "NavHistorySnapshot": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/NavCommandSnapshot"
+          },
+          "title": "Entries",
+          "type": "array"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "title": "NavHistorySnapshot",
+      "type": "object"
+    },
+    "RadarContactSnapshot": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "integer"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "allegiance": {
+          "title": "Allegiance",
+          "type": "string"
+        },
+        "range_nm": {
+          "title": "Range Nm",
+          "type": "number"
+        },
+        "bearing_deg": {
+          "title": "Bearing Deg",
+          "type": "number"
+        },
+        "heading_deg": {
+          "title": "Heading Deg",
+          "type": "number"
+        },
+        "speed_kts": {
+          "title": "Speed Kts",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "allegiance",
+        "range_nm",
+        "bearing_deg",
+        "heading_deg",
+        "speed_kts"
+      ],
+      "title": "RadarContactSnapshot",
+      "type": "object"
+    },
+    "RadarSnapshot": {
+      "properties": {
+        "contacts": {
+          "items": {
+            "$ref": "#/$defs/RadarContactSnapshot"
+          },
+          "title": "Contacts",
+          "type": "array"
+        }
+      },
+      "required": [
+        "contacts"
+      ],
+      "title": "RadarSnapshot",
+      "type": "object"
+    },
+    "RadioMessageSnapshot": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "integer"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "category": {
+          "title": "Category",
+          "type": "string"
+        },
+        "ts": {
+          "title": "Ts",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "category",
+        "ts"
+      ],
+      "title": "RadioMessageSnapshot",
+      "type": "object"
+    },
+    "RadioSnapshot": {
+      "properties": {
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/RadioMessageSnapshot"
+          },
+          "title": "Messages",
+          "type": "array"
+        }
+      },
+      "required": [
+        "messages"
+      ],
+      "title": "RadioSnapshot",
+      "type": "object"
+    },
+    "ShipSnapshot": {
+      "properties": {
+        "cell": {
+          "title": "Cell",
+          "type": "string"
+        },
+        "x_nm": {
+          "title": "X Nm",
+          "type": "number"
+        },
+        "y_nm": {
+          "title": "Y Nm",
+          "type": "number"
+        },
+        "heading_deg": {
+          "title": "Heading Deg",
+          "type": "number"
+        },
+        "speed_kts": {
+          "title": "Speed Kts",
+          "type": "number"
+        },
+        "hud": {
+          "title": "Hud",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cell",
+        "x_nm",
+        "y_nm",
+        "heading_deg",
+        "speed_kts",
+        "hud"
+      ],
+      "title": "ShipSnapshot",
+      "type": "object"
+    },
+    "WaveSnapshot": {
+      "properties": {
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "elapsed_s": {
+          "title": "Elapsed S",
+          "type": "number"
+        },
+        "duration_s": {
+          "title": "Duration S",
+          "type": "number"
+        },
+        "remaining_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Remaining S"
+        },
+        "spawn_rate_per_min": {
+          "title": "Spawn Rate Per Min",
+          "type": "number"
+        },
+        "friendly_prob": {
+          "title": "Friendly Prob",
+          "type": "number"
+        },
+        "direction_bearing": {
+          "title": "Direction Bearing",
+          "type": "number"
+        }
+      },
+      "required": [
+        "label",
+        "elapsed_s",
+        "duration_s",
+        "remaining_s",
+        "spawn_rate_per_min",
+        "friendly_prob",
+        "direction_bearing"
+      ],
+      "title": "WaveSnapshot",
+      "type": "object"
+    },
+    "WeaponSlotSnapshot": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "state"
+      ],
+      "title": "WeaponSlotSnapshot",
+      "type": "object"
+    },
+    "WeaponsSnapshot": {
+      "properties": {
+        "slots": {
+          "items": {
+            "$ref": "#/$defs/WeaponSlotSnapshot"
+          },
+          "title": "Slots",
+          "type": "array"
+        }
+      },
+      "required": [
+        "slots"
+      ],
+      "title": "WeaponsSnapshot",
+      "type": "object"
+    },
+    "WeatherSnapshot": {
+      "properties": {
+        "wind_dir_deg": {
+          "title": "Wind Dir Deg",
+          "type": "number"
+        },
+        "wind_speed_kts": {
+          "title": "Wind Speed Kts",
+          "type": "number"
+        },
+        "sea_state": {
+          "title": "Sea State",
+          "type": "number"
+        }
+      },
+      "required": [
+        "wind_dir_deg",
+        "wind_speed_kts",
+        "sea_state"
+      ],
+      "title": "WeatherSnapshot",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "ship": {
+      "$ref": "#/$defs/ShipSnapshot"
+    },
+    "radar": {
+      "$ref": "#/$defs/RadarSnapshot"
+    },
+    "mission": {
+      "$ref": "#/$defs/MissionSnapshot"
+    },
+    "cap": {
+      "$ref": "#/$defs/CAPSnapshot"
+    },
+    "wave": {
+      "$ref": "#/$defs/WaveSnapshot"
+    },
+    "weapons": {
+      "$ref": "#/$defs/WeaponsSnapshot"
+    },
+    "audio": {
+      "$ref": "#/$defs/AudioSnapshot"
+    },
+    "weather": {
+      "$ref": "#/$defs/WeatherSnapshot"
+    },
+    "radio": {
+      "$ref": "#/$defs/RadioSnapshot"
+    },
+    "nav_history": {
+      "$ref": "#/$defs/NavHistorySnapshot"
+    },
+    "cap_history": {
+      "$ref": "#/$defs/CapHistorySnapshot"
+    },
+    "health": {
+      "$ref": "#/$defs/HealthSnapshot"
+    }
+  },
+  "required": [
+    "ship",
+    "radar",
+    "mission",
+    "cap",
+    "wave",
+    "weapons",
+    "audio",
+    "weather",
+    "radio",
+    "nav_history",
+    "cap_history",
+    "health"
+  ],
+  "title": "StatusSnapshot",
+  "type": "object"
+}

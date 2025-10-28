@@ -1,0 +1,18 @@
+{
+  "id": "patrol",
+  "label": "Sector Patrol",
+  "description": "Maintain presence until timer expires.",
+  "duration_s": 600,
+  "success": {
+    "any": [
+      { "timer_elapsed": { "seconds": 600 } },
+      { "hostiles_destroyed_at_least": { "count": 1 } }
+    ],
+    "announce": {
+      "voice_fallback": "Mission accomplished."
+    }
+  },
+  "failure": {
+    "any": []
+  }
+}

@@ -1,0 +1,85 @@
+# Falkland V3
+
+Clean-room rebuild of the Falkland command simulation while preserving current gameplay.
+
+## Goals
+- Mirror every observable behaviour from Falkland V2 (missions, CAP, radar, audio, stations).
+- Replace ad hoc globals and monolith scripts with modular, typed components.
+- Deliver per-station experiences that can evolve independently.
+
+## Layout
+- `falklandv3/` – Python source split into `core`, `services`, `adapters`, and `stations` packages.
+- `frontend/stations/` – TypeScript UI workspace for NAV/RADAR/WPN/RADIO/ENG consoles.
+- `docs/` – Architecture notes, migration plan, and parity tracking.
+- `tests/` – Unit, integration, and acceptance suites anchored by V2 fixtures.
+
+See `../../docs/falklandV3/architecture_overview.md` for detailed module boundaries.
+
+## Status
+- ✅ Baseline V2 gameplay inventory captured.
+- ✅ High-level V3 architecture defined.
+- ✅ Runtime core + FastAPI status surface bootstrapped (see `docs/ROADMAP.md`).
+- ✅ CI workflow runs ruff, pytest, and frontend build.
+- 🚧 Station UIs and remaining parity work tracked in `docs/ROADMAP.md`.
+
+## Development
+```bash
+cd projects/FalklandV3
+uv sync          # once pyproject dependencies land
+uv run pytest    # run unit tests
+```
+
+Frontend workflow will use `pnpm`/`vite` once the stations workspace is bootstrapped.
+
+### CLI Simulation
+
+Run a quick simulation loop from the command line:
+
+```bash
+# From repo root, launch API + stations UI together
+make start-v3
+
+uv run falklandv3-sim --ticks 5 --dt 1.0
+
+# Deterministic (seeded) run
+uv run falklandv3-sim --ticks 5 --dt 1.0 --seed 42
+
+# Live loop (runs until Ctrl+C)
+uv run falklandv3-sim --live --dt 0.5
+
+# Include weather/radio summary per tick
+uv run falklandv3-sim --ticks 3 --summary
+
+# Serve API (requires uvicorn)
+uv run falklandv3-serve --host 127.0.0.1 --port 8000
+# Deterministic runtime for API
+uv run falklandv3-serve --seed 42
+```
+
+Pass `--log-dir ./tmp` to inspect the JSON snapshot/audio logs emitted during the run.
+
+Environment overrides (defaults shown):
+
+```bash
+export FALKLANDV3_TICK_DT=1.0
+export FALKLANDV3_LOOP_SLEEP=0.0
+export FALKLANDV3_AUDIO_MAX_EVENTS=10
+export FALKLANDV3_LOG_DIR=./logs
+export FALKLANDV3_BUILD=dev
+export FALKLANDV3_API_KEY=changeme
+export FALKLANDV3_RNG_SEED=42
+```
+
+The API CLI respects the same settings (e.g. `FALKLANDV3_TICK_DT`) when serving via `falklandv3-serve`.
+
+When `FALKLANDV3_API_KEY` is set, navigation write endpoints require header `X-Falkland-Key`.
+
+### Stations Frontend
+
+```bash
+cd projects/FalklandV3/frontend/stations
+npm install
+npm run dev
+```
+
+The dev server will proxy `/api/*` requests to the backend on port 8000. Build with `npm run build` to emit a production bundle under `dist/`.

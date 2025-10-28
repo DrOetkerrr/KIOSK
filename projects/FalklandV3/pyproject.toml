@@ -1,0 +1,53 @@
+[project]
+name = "falklandv3"
+version = "0.1.0"
+description = "Clean Falkland command simulation with modular runtime and typed API."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "Falkland Team" }
+]
+license = { text = "Proprietary" }
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.23",
+  "pydantic>=2.8",
+  "structlog>=24.1"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+  "httpx>=0.27",
+  "ruff>=0.5",
+  "mypy>=1.11"
+]
+
+[project.scripts]
+falklandv3-sim = "falklandv3.cli.simulate:main"
+falklandv3-serve = "falklandv3.cli.serve_api:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["falklandv3"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra --strict-markers"
+testpaths = [
+  "tests"
+]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true

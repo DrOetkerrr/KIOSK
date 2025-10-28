@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+falklandv3/__init__.py
+falklandv3/config.py
+falklandv3.egg-info/PKG-INFO
+falklandv3.egg-info/SOURCES.txt
+falklandv3.egg-info/dependency_links.txt
+falklandv3.egg-info/entry_points.txt
+falklandv3.egg-info/requires.txt
+falklandv3.egg-info/top_level.txt

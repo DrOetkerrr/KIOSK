@@ -1,0 +1,35 @@
+{
+  "id": "protect_hermes",
+  "label": "Protect Hermes",
+  "description": "Keep HMS Hermes safe throughout the engagement.",
+  "duration_s": 1200,
+  "success": {
+    "all": [
+      { "timer_elapsed": { "seconds": 1200 } },
+      { "hostiles_destroyed_at_least": { "count": 3 } }
+    ],
+    "announce": {
+      "voice_event": "mission.success",
+      "voice_fallback": "Captain, Hermes held together. Mission accomplished."
+    }
+  },
+  "failure": {
+    "any": [
+      { "asset_health_at_most": { "asset": "hermes", "lives": 4 } },
+      { "asset_destroyed": { "asset": "sheffield" } }
+    ],
+    "announce": {
+      "voice_event": "mission.failure",
+      "voice_fallback": "Captain, Hermes is taking heavy damage!"
+    },
+    "decision": {
+      "id": "abandon_ship",
+      "prompt": "Captain, should we order abandon ship?",
+      "timeout_s": 45,
+      "announce": {
+        "voice_event": "mission.decision.prompt",
+        "voice_fallback": "Captain, the crew is awaiting your abandon ship order."
+      }
+    }
+  }
+}

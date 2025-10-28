@@ -1,0 +1,3 @@
+[console_scripts]
+falklandv3-serve = falklandv3.cli.serve_api:main
+falklandv3-sim = falklandv3.cli.simulate:main
